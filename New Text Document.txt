@@ -1,416 +1,359 @@
-// Add these test methods to your ExcelReadServiceTests class
+using DocumentFormat.OpenXml.Packaging;
+using DynamicExcel.Write;
+using DynamicExcel.Write.Conditional;
+using DynamicExcel.Write.Helpers;
+using DynamicExcel.Write.Models;
+using DynamicExcel.Write.Sensitivity;
+using Moq;
+using System.Linq.Expressions;
 
-using DocumentFormat.OpenXml;
-using DocumentFormat.OpenXml.Spreadsheet;
+namespace DynamicExcel.Tests;
 
-[Test]
-public void ReadFileProperties_ValidExcelFile_ReturnsCorrectProperties()
+[TestFixture]
+public class ExcelFileBuilderTests
 {
-    // Arrange
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-    
-    // Act
-    var properties = _service.ReadFileProperties(stream ?? throw new InvalidOperationException());
-    
-    // Assert
-    Assert.That(properties, Is.Not.Null);
-    // Note: Adjust these assertions based on your actual test Excel file properties
-    // You might need to set specific properties in your test Excel file for this test
-}
+    private Mock<IExcelCacheManager> _cacheManagerMock;
+    private Mock<IExcelCellWriter> _cellWriterMock;
+    private Mock<IExcelStyleManager> _styleManagerMock;
+    private Mock<IExcelValidationManager> _validationManagerMock;
+    private StringBuilderPool _stringBuilderPool;
+    private Mock<IPropertyNameFormatter> _propertyNameFormatterMock;
+    private Mock<IExcelWorkbookWriter> _workbookWriterMock;
+    private Mock<IExcelSensitivityManager> _sensitivityManagerMock;
+    private ExcelFileBuilder _builder;
 
-[Test]
-public void ReadFileProperties_StreamWithNoProperties_ReturnsEmptyProperties()
-{
-    // This test assumes you have a test Excel file with no metadata properties set
-    // You may need to create a separate test file for this scenario
-    var emptyPropertiesFileName = "Gui.Core.Excel.Tests.TestFiles.NoProperties.xlsx";
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(emptyPropertiesFileName);
-    
-    if (stream != null)
+    [SetUp]
+    public void Setup()
     {
-        var properties = _service.ReadFileProperties(stream);
-        
-        Assert.That(properties, Is.Not.Null);
-        // Properties should be null or empty when not set in the file
-        Assert.That(properties.Title, Is.Null.Or.Empty);
-        Assert.That(properties.Subject, Is.Null.Or.Empty);
-        Assert.That(properties.Keywords, Is.Null.Or.Empty);
+        _cacheManagerMock = new Mock<IExcelCacheManager>();
+        _cellWriterMock = new Mock<IExcelCellWriter>();
+        _styleManagerMock = new Mock<IExcelStyleManager>();
+        _validationManagerMock = new Mock<IExcelValidationManager>();
+        _stringBuilderPool = new StringBuilderPool();
+        _propertyNameFormatterMock = new Mock<IPropertyNameFormatter>();
+        _workbookWriterMock = new Mock<IExcelWorkbookWriter>();
+        _sensitivityManagerMock = new Mock<IExcelSensitivityManager>();
+
+        _builder = new ExcelFileBuilder(
+            _cacheManagerMock.Object,
+            _cellWriterMock.Object,
+            _styleManagerMock.Object,
+            _validationManagerMock.Object,
+            _stringBuilderPool,
+            _propertyNameFormatterMock.Object,
+            _workbookWriterMock.Object,
+            _sensitivityManagerMock.Object);
     }
-    else
+
+    [Test]
+    public void Constructor_WithAllDependencies_CreatesInstance()
     {
-        Assert.Ignore("Test file with no properties not found");
+        var builder = new ExcelFileBuilder(
+            _cacheManagerMock.Object,
+            _cellWriterMock.Object,
+            _styleManagerMock.Object,
+            _validationManagerMock.Object,
+            _stringBuilderPool,
+            _propertyNameFormatterMock.Object,
+            _workbookWriterMock.Object,
+            _sensitivityManagerMock.Object);
+
+        Assert.That(builder, Is.Not.Null);
     }
-}
 
-// Tests for GetCellValue method
-[Test]
-public void GetCellValue_NullCellValueAndNullInlineString_ReturnsEmptyString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
+    [Test]
+    public void Constructor_WithNullCacheManager_ThrowsArgumentNullException()
     {
-        CellReference = "A1",
-        CellValue = null,
-        InlineString = null
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo(string.Empty));
-}
-
-[Test]
-public void GetCellValue_SharedStringType_ReturnsSharedStringValue()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.SharedString,
-        CellValue = new CellValue("0")
-    };
-    var sharedStrings = new Dictionary<string, string>
-    {
-        ["0"] = "  Test Shared String  "
-    };
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("Test Shared String")); // Should be trimmed
-}
-
-[Test]
-public void GetCellValue_SharedStringType_InvalidIndex_ReturnsEmptyString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.SharedString,
-        CellValue = new CellValue("999") // Invalid index
-    };
-    var sharedStrings = new Dictionary<string, string>
-    {
-        ["0"] = "Test String"
-    };
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo(string.Empty));
-}
-
-[Test]
-public void GetCellValue_InlineStringType_WithText_ReturnsTextValue()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var inlineString = new InlineString(new Text("  Inline Text Value  "));
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.InlineString,
-        InlineString = inlineString
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("Inline Text Value")); // Should be trimmed
-}
-
-[Test]
-public void GetCellValue_InlineStringType_WithRuns_ReturnsConcatenatedText()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var inlineString = new InlineString(
-        new Run(new Text("Hello ")),
-        new Run(new Text("World")),
-        new Run(new Text("!"))
-    );
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.InlineString,
-        InlineString = inlineString
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("Hello World!")); // Concatenated and trimmed
-}
-
-[Test]
-public void GetCellValue_InlineStringType_WithEmptyRuns_ReturnsEmptyString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var inlineString = new InlineString();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.InlineString,
-        InlineString = inlineString
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo(string.Empty));
-}
-
-[Test]
-public void GetCellValue_InlineStringType_WithNullText_ReturnsEmptyString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var inlineString = new InlineString { Text = null };
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.InlineString,
-        InlineString = inlineString
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo(string.Empty));
-}
-
-[Test]
-public void GetCellValue_StringType_ReturnsCellValue()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.String,
-        CellValue = new CellValue("  String Value  ")
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("String Value")); // Should be trimmed
-}
-
-[Test]
-public void GetCellValue_StringType_NullCellValue_ReturnsEmptyString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.String,
-        CellValue = null
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo(string.Empty));
-}
-
-[Test]
-public void GetCellValue_NoDataType_ReturnsNumericValue()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = null, // No data type means it's likely a number
-        CellValue = new CellValue("  42.5  ")
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("42.5")); // Should be trimmed
-}
-
-[Test]
-public void GetCellValue_BooleanType_ReturnsBooleanAsString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.Boolean,
-        CellValue = new CellValue("1")
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("1")); // Boolean cells return "1" or "0"
-}
-
-[Test]
-public void GetCellValue_DateType_ReturnsDateSerialNumber()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.Date,
-        CellValue = new CellValue("44926") // Excel date serial number
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("44926")); // Returns the serial number as string
-}
-
-[Test]
-public void GetCellValue_ErrorType_ReturnsErrorValue()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.Error,
-        CellValue = new CellValue("#DIV/0!")
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("#DIV/0!"));
-}
-
-[Test]
-public void GetCellValue_WhitespaceOnly_ReturnsEmptyString()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        CellValue = new CellValue("   ")
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo(string.Empty)); // Whitespace should be trimmed to empty
-}
-
-[Test]
-public void GetCellValue_InlineStringWithRunsContainingNullText_HandlesGracefully()
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    var inlineString = new InlineString(
-        new Run(new Text("Start")),
-        new Run(), // Run with null Text
-        new Run(new Text("End"))
-    );
-    var cell = new Cell
-    {
-        CellReference = "A1",
-        DataType = CellValues.InlineString,
-        InlineString = inlineString
-    };
-    var sharedStrings = new Dictionary<string, string>();
-    
-    // Act
-    var result = testService.TestGetCellValue(cell, sharedStrings);
-    
-    // Assert
-    Assert.That(result, Is.EqualTo("StartEnd")); // Should handle null text in runs
-}
-
-[Test]
-[TestCase("A1", 0)]
-[TestCase("B1", 1)]
-[TestCase("Z1", 25)]
-[TestCase("AA1", 26)]
-[TestCase("AB1", 27)]
-[TestCase("AZ1", 51)]
-[TestCase("BA1", 52)]
-[TestCase("ZZ1", 701)]
-[TestCase("AAA1", 702)]
-public void GetColumnIndex_VariousCellReferences_ReturnsCorrectIndex(string cellReference, int expectedColumnIndex)
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    
-    // Act
-    var actualIndex = testService.TestGetColumnIndex(cellReference);
-    
-    // Assert
-    Assert.That(actualIndex, Is.EqualTo(expectedColumnIndex), 
-        $"Cell reference {cellReference} should map to column index {expectedColumnIndex}");
-}
-
-[Test]
-[TestCase("a1", 0)]  // Lowercase
-[TestCase("A10", 0)] // With row number
-[TestCase("AA100", 26)] // Double letter with large row
-[TestCase("ABC999", 730)] // Triple letter
-public void GetColumnIndex_MixedCaseAndNumbers_ReturnsCorrectIndex(string cellReference, int expectedColumnIndex)
-{
-    // Arrange
-    var testService = new TestableExcelReadService<ExcelReadTestModel>();
-    
-    // Act
-    var actualIndex = testService.TestGetColumnIndex(cellReference);
-    
-    // Assert
-    Assert.That(actualIndex, Is.EqualTo(expectedColumnIndex));
-}
-
-// Helper class to test protected methods
-private class TestableExcelReadService<T> : ExcelReadService<T> where T : new()
-{
-    public int TestGetColumnIndex(string cellReference)
-    {
-        return base.GetColumnIndex(cellReference);
+        Assert.Throws<ArgumentNullException>(() =>
+        {
+            var excelFileBuilder = new ExcelFileBuilder(
+                null,
+                _cellWriterMock.Object,
+                _styleManagerMock.Object,
+                _validationManagerMock.Object,
+                new StringBuilderPool(),
+                _propertyNameFormatterMock.Object,
+                _workbookWriterMock.Object,
+                _sensitivityManagerMock.Object);
+        });
     }
-    
-    public string TestGetCellValue(Cell cell, Dictionary<string, string> sharedStrings)
+
+    [Test]
+    public void Constructor_Parameterless_CreatesInstanceWithDefaults()
     {
-        return base.GetCellValue(cell, sharedStrings);
+        var builder = new ExcelFileBuilder();
+        Assert.That(builder, Is.Not.Null);
+    }
+
+    [Test]
+    public void AddSheet_WithValidSheetName_ReturnsSheetBuilder()
+    {
+        const string sheetName = "TestSheet";
+        var sheetBuilder = _builder.AddSheet<TestModel>(sheetName);
+        Assert.That(sheetBuilder, Is.Not.Null);
+    }
+
+    [Test]
+    public void AddSheet_WithNullSheetName_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentNullException>(() => _builder.AddSheet<TestModel>(null));
+    }
+
+    [Test]
+    public void AddSheet_WithEmptySheetName_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => _builder.AddSheet<TestModel>(string.Empty));
+    }
+
+    [Test]
+    public void AddSimpleSheet_WithValidData_AddsSheetConfiguration()
+    {
+        var data = new List<TestModel> { new TestModel { Id = 1, Name = "Test" } };
+        _propertyNameFormatterMock.Setup(x => x.ConvertToFriendlyName(It.IsAny<string>()))
+            .Returns("Test Model");
+
+        var result = _builder.AddSimpleSheet(data, "SimpleSheet");
+
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void AddSimpleSheet_WithNullData_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => _builder.AddSimpleSheet<TestModel>(null));
+    }
+
+    [Test]
+    public void AddSimpleSheet_WithNullSheetName_GeneratesName()
+    {
+        var data = new List<TestModel> { new TestModel() };
+        _propertyNameFormatterMock.Setup(x => x.ConvertToFriendlyName("Test")).Returns("Test");
+
+        var result = _builder.AddSimpleSheet(data);
+
+        Assert.That(result, Is.EqualTo(_builder));
+        _propertyNameFormatterMock.Verify(x => x.ConvertToFriendlyName("Test"), Times.Once);
+    }
+
+    [Test]
+    public void WithSensitivity_NoParameters_SetsDefaultInternal()
+    {
+        var result = _builder.WithSensitivity();
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void WithSensitivity_WithLevel_SetsSpecifiedLevel()
+    {
+        var result = _builder.WithSensitivity(SensitivityLevel.Confidential);
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void WithSensitivity_WithConfiguration_AppliesConfiguration()
+    {
+        var result = _builder.WithSensitivity(config => { config.Level = SensitivityLevel.Public; });
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void WithSensitivity_WithNullConfiguration_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => _builder.WithSensitivity(null));
+    }
+
+    [Test]
+    public void WithFileProperties_ValidConfiguration_AppliesProperties()
+    {
+        var result = _builder.WithFileProperties(props =>
+        {
+            props.Title = "Test Title";
+            props.Subject = "Test Subject";
+            props.Creator = "Test Creator";
+        });
+
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void WithFileProperties_NullConfiguration_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => _builder.WithFileProperties(null));
+    }
+
+    [Test]
+    public void Build_WithSimpleSheet_CreatesExcelFile()
+    {
+        var data = new List<TestModel> { new TestModel { Id = 1, Name = "Test" } };
+        var propertyAccessors = CreateMockPropertyAccessors();
+
+        SetupMocksForBuild(propertyAccessors);
+
+        _builder.AddSimpleSheet(data, "TestSheet");
+
+        var result = _builder.Build();
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result, Is.TypeOf<MemoryStream>());
+        Assert.That(result.Position, Is.EqualTo(0));
+
+        result.Dispose();
+    }
+
+    [Test]
+    public void SheetBuilder_WithData_ConfiguresSheet()
+    {
+        var data = new List<TestModel> { new TestModel { Id = 1, Name = "Test" } };
+
+        var result = _builder
+            .AddSheet<TestModel>("TestSheet")
+            .WithData(data)
+            .Done();
+
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void SheetBuilder_ExcludeProperties_ExcludesSpecifiedProperties()
+    {
+        Expression<Func<TestModel, object>> excludeExpression = x => x.Name;
+
+        var result = _builder
+            .AddSheet<TestModel>("TestSheet")
+            .ExcludeProperties(excludeExpression)
+            .Done();
+
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void SheetBuilder_WithDropdownData_ConfiguresDropdowns()
+    {
+        var dropdownData = new List<ExcelDropdownData>
+        {
+            new ExcelDropdownData
+            {
+                ColumnName = "Status",
+                DataList = new List<object> { "Active", "Inactive" },
+                BindProperties = new List<string> { "Status" },
+            }
+        };
+
+        var result = _builder
+            .AddSheet<TestModel>("TestSheet")
+            .WithDropdownData(dropdownData)
+            .Done();
+
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void SheetBuilder_WithConditionalRules_ConfiguresRules()
+    {
+        var conditionalFactory = new Mock<IExcelConditionalRulesFactory<TestModel>>();
+        conditionalFactory.Setup(x => x.Rules).Returns(new List<ExcelConditionalRule>());
+
+        var result = _builder
+            .AddSheet<TestModel>("TestSheet")
+            .WithConditionalRules(conditionalFactory.Object)
+            .Done();
+
+        Assert.That(result, Is.EqualTo(_builder));
+    }
+
+    [Test]
+    public void Build_WithMultipleSheets_CreatesAllSheets()
+    {
+        var data1 = new List<TestModel> { new TestModel { Id = 1 } };
+        var data2 = new List<TestModel> { new TestModel { Id = 2 } };
+        var propertyAccessors = CreateMockPropertyAccessors();
+
+        SetupMocksForBuild(propertyAccessors);
+
+        _builder
+            .AddSimpleSheet(data1, "Sheet1")
+            .AddSimpleSheet(data2, "Sheet2");
+
+        var result = _builder.Build();
+
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result.Length, Is.GreaterThan(0));
+
+        result.Dispose();
+    }
+
+    private PropertyAccessor[] CreateMockPropertyAccessors()
+    {
+        return new[]
+        {
+            new PropertyAccessor
+            {
+                Property = typeof(TestModel).GetProperty(nameof(TestModel.Id)),
+                ColumnName = "Id",
+                Order = 0,
+                Width = 15,
+                Getter = obj => ((TestModel)obj).Id,
+                PropertyType = typeof(int),
+                UnderlyingType = typeof(int),
+                IsNullable = false,
+                IsReadOnly = false,
+            },
+            new PropertyAccessor
+            {
+                Property = typeof(TestModel).GetProperty(nameof(TestModel.Name)),
+                ColumnName = "Name",
+                Order = 1,
+                Width = 15,
+                Getter = obj => ((TestModel)obj).Name,
+                PropertyType = typeof(string),
+                UnderlyingType = typeof(string),
+                IsNullable = true,
+                IsReadOnly = false,
+            }
+        };
+    }
+
+    private void SetupMocksForBuild(PropertyAccessor[] propertyAccessors)
+    {
+        _cacheManagerMock.Setup(x => x.GetPropertyAccessors<TestModel>(It.IsAny<HashSet<string>>()))
+            .Returns(propertyAccessors);
+
+        _cacheManagerMock.Setup(x => x.GetExcelColumnName(It.IsAny<int>()))
+            .Returns<int>(col => col switch
+            {
+                1 => "A",
+                2 => "B",
+                _ => "C",
+            });
+
+        _cacheManagerMock.Setup(x => x.GetCleanHexColor(It.IsAny<string>()))
+            .Returns<string>(color => color?.Replace("#", ""));
+
+        _styleManagerMock.Setup(x => x.CreateStyles(
+                It.IsAny<WorkbookPart>(),
+                It.IsAny<PropertyAccessor[]>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(new Dictionary<string, uint> { { "test", 1 } });
+
+        _propertyNameFormatterMock.Setup(x => x.ConvertToFriendlyName(It.IsAny<string>()))
+            .Returns<string>(name => name);
+    }
+
+    public class TestModel
+    {
+        [ExcelColumn("Id", 0)]
+        public int Id { get; set; }
+
+        [ExcelColumn("Name", 1)]
+        public string Name { get; set; }
+
+        [ExcelColumn("Status", 2)]
+        public string Status { get; set; }
+
+        [ExcelColumn("Date", 3)]
+        public DateTime Date { get; set; }
+
+        [ExcelColumn("Amount", 4)]
+        public decimal Amount { get; set; }
     }
 }
