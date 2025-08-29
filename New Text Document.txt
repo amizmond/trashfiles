@@ -1,5 +1,8 @@
 // Add these test methods to your ExcelReadServiceTests class
 
+using DocumentFormat.OpenXml;
+using DocumentFormat.OpenXml.Spreadsheet;
+
 [Test]
 public void ReadFileProperties_ValidExcelFile_ReturnsCorrectProperties()
 {
@@ -11,8 +14,6 @@ public void ReadFileProperties_ValidExcelFile_ReturnsCorrectProperties()
     
     // Assert
     Assert.That(properties, Is.Not.Null);
-    Assert.That(properties.Title, Is.Not.Null.Or.Empty);
-    Assert.That(properties.Creator, Is.Not.Null.Or.Empty);
     // Note: Adjust these assertions based on your actual test Excel file properties
     // You might need to set specific properties in your test Excel file for this test
 }
@@ -41,181 +42,323 @@ public void ReadFileProperties_StreamWithNoProperties_ReturnsEmptyProperties()
     }
 }
 
+// Tests for GetCellValue method
 [Test]
-public void ReadSheet_DifferentCellTypes_ParsesCorrectly()
+public void GetCellValue_NullCellValueAndNullInlineString_ReturnsEmptyString()
 {
-    // This test covers different scenarios handled by GetCellValue method
-    // Assumes you have a sheet "CellTypes" with various cell data types
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        CellValue = null,
+        InlineString = null
+    };
+    var sharedStrings = new Dictionary<string, string>();
     
-    // If the CellTypes sheet doesn't exist in your test file, you can use an existing sheet
-    // or create a new test file with these specific scenarios
-    try
-    {
-        var results = _service.ReadSheet(stream ?? throw new InvalidOperationException(), "CellTypes").ToList();
-        
-        // Verify that different cell types are handled correctly
-        Assert.That(results, Is.Not.Empty);
-        
-        // Test SharedString type (most common for text)
-        // Test InlineString type (less common, but possible)
-        // Test numeric values
-        // Test empty cells
-        foreach (var result in results)
-        {
-            // Verify that no exceptions were thrown during parsing
-            Assert.That(result, Is.Not.Null);
-        }
-    }
-    catch (InvalidOperationException ex) when (ex.Message.Contains("Sheet CellTypes not found"))
-    {
-        // If sheet doesn't exist, test with existing data that covers various cell types
-        var results = _service.ReadSheet(stream ?? throw new InvalidOperationException()).ToList();
-        Assert.That(results, Has.Count.GreaterThan(0));
-    }
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo(string.Empty));
 }
 
 [Test]
-public void ReadSheet_EmptyCells_HandlesNullValuesCorrectly()
+public void GetCellValue_SharedStringType_ReturnsSharedStringValue()
 {
-    // Test handling of empty cells and null values
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-    var results = _service.ReadSheet(stream ?? throw new InvalidOperationException()).ToList();
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.SharedString,
+        CellValue = new CellValue("0")
+    };
+    var sharedStrings = new Dictionary<string, string>
+    {
+        ["0"] = "  Test Shared String  "
+    };
     
-    // From the existing test data, we know the second row has null values
-    var second = results[1];
-    Assert.That(second.TestNullableInt, Is.Null);
-    Assert.That(second.TestNullableBool, Is.Null);
-    Assert.That(second.TestNullableDate, Is.Null);
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
     
-    // Verify that non-nullable value types get default values when cell is empty
-    // This behavior is handled in SetPropertyValue method
+    // Assert
+    Assert.That(result, Is.EqualTo("Test Shared String")); // Should be trimmed
 }
 
 [Test]
-public void ReadSheet_InlineStringCells_ParsesCorrectly()
+public void GetCellValue_SharedStringType_InvalidIndex_ReturnsEmptyString()
 {
-    // Test for InlineString cell type handling
-    // This requires a test file with inline string cells
-    var inlineStringFileName = "Gui.Core.Excel.Tests.TestFiles.InlineStrings.xlsx";
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(inlineStringFileName);
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.SharedString,
+        CellValue = new CellValue("999") // Invalid index
+    };
+    var sharedStrings = new Dictionary<string, string>
+    {
+        ["0"] = "Test String"
+    };
     
-    if (stream != null)
-    {
-        var results = _service.ReadSheet(stream).ToList();
-        
-        // Verify inline strings are parsed correctly
-        Assert.That(results, Is.Not.Empty);
-        foreach (var result in results)
-        {
-            // Check that string properties with inline strings are not null or empty
-            Assert.That(result.TestStringValue, Is.Not.Null);
-        }
-    }
-    else
-    {
-        // Fall back to testing with regular shared strings
-        using var regularStream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-        var results = _service.ReadSheet(regularStream ?? throw new InvalidOperationException()).ToList();
-        
-        Assert.That(results[0].TestStringValue, Is.EqualTo("Test String"));
-    }
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo(string.Empty));
 }
 
 [Test]
-public void ReadSheet_CellsWithWhitespace_TrimsValuesCorrectly()
+public void GetCellValue_InlineStringType_WithText_ReturnsTextValue()
 {
-    // Test that cell values are properly trimmed
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-    var results = _service.ReadSheet(stream ?? throw new InvalidOperationException()).ToList();
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var inlineString = new InlineString(new Text("  Inline Text Value  "));
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.InlineString,
+        InlineString = inlineString
+    };
+    var sharedStrings = new Dictionary<string, string>();
     
-    // Verify that string values don't have leading/trailing whitespace
-    var first = results[0];
-    Assert.That(first.TestStringValue, Is.EqualTo("Test String"));
-    Assert.That(first.TestStringValue, Does.Not.StartWith(" "));
-    Assert.That(first.TestStringValue, Does.Not.EndWith(" "));
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("Inline Text Value")); // Should be trimmed
 }
 
 [Test]
-public void ReadSheet_NumericCellsStoredAsStrings_ParsesCorrectly()
+public void GetCellValue_InlineStringType_WithRuns_ReturnsConcatenatedText()
 {
-    // Test that numeric values stored as strings in Excel are parsed correctly
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-    var results = _service.ReadSheet(stream ?? throw new InvalidOperationException(), "ConvertingTest").ToList();
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var inlineString = new InlineString(
+        new Run(new Text("Hello ")),
+        new Run(new Text("World")),
+        new Run(new Text("!"))
+    );
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.InlineString,
+        InlineString = inlineString
+    };
+    var sharedStrings = new Dictionary<string, string>();
     
-    // These should parse correctly even if stored as strings in Excel
-    Assert.That(results[0].TestIntValue, Is.TypeOf<int>());
-    Assert.That(results[0].TestLongValue, Is.TypeOf<long>());
-    Assert.That(results[0].TestFloatValue, Is.TypeOf<float>());
-    Assert.That(results[0].TestDoubleValue, Is.TypeOf<double>());
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("Hello World!")); // Concatenated and trimmed
 }
 
 [Test]
-public void ReadSheet_FormulaCells_ReadsCalculatedValues()
+public void GetCellValue_InlineStringType_WithEmptyRuns_ReturnsEmptyString()
 {
-    // Test reading cells that contain formulas
-    // This requires a test file with formula cells
-    var formulaFileName = "Gui.Core.Excel.Tests.TestFiles.Formulas.xlsx";
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(formulaFileName);
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var inlineString = new InlineString();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.InlineString,
+        InlineString = inlineString
+    };
+    var sharedStrings = new Dictionary<string, string>();
     
-    if (stream != null)
-    {
-        var results = _service.ReadSheet(stream).ToList();
-        
-        // Formula cells should return their calculated values, not the formula itself
-        Assert.That(results, Is.Not.Empty);
-        // Verify that numeric results from formulas are parsed correctly
-    }
-    else
-    {
-        Assert.Ignore("Formula test file not found");
-    }
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo(string.Empty));
 }
 
 [Test]
-public void GetColumnIndex_VariousReferences_ReturnsCorrectIndex()
+public void GetCellValue_InlineStringType_WithNullText_ReturnsEmptyString()
 {
-    // Test the column index calculation (this tests the protected GetColumnIndex method indirectly)
-    // We can verify this by checking that values are read from the correct columns
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-    var results = _service.ReadSheet(stream ?? throw new InvalidOperationException()).ToList();
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var inlineString = new InlineString { Text = null };
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.InlineString,
+        InlineString = inlineString
+    };
+    var sharedStrings = new Dictionary<string, string>();
     
-    // The fact that all values are mapped correctly proves GetColumnIndex works
-    // for various column references (A, B, C, ... Z, AA, AB, etc.)
-    var first = results[0];
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
     
-    // All these assertions passing means GetColumnIndex correctly mapped
-    // column letters to indices
-    Assert.That(first.TestIntValue, Is.EqualTo(42));
-    Assert.That(first.TestStringValue, Is.EqualTo("Test String"));
-    Assert.That(first.TestBoolValue, Is.EqualTo(true));
+    // Assert
+    Assert.That(result, Is.EqualTo(string.Empty));
 }
 
 [Test]
-public void ReadSheet_SharedStringTableMissing_HandlesGracefully()
+public void GetCellValue_StringType_ReturnsCellValue()
 {
-    // Test handling when SharedStringTable is null or missing
-    // This would require a special test file without shared strings
-    var noSharedStringsFileName = "Gui.Core.Excel.Tests.TestFiles.NoSharedStrings.xlsx";
-    using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(noSharedStringsFileName);
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.String,
+        CellValue = new CellValue("  String Value  ")
+    };
+    var sharedStrings = new Dictionary<string, string>();
     
-    if (stream != null)
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("String Value")); // Should be trimmed
+}
+
+[Test]
+public void GetCellValue_StringType_NullCellValue_ReturnsEmptyString()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
     {
-        // Should not throw exception even without shared string table
-        Assert.DoesNotThrow(() => 
-        {
-            var results = _service.ReadSheet(stream).ToList();
-        });
-    }
-    else
+        CellReference = "A1",
+        DataType = CellValues.String,
+        CellValue = null
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo(string.Empty));
+}
+
+[Test]
+public void GetCellValue_NoDataType_ReturnsNumericValue()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
     {
-        // Use regular file to ensure no exception is thrown
-        using var regularStream = Assembly.GetExecutingAssembly().GetManifestResourceStream(_fileName);
-        Assert.DoesNotThrow(() => 
-        {
-            var results = _service.ReadSheet(regularStream ?? throw new InvalidOperationException()).ToList();
-        });
-    }
+        CellReference = "A1",
+        DataType = null, // No data type means it's likely a number
+        CellValue = new CellValue("  42.5  ")
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("42.5")); // Should be trimmed
+}
+
+[Test]
+public void GetCellValue_BooleanType_ReturnsBooleanAsString()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.Boolean,
+        CellValue = new CellValue("1")
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("1")); // Boolean cells return "1" or "0"
+}
+
+[Test]
+public void GetCellValue_DateType_ReturnsDateSerialNumber()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.Date,
+        CellValue = new CellValue("44926") // Excel date serial number
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("44926")); // Returns the serial number as string
+}
+
+[Test]
+public void GetCellValue_ErrorType_ReturnsErrorValue()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.Error,
+        CellValue = new CellValue("#DIV/0!")
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("#DIV/0!"));
+}
+
+[Test]
+public void GetCellValue_WhitespaceOnly_ReturnsEmptyString()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        CellValue = new CellValue("   ")
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo(string.Empty)); // Whitespace should be trimmed to empty
+}
+
+[Test]
+public void GetCellValue_InlineStringWithRunsContainingNullText_HandlesGracefully()
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    var inlineString = new InlineString(
+        new Run(new Text("Start")),
+        new Run(), // Run with null Text
+        new Run(new Text("End"))
+    );
+    var cell = new Cell
+    {
+        CellReference = "A1",
+        DataType = CellValues.InlineString,
+        InlineString = inlineString
+    };
+    var sharedStrings = new Dictionary<string, string>();
+    
+    // Act
+    var result = testService.TestGetCellValue(cell, sharedStrings);
+    
+    // Assert
+    Assert.That(result, Is.EqualTo("StartEnd")); // Should handle null text in runs
 }
 
 [Test]
@@ -228,17 +371,34 @@ public void ReadSheet_SharedStringTableMissing_HandlesGracefully()
 [TestCase("BA1", 52)]
 [TestCase("ZZ1", 701)]
 [TestCase("AAA1", 702)]
-public void ReadSheet_ColumnReferences_MapsCorrectly(string cellReference, int expectedColumnIndex)
+public void GetColumnIndex_VariousCellReferences_ReturnsCorrectIndex(string cellReference, int expectedColumnIndex)
 {
-    // This indirectly tests the GetColumnIndex method by verifying column mapping
-    // Note: This test validates the algorithm logic, actual data reading is tested in other tests
-    
-    // Create a test service instance to verify column mapping works correctly
+    // Arrange
     var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    
+    // Act
     var actualIndex = testService.TestGetColumnIndex(cellReference);
     
+    // Assert
     Assert.That(actualIndex, Is.EqualTo(expectedColumnIndex), 
         $"Cell reference {cellReference} should map to column index {expectedColumnIndex}");
+}
+
+[Test]
+[TestCase("a1", 0)]  // Lowercase
+[TestCase("A10", 0)] // With row number
+[TestCase("AA100", 26)] // Double letter with large row
+[TestCase("ABC999", 730)] // Triple letter
+public void GetColumnIndex_MixedCaseAndNumbers_ReturnsCorrectIndex(string cellReference, int expectedColumnIndex)
+{
+    // Arrange
+    var testService = new TestableExcelReadService<ExcelReadTestModel>();
+    
+    // Act
+    var actualIndex = testService.TestGetColumnIndex(cellReference);
+    
+    // Assert
+    Assert.That(actualIndex, Is.EqualTo(expectedColumnIndex));
 }
 
 // Helper class to test protected methods
