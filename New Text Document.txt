@@ -1,359 +1,837 @@
+using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
-using DynamicExcel.Write;
-using DynamicExcel.Write.Conditional;
-using DynamicExcel.Write.Helpers;
-using DynamicExcel.Write.Models;
-using DynamicExcel.Write.Sensitivity;
+using DocumentFormat.OpenXml.Spreadsheet;
+using DynamicExcel.Exclusions;
 using Moq;
-using System.Linq.Expressions;
 
 namespace DynamicExcel.Tests;
 
 [TestFixture]
-public class ExcelFileBuilderTests
+public class ExcelRowWriterTests
 {
-    private Mock<IExcelCacheManager> _cacheManagerMock;
-    private Mock<IExcelCellWriter> _cellWriterMock;
-    private Mock<IExcelStyleManager> _styleManagerMock;
-    private Mock<IExcelValidationManager> _validationManagerMock;
-    private StringBuilderPool _stringBuilderPool;
-    private Mock<IPropertyNameFormatter> _propertyNameFormatterMock;
-    private Mock<IExcelWorkbookWriter> _workbookWriterMock;
-    private Mock<IExcelSensitivityManager> _sensitivityManagerMock;
-    private ExcelFileBuilder _builder;
+    private const uint DefaultStartRow = 1;
+    private const uint DefaultHeaderStyle = 5;
+    private const uint DefaultBorderOnlyStyle = 6;
+    private const uint DefaultBorderNumberStyle = 7;
+    private const int Group1Count = 100;
+    private const int Group2Count = 200;
+    private const int MissingCount = 50;
+    private const int ExtraCount = 30;
+    private const int ExtraCount2 = 25;
+    private const int Exclusion1Count = 10;
+    private const int Exclusion2Count = 20;
+    private const uint EmptyRowIndex = 5;
+
+    private ExcelRowWriter _rowWriter;
+    private MemoryStream _stream;
+    private SpreadsheetDocument _document;
+    private WorksheetPart _worksheetPart;
 
     [SetUp]
     public void Setup()
     {
-        _cacheManagerMock = new Mock<IExcelCacheManager>();
-        _cellWriterMock = new Mock<IExcelCellWriter>();
-        _styleManagerMock = new Mock<IExcelStyleManager>();
-        _validationManagerMock = new Mock<IExcelValidationManager>();
-        _stringBuilderPool = new StringBuilderPool();
-        _propertyNameFormatterMock = new Mock<IPropertyNameFormatter>();
-        _workbookWriterMock = new Mock<IExcelWorkbookWriter>();
-        _sensitivityManagerMock = new Mock<IExcelSensitivityManager>();
+        _rowWriter = new ExcelRowWriter();
+        _stream = new MemoryStream();
+        _document = SpreadsheetDocument.Create(_stream, SpreadsheetDocumentType.Workbook);
+        var workbookPart = _document.AddWorkbookPart();
+        workbookPart.Workbook = new Workbook();
+        _worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+    }
 
-        _builder = new ExcelFileBuilder(
-            _cacheManagerMock.Object,
-            _cellWriterMock.Object,
-            _styleManagerMock.Object,
-            _validationManagerMock.Object,
-            _stringBuilderPool,
-            _propertyNameFormatterMock.Object,
-            _workbookWriterMock.Object,
-            _sensitivityManagerMock.Object);
+    [TearDown]
+    public void TearDown()
+    {
+        _document?.Dispose();
+        _stream?.Dispose();
     }
 
     [Test]
-    public void Constructor_WithAllDependencies_CreatesInstance()
+    public void WriteInfoSection_WithValidInfo_WritesAllRows()
     {
-        var builder = new ExcelFileBuilder(
-            _cacheManagerMock.Object,
-            _cellWriterMock.Object,
-            _styleManagerMock.Object,
-            _validationManagerMock.Object,
-            _stringBuilderPool,
-            _propertyNameFormatterMock.Object,
-            _workbookWriterMock.Object,
-            _sensitivityManagerMock.Object);
+        var info = CreateValidSummaryInfo();
 
-        Assert.That(builder, Is.Not.Null);
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        _rowWriter.WriteInfoSection(writer, info, DefaultStartRow, DefaultHeaderStyle);
+
+        Assert.That(() => {
+            writer.WriteEndElement();
+            writer.WriteEndElement();
+            writer.Close();
+        }, Throws.Nothing);
     }
 
     [Test]
-    public void Constructor_WithNullCacheManager_ThrowsArgumentNullException()
+    public void WriteInfoSection_WithNullInfo_WritesEmptyValues()
     {
-        Assert.Throws<ArgumentNullException>(() =>
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        Assert.That(() => _rowWriter.WriteInfoSection(writer, null, DefaultStartRow, DefaultHeaderStyle), Throws.Nothing);
+    }
+
+    [Test]
+    public void WriteSummarySection_WithResults_WritesHeaderAndDataRows()
+    {
+        var results = CreateSummaryResults();
+        var styles = CreateDefaultStyles();
+
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        Assert.That(() => _rowWriter.WriteSummarySection(writer, results, DefaultStartRow, styles), Throws.Nothing);
+    }
+
+    [Test]
+    public void WriteSummarySection_WithEmptyResults_WritesOnlyHeader()
+    {
+        var results = new List<SummaryResult>();
+        var styles = CreateDefaultStyles();
+
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        Assert.That(() => _rowWriter.WriteSummarySection(writer, results, DefaultStartRow, styles), Throws.Nothing);
+    }
+
+    [Test]
+    public void WriteDifferenceSection_WithValidDifference_WritesThreeRows()
+    {
+        var difference = new Difference { Missing = MissingCount, Extra = ExtraCount };
+        var styles = CreateDefaultStyles();
+
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        Assert.That(() => _rowWriter.WriteDifferenceSection(writer, difference, DefaultStartRow, styles), Throws.Nothing);
+    }
+
+    [Test]
+    public void WriteExclusionSection_WithReasons_WritesAllRows()
+    {
+        var reasons = CreateExclusionReasons();
+        var styles = CreateDefaultStyles();
+
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        Assert.That(() => _rowWriter.WriteExclusionSection(writer, reasons, DefaultStartRow, styles), Throws.Nothing);
+    }
+
+    [Test]
+    public void WriteEmptyRow_WritesEmptyRow()
+    {
+        using var writer = OpenXmlWriter.Create(_worksheetPart);
+        writer.WriteStartElement(new Worksheet());
+        writer.WriteStartElement(new SheetData());
+
+        Assert.That(() => _rowWriter.WriteEmptyRow(writer, EmptyRowIndex), Throws.Nothing);
+    }
+
+    private static SummaryInfo CreateValidSummaryInfo()
+    {
+        return new SummaryInfo
         {
-            var excelFileBuilder = new ExcelFileBuilder(
-                null,
-                _cellWriterMock.Object,
-                _styleManagerMock.Object,
-                _validationManagerMock.Object,
-                new StringBuilderPool(),
-                _propertyNameFormatterMock.Object,
-                _workbookWriterMock.Object,
-                _sensitivityManagerMock.Object);
-        });
+            Regulator = "TestRegulator",
+            EagleContextId = "Eagle123",
+            AxisCcrBatchId = "CCR456",
+            AxisParentBatchId = "Parent789",
+            AxisBatchId = "Batch012",
+            ReviewedBy = "John Doe"
+        };
     }
 
-    [Test]
-    public void Constructor_Parameterless_CreatesInstanceWithDefaults()
+    private static List<SummaryResult> CreateSummaryResults()
     {
-        var builder = new ExcelFileBuilder();
-        Assert.That(builder, Is.Not.Null);
-    }
-
-    [Test]
-    public void AddSheet_WithValidSheetName_ReturnsSheetBuilder()
-    {
-        const string sheetName = "TestSheet";
-        var sheetBuilder = _builder.AddSheet<TestModel>(sheetName);
-        Assert.That(sheetBuilder, Is.Not.Null);
-    }
-
-    [Test]
-    public void AddSheet_WithNullSheetName_ThrowsArgumentException()
-    {
-        Assert.Throws<ArgumentNullException>(() => _builder.AddSheet<TestModel>(null));
-    }
-
-    [Test]
-    public void AddSheet_WithEmptySheetName_ThrowsArgumentException()
-    {
-        Assert.Throws<ArgumentException>(() => _builder.AddSheet<TestModel>(string.Empty));
-    }
-
-    [Test]
-    public void AddSimpleSheet_WithValidData_AddsSheetConfiguration()
-    {
-        var data = new List<TestModel> { new TestModel { Id = 1, Name = "Test" } };
-        _propertyNameFormatterMock.Setup(x => x.ConvertToFriendlyName(It.IsAny<string>()))
-            .Returns("Test Model");
-
-        var result = _builder.AddSimpleSheet(data, "SimpleSheet");
-
-        Assert.That(result, Is.EqualTo(_builder));
-    }
-
-    [Test]
-    public void AddSimpleSheet_WithNullData_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() => _builder.AddSimpleSheet<TestModel>(null));
-    }
-
-    [Test]
-    public void AddSimpleSheet_WithNullSheetName_GeneratesName()
-    {
-        var data = new List<TestModel> { new TestModel() };
-        _propertyNameFormatterMock.Setup(x => x.ConvertToFriendlyName("Test")).Returns("Test");
-
-        var result = _builder.AddSimpleSheet(data);
-
-        Assert.That(result, Is.EqualTo(_builder));
-        _propertyNameFormatterMock.Verify(x => x.ConvertToFriendlyName("Test"), Times.Once);
-    }
-
-    [Test]
-    public void WithSensitivity_NoParameters_SetsDefaultInternal()
-    {
-        var result = _builder.WithSensitivity();
-        Assert.That(result, Is.EqualTo(_builder));
-    }
-
-    [Test]
-    public void WithSensitivity_WithLevel_SetsSpecifiedLevel()
-    {
-        var result = _builder.WithSensitivity(SensitivityLevel.Confidential);
-        Assert.That(result, Is.EqualTo(_builder));
-    }
-
-    [Test]
-    public void WithSensitivity_WithConfiguration_AppliesConfiguration()
-    {
-        var result = _builder.WithSensitivity(config => { config.Level = SensitivityLevel.Public; });
-        Assert.That(result, Is.EqualTo(_builder));
-    }
-
-    [Test]
-    public void WithSensitivity_WithNullConfiguration_ThrowsArgumentNullException()
-    {
-        Assert.Throws<ArgumentNullException>(() => _builder.WithSensitivity(null));
-    }
-
-    [Test]
-    public void WithFileProperties_ValidConfiguration_AppliesProperties()
-    {
-        var result = _builder.WithFileProperties(props =>
+        return new List<SummaryResult>
         {
-            props.Title = "Test Title";
-            props.Subject = "Test Subject";
-            props.Creator = "Test Creator";
-        });
+            new SummaryResult { Group = "Group1", Count = Group1Count },
+            new SummaryResult { Group = "Group2", Count = Group2Count }
+        };
+    }
 
-        Assert.That(result, Is.EqualTo(_builder));
+    private static List<ExclusionReasons> CreateExclusionReasons()
+    {
+        return new List<ExclusionReasons>
+        {
+            new ExclusionReasons { Reason = "Reason1", ExclusionId = "EX001", Count = Exclusion1Count },
+            new ExclusionReasons { Reason = "Reason2", ExclusionId = "EX002", Count = Exclusion2Count }
+        };
+    }
+
+    private static ExcelStyleIndices CreateDefaultStyles()
+    {
+        return new ExcelStyleIndices
+        {
+            HeaderStyle = DefaultHeaderStyle,
+            BorderOnlyStyle = DefaultBorderOnlyStyle,
+            BorderNumberStyle = DefaultBorderNumberStyle
+        };
+    }
+}
+
+[TestFixture]
+public class ExcelStyleManagerTests
+{
+    private const uint DefaultStyleIndex = 0;
+
+    private ExcelStyleManager _styleManager;
+    private SpreadsheetDocument _document;
+    private MemoryStream _stream;
+    private WorkbookPart _workbookPart;
+
+    [SetUp]
+    public void Setup()
+    {
+        _styleManager = new ExcelStyleManager();
+        _stream = new MemoryStream();
+        _document = SpreadsheetDocument.Create(_stream, SpreadsheetDocumentType.Workbook);
+        _workbookPart = _document.AddWorkbookPart();
+        _workbookPart.Workbook = new Workbook();
+        _workbookPart.Workbook.AppendChild(new Sheets());
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        _document?.Dispose();
+        _stream?.Dispose();
     }
 
     [Test]
-    public void WithFileProperties_NullConfiguration_ThrowsArgumentNullException()
+    public void InitializeStyles_CreatesStylesPart_WhenNotExists()
     {
-        Assert.Throws<ArgumentNullException>(() => _builder.WithFileProperties(null));
+        var result = _styleManager.InitializeStyles(_workbookPart);
+
+        Assert.That(_workbookPart.WorkbookStylesPart, Is.Not.Null);
+        Assert.That(result, Is.Not.Null);
+        Assert.That(result.HeaderStyle, Is.GreaterThanOrEqualTo(DefaultStyleIndex));
+        Assert.That(result.BorderOnlyStyle, Is.GreaterThanOrEqualTo(DefaultStyleIndex));
+        Assert.That(result.BorderNumberStyle, Is.GreaterThanOrEqualTo(DefaultStyleIndex));
     }
 
     [Test]
-    public void Build_WithSimpleSheet_CreatesExcelFile()
+    public void InitializeStyles_UsesExistingStylesPart_WhenExists()
     {
-        var data = new List<TestModel> { new TestModel { Id = 1, Name = "Test" } };
-        var propertyAccessors = CreateMockPropertyAccessors();
+        var stylesPart = _workbookPart.AddNewPart<WorkbookStylesPart>();
+        stylesPart.Stylesheet = CreateCompleteStylesheet();
 
-        SetupMocksForBuild(propertyAccessors);
-
-        _builder.AddSimpleSheet(data, "TestSheet");
-
-        var result = _builder.Build();
+        var result = _styleManager.InitializeStyles(_workbookPart);
 
         Assert.That(result, Is.Not.Null);
-        Assert.That(result, Is.TypeOf<MemoryStream>());
-        Assert.That(result.Position, Is.EqualTo(0));
-
-        result.Dispose();
+        Assert.That(stylesPart.Stylesheet.Fonts, Is.Not.Null);
+        Assert.That(stylesPart.Stylesheet.Fills, Is.Not.Null);
+        Assert.That(stylesPart.Stylesheet.Borders, Is.Not.Null);
+        Assert.That(stylesPart.Stylesheet.CellFormats, Is.Not.Null);
     }
 
     [Test]
-    public void SheetBuilder_WithData_ConfiguresSheet()
+    public void InitializeStyles_PreservesExistingStyles()
     {
-        var data = new List<TestModel> { new TestModel { Id = 1, Name = "Test" } };
+        var stylesPart = _workbookPart.AddNewPart<WorkbookStylesPart>();
+        stylesPart.Stylesheet = CreateCompleteStylesheet();
 
-        var result = _builder
-            .AddSheet<TestModel>("TestSheet")
-            .WithData(data)
-            .Done();
+        var originalFontCount = stylesPart.Stylesheet.Fonts.Count();
+        var originalFillCount = stylesPart.Stylesheet.Fills.Count();
+        var originalBorderCount = stylesPart.Stylesheet.Borders.Count();
+        var originalFormatCount = stylesPart.Stylesheet.CellFormats.Count();
 
-        Assert.That(result, Is.EqualTo(_builder));
+        _styleManager.InitializeStyles(_workbookPart);
+
+        Assert.That(stylesPart.Stylesheet.Fonts.Count(), Is.GreaterThanOrEqualTo(originalFontCount));
+        Assert.That(stylesPart.Stylesheet.Fills.Count(), Is.GreaterThanOrEqualTo(originalFillCount));
+        Assert.That(stylesPart.Stylesheet.Borders.Count(), Is.GreaterThanOrEqualTo(originalBorderCount));
+        Assert.That(stylesPart.Stylesheet.CellFormats.Count(), Is.GreaterThanOrEqualTo(originalFormatCount));
     }
 
-    [Test]
-    public void SheetBuilder_ExcludeProperties_ExcludesSpecifiedProperties()
+    private static Stylesheet CreateCompleteStylesheet()
     {
-        Expression<Func<TestModel, object>> excludeExpression = x => x.Name;
-
-        var result = _builder
-            .AddSheet<TestModel>("TestSheet")
-            .ExcludeProperties(excludeExpression)
-            .Done();
-
-        Assert.That(result, Is.EqualTo(_builder));
-    }
-
-    [Test]
-    public void SheetBuilder_WithDropdownData_ConfiguresDropdowns()
-    {
-        var dropdownData = new List<ExcelDropdownData>
+        return new Stylesheet
         {
-            new ExcelDropdownData
+            Fonts = new Fonts(
+                new Font(
+                    new FontSize { Val = 11 },
+                    new Color { Theme = 1 }
+                )
+            )
+            { Count = 1 },
+            Fills = new Fills(
+                new Fill(new PatternFill { PatternType = PatternValues.None }),
+                new Fill(new PatternFill { PatternType = PatternValues.Gray125 })
+            )
+            { Count = 2 },
+            Borders = new Borders(
+                new Border(
+                    new LeftBorder(),
+                    new RightBorder(),
+                    new TopBorder(),
+                    new BottomBorder(),
+                    new DiagonalBorder()
+                )
+            )
+            { Count = 1 },
+            CellFormats = new CellFormats(
+                new CellFormat
+                {
+                    NumberFormatId = 0,
+                    FontId = 0,
+                    FillId = 0,
+                    BorderId = 0,
+                    FormatId = 0
+                }
+            )
+            { Count = 1 },
+            CellStyles = new CellStyles(
+                new CellStyle { Name = "Normal", FormatId = 0, BuiltinId = 0 }
+            )
+            { Count = 1 },
+            DifferentialFormats = new DifferentialFormats { Count = 0 },
+            TableStyles = new TableStyles
             {
-                ColumnName = "Status",
-                DataList = new List<object> { "Active", "Inactive" },
-                BindProperties = new List<string> { "Status" },
+                Count = 0,
+                DefaultTableStyle = "TableStyleMedium2",
+                DefaultPivotStyle = "PivotStyleLight16"
             }
         };
+    }
+}
 
-        var result = _builder
-            .AddSheet<TestModel>("TestSheet")
-            .WithDropdownData(dropdownData)
-            .Done();
+[TestFixture]
+public class ExcelWorksheetBuilderTests
+{
+    private const uint InfoStartRow = 1;
+    private const uint SummaryStartRow = 8;
+    private const uint DefaultStyleIndex = 1;
+    private const uint BorderOnlyStyleIndex = 2;
+    private const uint BorderNumberStyleIndex = 3;
+    private const int ExpectedEmptyRowCalls = 3;
 
-        Assert.That(result, Is.EqualTo(_builder));
+    private ExcelWorksheetBuilder _worksheetBuilder;
+    private Mock<IExcelRowWriter> _mockRowWriter;
+    private SpreadsheetDocument _document;
+    private MemoryStream _stream;
+    private WorksheetPart _worksheetPart;
+
+    [SetUp]
+    public void Setup()
+    {
+        _mockRowWriter = new Mock<IExcelRowWriter>();
+        _worksheetBuilder = new ExcelWorksheetBuilder(_mockRowWriter.Object);
+
+        _stream = new MemoryStream();
+        _document = SpreadsheetDocument.Create(_stream, SpreadsheetDocumentType.Workbook);
+        var workbookPart = _document.AddWorkbookPart();
+        workbookPart.Workbook = new Workbook();
+        _worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        _document?.Dispose();
+        _stream?.Dispose();
     }
 
     [Test]
-    public void SheetBuilder_WithConditionalRules_ConfiguresRules()
+    public void BuildSummaryWorksheet_CallsAllRowWriterMethods()
     {
-        var conditionalFactory = new Mock<IExcelConditionalRulesFactory<TestModel>>();
-        conditionalFactory.Setup(x => x.Rules).Returns(new List<ExcelConditionalRule>());
+        var data = CreateValidSummaryData();
+        var styles = CreateTestStyles();
 
-        var result = _builder
-            .AddSheet<TestModel>("TestSheet")
-            .WithConditionalRules(conditionalFactory.Object)
-            .Done();
+        _worksheetBuilder.BuildSummaryWorksheet(_worksheetPart, data, styles);
 
-        Assert.That(result, Is.EqualTo(_builder));
+        _mockRowWriter.Verify(x => x.WriteInfoSection(It.IsAny<OpenXmlWriter>(), data.Info, InfoStartRow, styles.HeaderStyle), Times.Once);
+        _mockRowWriter.Verify(x => x.WriteSummarySection(It.IsAny<OpenXmlWriter>(), data.Results, SummaryStartRow, styles), Times.Once);
+        _mockRowWriter.Verify(x => x.WriteDifferenceSection(It.IsAny<OpenXmlWriter>(), data.Difference, It.IsAny<uint>(), styles), Times.Once);
+        _mockRowWriter.Verify(x => x.WriteExclusionSection(It.IsAny<OpenXmlWriter>(), data.ExclusionReasons, It.IsAny<uint>(), styles), Times.Once);
+        _mockRowWriter.Verify(x => x.WriteEmptyRow(It.IsAny<OpenXmlWriter>(), It.IsAny<uint>()), Times.Exactly(ExpectedEmptyRowCalls));
     }
 
     [Test]
-    public void Build_WithMultipleSheets_CreatesAllSheets()
+    public void BuildSummaryWorksheet_HandlesNullData()
     {
-        var data1 = new List<TestModel> { new TestModel { Id = 1 } };
-        var data2 = new List<TestModel> { new TestModel { Id = 2 } };
-        var propertyAccessors = CreateMockPropertyAccessors();
-
-        SetupMocksForBuild(propertyAccessors);
-
-        _builder
-            .AddSimpleSheet(data1, "Sheet1")
-            .AddSimpleSheet(data2, "Sheet2");
-
-        var result = _builder.Build();
-
-        Assert.That(result, Is.Not.Null);
-        Assert.That(result.Length, Is.GreaterThan(0));
-
-        result.Dispose();
-    }
-
-    private PropertyAccessor[] CreateMockPropertyAccessors()
-    {
-        return new[]
+        var data = new SummaryData
         {
-            new PropertyAccessor
+            Info = null,
+            Results = null,
+            Difference = null,
+            ExclusionReasons = null
+        };
+        var styles = CreateTestStyles();
+
+        Assert.That(() => _worksheetBuilder.BuildSummaryWorksheet(_worksheetPart, data, styles), Throws.Nothing);
+    }
+
+    private static SummaryData CreateValidSummaryData()
+    {
+        return new SummaryData
+        {
+            Info = new SummaryInfo { Regulator = "Test" },
+            Results = new List<SummaryResult>
             {
-                Property = typeof(TestModel).GetProperty(nameof(TestModel.Id)),
-                ColumnName = "Id",
-                Order = 0,
-                Width = 15,
-                Getter = obj => ((TestModel)obj).Id,
-                PropertyType = typeof(int),
-                UnderlyingType = typeof(int),
-                IsNullable = false,
-                IsReadOnly = false,
+                new SummaryResult { Group = "Group1", Count = 100 }
             },
-            new PropertyAccessor
+            Difference = new Difference { Missing = 10, Extra = 5 },
+            ExclusionReasons = new List<ExclusionReasons>
             {
-                Property = typeof(TestModel).GetProperty(nameof(TestModel.Name)),
-                ColumnName = "Name",
-                Order = 1,
-                Width = 15,
-                Getter = obj => ((TestModel)obj).Name,
-                PropertyType = typeof(string),
-                UnderlyingType = typeof(string),
-                IsNullable = true,
-                IsReadOnly = false,
+                new ExclusionReasons { Reason = "Test", ExclusionId = "001", Count = 1 }
             }
         };
     }
 
-    private void SetupMocksForBuild(PropertyAccessor[] propertyAccessors)
+    private static ExcelStyleIndices CreateTestStyles()
     {
-        _cacheManagerMock.Setup(x => x.GetPropertyAccessors<TestModel>(It.IsAny<HashSet<string>>()))
-            .Returns(propertyAccessors);
+        return new ExcelStyleIndices
+        {
+            HeaderStyle = DefaultStyleIndex,
+            BorderOnlyStyle = BorderOnlyStyleIndex,
+            BorderNumberStyle = BorderNumberStyleIndex
+        };
+    }
+}
 
-        _cacheManagerMock.Setup(x => x.GetExcelColumnName(It.IsAny<int>()))
-            .Returns<int>(col => col switch
+[TestFixture]
+public class ExcelDocumentManagerTests
+{
+    private const string SummarySheetName = "Summary";
+    private const string ExistingSheetName = "ExistingSheet";
+    private const uint DefaultSheetId = 1;
+
+    private ExcelDocumentManager _documentManager;
+    private Mock<IExcelStyleManager> _mockStyleManager;
+    private Mock<IExcelWorksheetBuilder> _mockWorksheetBuilder;
+
+    [SetUp]
+    public void Setup()
+    {
+        _mockStyleManager = new Mock<IExcelStyleManager>();
+        _mockWorksheetBuilder = new Mock<IExcelWorksheetBuilder>();
+        _documentManager = new ExcelDocumentManager(_mockStyleManager.Object, _mockWorksheetBuilder.Object);
+    }
+
+    [Test]
+    public void CreateSummarySheet_CreatesNewStreamWithSummarySheet()
+    {
+        using var existingStream = CreateTestExcelStream();
+        var data = CreateTestSummaryData();
+        var styles = CreateTestStyleIndices();
+
+        _mockStyleManager.Setup(x => x.InitializeStyles(It.IsAny<WorkbookPart>())).Returns(styles);
+
+        using var resultStream = _documentManager.CreateSummarySheet(existingStream, data);
+
+        Assert.That(resultStream, Is.Not.Null);
+        Assert.That(resultStream.Position, Is.EqualTo(0));
+        Assert.That(resultStream.Length, Is.GreaterThan(0));
+
+        _mockStyleManager.Verify(x => x.InitializeStyles(It.IsAny<WorkbookPart>()), Times.Once);
+        _mockWorksheetBuilder.Verify(x => x.BuildSummaryWorksheet(It.IsAny<WorksheetPart>(), data, styles), Times.Once);
+    }
+
+    [Test]
+    public void CreateSummarySheet_PreservesOriginalStreamContent()
+    {
+        using var existingStream = CreateTestExcelStream();
+        var originalLength = existingStream.Length;
+        var data = new SummaryData();
+        var styles = new ExcelStyleIndices { HeaderStyle = 1 };
+
+        _mockStyleManager.Setup(x => x.InitializeStyles(It.IsAny<WorkbookPart>())).Returns(styles);
+
+        using var resultStream = _documentManager.CreateSummarySheet(existingStream, data);
+
+        Assert.That(existingStream.Length, Is.EqualTo(originalLength));
+        Assert.That(existingStream.Position, Is.EqualTo(existingStream.Length));
+    }
+
+    [Test]
+    public void CreateSummarySheet_CreatesIndependentCopy()
+    {
+        using var existingStream = CreateTestExcelStream();
+        var originalBytes = existingStream.ToArray();
+        var data = new SummaryData();
+        var styles = new ExcelStyleIndices { HeaderStyle = 1 };
+
+        _mockStyleManager.Setup(x => x.InitializeStyles(It.IsAny<WorkbookPart>())).Returns(styles);
+
+        using var resultStream = _documentManager.CreateSummarySheet(existingStream, data);
+
+        Assert.That(resultStream, Is.Not.SameAs(existingStream));
+        Assert.That(resultStream.Position, Is.EqualTo(0));
+
+        existingStream.Position = 0;
+        var currentBytes = existingStream.ToArray();
+        Assert.That(currentBytes, Is.EqualTo(originalBytes));
+    }
+
+    [Test]
+    public void CreateSummarySheet_AddsSheetAsFirstSheet()
+    {
+        using var existingStream = CreateTestExcelStreamWithSheet(ExistingSheetName);
+        var data = new SummaryData();
+        var styles = new ExcelStyleIndices { HeaderStyle = 1 };
+
+        _mockStyleManager.Setup(x => x.InitializeStyles(It.IsAny<WorkbookPart>())).Returns(styles);
+
+        using var resultStream = _documentManager.CreateSummarySheet(existingStream, data);
+        using var document = SpreadsheetDocument.Open(resultStream, false);
+
+        var sheets = document.WorkbookPart.Workbook.GetFirstChild<Sheets>();
+        var firstSheet = sheets.Elements<Sheet>().FirstOrDefault();
+
+        Assert.That(firstSheet, Is.Not.Null);
+        Assert.That(firstSheet.Name.Value, Is.EqualTo(SummarySheetName));
+    }
+
+    private static MemoryStream CreateTestExcelStream()
+    {
+        var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+            workbookPart.Workbook.Save();
+        }
+        stream.Position = 0;
+        return stream;
+    }
+
+    private static MemoryStream CreateTestExcelStreamWithSheet(string sheetName)
+    {
+        var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+
+            var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+            worksheetPart.Worksheet = new Worksheet(new SheetData());
+
+            var sheets = new Sheets();
+            var sheet = new Sheet
             {
-                1 => "A",
-                2 => "B",
-                _ => "C",
+                Id = workbookPart.GetIdOfPart(worksheetPart),
+                SheetId = DefaultSheetId,
+                Name = sheetName
+            };
+            sheets.Append(sheet);
+            workbookPart.Workbook.AppendChild(sheets);
+
+            workbookPart.Workbook.Save();
+        }
+        stream.Position = 0;
+        return stream;
+    }
+
+    private static SummaryData CreateTestSummaryData()
+    {
+        return new SummaryData
+        {
+            Info = new SummaryInfo { Regulator = "Test" },
+            Results = new List<SummaryResult>(),
+            Difference = new Difference(),
+            ExclusionReasons = new List<ExclusionReasons>()
+        };
+    }
+
+    private static ExcelStyleIndices CreateTestStyleIndices()
+    {
+        return new ExcelStyleIndices
+        {
+            HeaderStyle = 1,
+            BorderOnlyStyle = 2,
+            BorderNumberStyle = 3
+        };
+    }
+}
+
+[TestFixture]
+public class ExcelSummaryWriterTests
+{
+    private const int TestCount = 100;
+    private const int TestMissingCount = 10;
+    private const int TestExtraCount = 5;
+    private const int TestExclusionCount = 1;
+
+    private ExcelSummaryWriter _summaryWriter;
+    private Mock<IExcelDocumentManager> _mockDocumentManager;
+
+    [SetUp]
+    public void Setup()
+    {
+        _mockDocumentManager = new Mock<IExcelDocumentManager>();
+        _summaryWriter = new ExcelSummaryWriter(_mockDocumentManager.Object);
+    }
+
+    [Test]
+    public void WriteSummary_CallsDocumentManagerWithCorrectData()
+    {
+        using var existingStream = new MemoryStream();
+        using var expectedStream = new MemoryStream();
+        var summary = new SummaryInfo { Regulator = "Test" };
+        var summaryList = new List<SummaryResult>
+        {
+            new SummaryResult { Group = "Group1", Count = TestCount }
+        };
+        var difference = new Difference { Missing = TestMissingCount, Extra = TestExtraCount };
+        var reasons = new List<ExclusionReasons>
+        {
+            new ExclusionReasons { Reason = "Test", ExclusionId = "001", Count = TestExclusionCount }
+        };
+
+        _mockDocumentManager
+            .Setup(x => x.CreateSummarySheet(existingStream, It.IsAny<SummaryData>()))
+            .Returns(expectedStream)
+            .Callback<MemoryStream, SummaryData>((stream, data) =>
+            {
+                Assert.That(data.Info, Is.EqualTo(summary));
+                Assert.That(data.Results, Is.EqualTo(summaryList));
+                Assert.That(data.Difference, Is.EqualTo(difference));
+                Assert.That(data.ExclusionReasons, Is.EqualTo(reasons));
             });
 
-        _cacheManagerMock.Setup(x => x.GetCleanHexColor(It.IsAny<string>()))
-            .Returns<string>(color => color?.Replace("#", ""));
+        var result = _summaryWriter.WriteSummary(existingStream, summary, summaryList, difference, reasons);
 
-        _styleManagerMock.Setup(x => x.CreateStyles(
-                It.IsAny<WorkbookPart>(),
-                It.IsAny<PropertyAccessor[]>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(new Dictionary<string, uint> { { "test", 1 } });
-
-        _propertyNameFormatterMock.Setup(x => x.ConvertToFriendlyName(It.IsAny<string>()))
-            .Returns<string>(name => name);
+        Assert.That(result, Is.EqualTo(expectedStream));
+        _mockDocumentManager.Verify(x => x.CreateSummarySheet(existingStream, It.IsAny<SummaryData>()), Times.Once);
     }
 
-    public class TestModel
+    [Test]
+    public void DefaultConstructor_CreatesDefaultDocumentManager()
     {
-        [ExcelColumn("Id", 0)]
-        public int Id { get; set; }
+        var writer = new ExcelSummaryWriter();
 
-        [ExcelColumn("Name", 1)]
-        public string Name { get; set; }
+        Assert.That(writer, Is.Not.Null);
+    }
 
-        [ExcelColumn("Status", 2)]
-        public string Status { get; set; }
+    [Test]
+    public void WriteSummary_HandlesNullParameters()
+    {
+        using var existingStream = new MemoryStream();
+        using var expectedStream = new MemoryStream();
 
-        [ExcelColumn("Date", 3)]
-        public DateTime Date { get; set; }
+        _mockDocumentManager
+            .Setup(x => x.CreateSummarySheet(existingStream, It.IsAny<SummaryData>()))
+            .Returns(expectedStream);
 
-        [ExcelColumn("Amount", 4)]
-        public decimal Amount { get; set; }
+        var result = _summaryWriter.WriteSummary(existingStream, null, null, null, null);
+
+        Assert.That(result, Is.Not.Null);
+        _mockDocumentManager.Verify(x => x.CreateSummarySheet(existingStream, It.IsAny<SummaryData>()), Times.Once);
+    }
+}
+
+[TestFixture]
+public class SummaryDataTests
+{
+    [Test]
+    public void SummaryData_InitializesWithNullValues()
+    {
+        var data = new SummaryData();
+
+        Assert.That(data.Info, Is.Null);
+        Assert.That(data.Results, Is.Null);
+        Assert.That(data.Difference, Is.Null);
+        Assert.That(data.ExclusionReasons, Is.Null);
+    }
+
+    [Test]
+    public void SummaryData_CanSetAllProperties()
+    {
+        var info = new SummaryInfo { Regulator = "Test" };
+        var results = new List<SummaryResult> { new SummaryResult { Group = "G1", Count = 1 } };
+        var difference = new Difference { Missing = 1, Extra = 2 };
+        var reasons = new List<ExclusionReasons> { new ExclusionReasons { Reason = "R1", Count = 1 } };
+
+        var data = new SummaryData
+        {
+            Info = info,
+            Results = results,
+            Difference = difference,
+            ExclusionReasons = reasons
+        };
+
+        Assert.That(data.Info, Is.EqualTo(info));
+        Assert.That(data.Results, Is.EqualTo(results));
+        Assert.That(data.Difference, Is.EqualTo(difference));
+        Assert.That(data.ExclusionReasons, Is.EqualTo(reasons));
+    }
+}
+
+[TestFixture]
+public class ModelTests
+{
+    private const string TestRegulator = "TestReg";
+    private const string TestEagleId = "Eagle123";
+    private const string TestCcrId = "CCR456";
+    private const string TestParentId = "Parent789";
+    private const string TestBatchId = "Batch012";
+    private const string TestReviewer = "John Doe";
+    private const string TestGroup = "TestGroup";
+    private const int TestGroupCount = 100;
+    private const int TestMissingCount = 50;
+    private const int TestExtraCount = 25;
+    private const string TestReason = "TestReason";
+    private const string TestExclusionId = "EX001";
+    private const int TestExclusionCount = 10;
+    private const uint TestHeaderStyle = 1;
+    private const uint TestBorderStyle = 2;
+    private const uint TestNumberStyle = 3;
+
+    [Test]
+    public void SummaryInfo_HasCorrectProperties()
+    {
+        var info = new SummaryInfo
+        {
+            Regulator = TestRegulator,
+            EagleContextId = TestEagleId,
+            AxisCcrBatchId = TestCcrId,
+            AxisParentBatchId = TestParentId,
+            AxisBatchId = TestBatchId,
+            ReviewedBy = TestReviewer
+        };
+
+        Assert.That(info.Regulator, Is.EqualTo(TestRegulator));
+        Assert.That(info.EagleContextId, Is.EqualTo(TestEagleId));
+        Assert.That(info.AxisCcrBatchId, Is.EqualTo(TestCcrId));
+        Assert.That(info.AxisParentBatchId, Is.EqualTo(TestParentId));
+        Assert.That(info.AxisBatchId, Is.EqualTo(TestBatchId));
+        Assert.That(info.ReviewedBy, Is.EqualTo(TestReviewer));
+    }
+
+    [Test]
+    public void SummaryResult_HasCorrectProperties()
+    {
+        var result = new SummaryResult
+        {
+            Group = TestGroup,
+            Count = TestGroupCount
+        };
+
+        Assert.That(result.Group, Is.EqualTo(TestGroup));
+        Assert.That(result.Count, Is.EqualTo(TestGroupCount));
+    }
+
+    [Test]
+    public void Difference_HasCorrectProperties()
+    {
+        var difference = new Difference
+        {
+            Missing = TestMissingCount,
+            Extra = TestExtraCount
+        };
+
+        Assert.That(difference.Missing, Is.EqualTo(TestMissingCount));
+        Assert.That(difference.Extra, Is.EqualTo(TestExtraCount));
+    }
+
+    [Test]
+    public void ExclusionReasons_HasCorrectProperties()
+    {
+        var reason = new ExclusionReasons
+        {
+            Reason = TestReason,
+            ExclusionId = TestExclusionId,
+            Count = TestExclusionCount
+        };
+
+        Assert.That(reason.Reason, Is.EqualTo(TestReason));
+        Assert.That(reason.ExclusionId, Is.EqualTo(TestExclusionId));
+        Assert.That(reason.Count, Is.EqualTo(TestExclusionCount));
+    }
+
+    [Test]
+    public void ExcelStyleIndices_HasCorrectProperties()
+    {
+        var indices = new ExcelStyleIndices
+        {
+            HeaderStyle = TestHeaderStyle,
+            BorderOnlyStyle = TestBorderStyle,
+            BorderNumberStyle = TestNumberStyle
+        };
+
+        Assert.That(indices.HeaderStyle, Is.EqualTo(TestHeaderStyle));
+        Assert.That(indices.BorderOnlyStyle, Is.EqualTo(TestBorderStyle));
+        Assert.That(indices.BorderNumberStyle, Is.EqualTo(TestNumberStyle));
+    }
+}
+
+[TestFixture]
+public class IntegrationTests
+{
+    private const string TestRegulator = "TestRegulator";
+    private const string TestEagleId = "Eagle123";
+    private const string TestCcrId = "CCR456";
+    private const string TestParentId = "Parent789";
+    private const string TestBatchId = "Batch012";
+    private const string TestReviewer = "John Doe";
+    private const int Group1Count = 100;
+    private const int Group2Count = 200;
+    private const int MissingCount = 50;
+    private const int ExtraCount = 30;
+    private const int Exclusion1Count = 10;
+    private const int Exclusion2Count = 20;
+    private const string SummarySheetName = "Summary";
+
+    [Test]
+    public void EndToEnd_CreatesSummarySheet_Successfully()
+    {
+        using var sourceStream = CreateEmptyExcelStream();
+        var writer = new ExcelSummaryWriter();
+
+        var summary = new SummaryInfo
+        {
+            Regulator = TestRegulator,
+            EagleContextId = TestEagleId,
+            AxisCcrBatchId = TestCcrId,
+            AxisParentBatchId = TestParentId,
+            AxisBatchId = TestBatchId,
+            ReviewedBy = TestReviewer
+        };
+
+        var summaryList = new List<SummaryResult>
+        {
+            new SummaryResult { Group = "Group1", Count = Group1Count },
+            new SummaryResult { Group = "Group2", Count = Group2Count }
+        };
+
+        var difference = new Difference { Missing = MissingCount, Extra = ExtraCount };
+
+        var reasons = new List<ExclusionReasons>
+        {
+            new ExclusionReasons { Reason = "Reason1", ExclusionId = "EX001", Count = Exclusion1Count },
+            new ExclusionReasons { Reason = "Reason2", ExclusionId = "EX002", Count = Exclusion2Count }
+        };
+
+        using var resultStream = writer.WriteSummary(sourceStream, summary, summaryList, difference, reasons);
+
+        Assert.That(resultStream, Is.Not.Null);
+        Assert.That(resultStream.Length, Is.GreaterThan(0));
+
+        using var document = SpreadsheetDocument.Open(resultStream, false);
+        Assert.That(document.WorkbookPart, Is.Not.Null);
+        var sheets = document.WorkbookPart.Workbook.GetFirstChild<Sheets>();
+        var summarySheet = sheets.Elements<Sheet>().FirstOrDefault(s => s.Name == SummarySheetName);
+        Assert.That(summarySheet, Is.Not.Null);
+    }
+
+    private static MemoryStream CreateEmptyExcelStream()
+    {
+        var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+            workbookPart.Workbook.Save();
+        }
+        stream.Position = 0;
+        return stream;
     }
 }
