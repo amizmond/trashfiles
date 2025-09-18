@@ -110,6 +110,20 @@ public sealed class ExcelCellWriter : IExcelCellWriter
                 {
                     WriteNumericValue(writer, cellReference, value, styleIndex);
                 }
+                else if (underlyingType == typeof(DateTime) && value != null)
+                {
+                    // Handle boxed DateTime that didn't match the case above
+                    try
+                    {
+                        var dateTime = Convert.ToDateTime(value);
+                        WriteDateValue(writer, cellReference, dateTime, styleIndex);
+                    }
+                    catch
+                    {
+                        // If conversion fails, write as string
+                        WriteGenericValue(writer, cellReference, value, styleIndex);
+                    }
+                }
                 else
                 {
                     WriteGenericValue(writer, cellReference, value, styleIndex);
@@ -182,7 +196,32 @@ public sealed class ExcelCellWriter : IExcelCellWriter
 
         writer.WriteStartElement(new Cell(), attributes);
         writer.WriteStartElement(new CellValue());
-        writer.WriteString(dateValue.ToOADate().ToString(CultureInfo.InvariantCulture));
+        
+        // Validate date range for Excel (1900-01-01 to 9999-12-31)
+        if (dateValue < new DateTime(1900, 1, 1))
+        {
+            // Excel doesn't support dates before 1900, write as string instead
+            writer.WriteString(""); // Or write a placeholder like "N/A"
+        }
+        else if (dateValue > new DateTime(9999, 12, 31))
+        {
+            // Excel doesn't support dates after 9999
+            writer.WriteString(""); // Or write a placeholder like "N/A"
+        }
+        else
+        {
+            try
+            {
+                var oaDate = dateValue.ToOADate();
+                writer.WriteString(oaDate.ToString(CultureInfo.InvariantCulture));
+            }
+            catch (ArgumentException)
+            {
+                // Handle edge case for dates that still fail
+                writer.WriteString(""); // Or write a placeholder
+            }
+        }
+        
         writer.WriteEndElement();
         writer.WriteEndElement();
     }
