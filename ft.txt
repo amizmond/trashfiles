@@ -1,0 +1,316 @@
+public interface IExcelCellWriter
+{
+    void WriteCellValue(OpenXmlWriter writer, string cellReference, object value, Type underlyingType, uint? styleIndex);
+    void InitializeSharedStringTable(WorkbookPart workbookPart);
+    void FinalizeSharedStringTable();
+}
+
+public sealed class ExcelCellWriter : IExcelCellWriter
+{
+    private SharedStringTablePart? _sharedStringTablePart;
+    private Dictionary<string, int>? _sharedStringCache;
+    private List<string>? _sharedStrings;
+    private int _nextSharedStringId;
+
+    public void InitializeSharedStringTable(WorkbookPart workbookPart)
+    {
+        ArgumentNullException.ThrowIfNull(workbookPart);
+        
+        // Check if a SharedStringTablePart already exists
+        _sharedStringTablePart = workbookPart.SharedStringTablePart;
+        
+        if (_sharedStringTablePart == null)
+        {
+            // Create new SharedStringTablePart if it doesn't exist
+            _sharedStringTablePart = workbookPart.AddNewPart<SharedStringTablePart>();
+        }
+        
+        // Reset/initialize the internal state
+        _sharedStringCache = new Dictionary<string, int>(StringComparer.Ordinal);
+        _sharedStrings = new List<string>();
+        _nextSharedStringId = 0;
+    }
+
+    public void FinalizeSharedStringTable()
+    {
+        if (_sharedStringTablePart == null || _sharedStrings == null || _sharedStringCache == null)
+        {
+            return;
+        }
+
+        // Write the shared string table
+        using var writer = OpenXmlWriter.Create(_sharedStringTablePart);
+        writer.WriteStartElement(new SharedStringTable() 
+        { 
+            Count = (uint)_sharedStrings.Count, 
+            UniqueCount = (uint)_sharedStringCache.Count 
+        });
+
+        // Write unique strings in the order they were first encountered
+        var uniqueStringsInOrder = new List<string>();
+        var seenStrings = new HashSet<string>(StringComparer.Ordinal);
+        
+        foreach (var str in _sharedStrings)
+        {
+            if (seenStrings.Add(str))
+            {
+                uniqueStringsInOrder.Add(str);
+            }
+        }
+
+        foreach (var uniqueString in uniqueStringsInOrder)
+        {
+            writer.WriteStartElement(new SharedStringItem());
+            writer.WriteElement(new Text(uniqueString));
+            writer.WriteEndElement();
+        }
+
+        writer.WriteEndElement();
+
+        // Clean up
+        _sharedStringCache.Clear();
+        _sharedStrings.Clear();
+        _sharedStringCache = null;
+        _sharedStrings = null;
+        _sharedStringTablePart = null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteCellValue(OpenXmlWriter writer, string cellReference, object value, Type underlyingType, uint? styleIndex)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentException.ThrowIfNullOrEmpty(cellReference);
+        ArgumentNullException.ThrowIfNull(underlyingType);
+
+        WriteValueByType(writer, cellReference, value, underlyingType, styleIndex);
+    }
+
+    private void WriteValueByType(OpenXmlWriter writer, string cellReference, object value, Type underlyingType, uint? styleIndex)
+    {
+        switch (value)
+        {
+            case string stringValue:
+                WriteStringValue(writer, cellReference, stringValue, styleIndex);
+                break;
+
+            case DateTime dateValue:
+                WriteDateValue(writer, cellReference, dateValue, styleIndex);
+                break;
+
+            case TimeSpan timeSpanValue:
+                WriteTimeSpanValue(writer, cellReference, timeSpanValue, styleIndex);
+                break;
+
+            case bool boolValue:
+                WriteBooleanValue(writer, cellReference, boolValue, styleIndex);
+                break;
+
+            default:
+                if (IsNumericType(underlyingType))
+                {
+                    WriteNumericValue(writer, cellReference, value, styleIndex);
+                }
+                else
+                {
+                    WriteGenericValue(writer, cellReference, value, styleIndex);
+                }
+                break;
+        }
+    }
+
+    private void WriteStringValue(OpenXmlWriter writer, string cellReference, string stringValue, uint? styleIndex)
+    {
+        stringValue = SanitizeForXml(stringValue);
+
+        if (_sharedStringCache == null || _sharedStrings == null)
+        {
+            throw new InvalidOperationException("SharedStringTable must be initialized before writing string values. Call InitializeSharedStringTable first.");
+        }
+
+        var sharedStringId = GetOrCreateSharedStringId(stringValue);
+        
+        // Write cell XML directly using attributes for better performance
+        var attributes = new List<OpenXmlAttribute>
+        {
+            new OpenXmlAttribute("r", null, cellReference),
+            new OpenXmlAttribute("t", null, "s") // s = shared string
+        };
+
+        if (styleIndex.HasValue)
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, styleIndex.Value.ToString()));
+        }
+
+        writer.WriteStartElement(new Cell(), attributes);
+        
+        // Write the value element with just the shared string index
+        writer.WriteStartElement(new CellValue());
+        writer.WriteString(sharedStringId.ToString());
+        writer.WriteEndElement(); // CellValue
+        
+        writer.WriteEndElement(); // Cell
+    }
+
+    private int GetOrCreateSharedStringId(string value)
+    {
+        if (_sharedStringCache!.TryGetValue(value, out var existingId))
+        {
+            return existingId;
+        }
+
+        var newId = _nextSharedStringId++;
+        _sharedStringCache[value] = newId;
+        _sharedStrings!.Add(value);
+        return newId;
+    }
+
+    private static void WriteDateValue(OpenXmlWriter writer, string cellReference, DateTime dateValue, uint? styleIndex)
+    {
+        var attributes = new List<OpenXmlAttribute>
+        {
+            new OpenXmlAttribute("r", null, cellReference)
+        };
+
+        if (styleIndex.HasValue)
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, (styleIndex ?? ExcelWriterConstants.DefaultDateStyle).ToString()));
+        }
+        else
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, ExcelWriterConstants.DefaultDateStyle.ToString()));
+        }
+
+        writer.WriteStartElement(new Cell(), attributes);
+        writer.WriteStartElement(new CellValue());
+        writer.WriteString(dateValue.ToOADate().ToString(CultureInfo.InvariantCulture));
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+    }
+
+    private static void WriteTimeSpanValue(OpenXmlWriter writer, string cellReference, TimeSpan timeSpanValue, uint? styleIndex)
+    {
+        var totalDays = timeSpanValue.TotalDays;
+
+        var attributes = new List<OpenXmlAttribute>
+        {
+            new OpenXmlAttribute("r", null, cellReference)
+        };
+
+        if (styleIndex.HasValue)
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, (styleIndex ?? ExcelWriterConstants.DefaultTimeStyle).ToString()));
+        }
+        else
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, ExcelWriterConstants.DefaultTimeStyle.ToString()));
+        }
+
+        writer.WriteStartElement(new Cell(), attributes);
+        writer.WriteStartElement(new CellValue());
+        writer.WriteString(totalDays.ToString(CultureInfo.InvariantCulture));
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+    }
+
+    private static void WriteBooleanValue(OpenXmlWriter writer, string cellReference, bool boolValue, uint? styleIndex)
+    {
+        var attributes = new List<OpenXmlAttribute>
+        {
+            new OpenXmlAttribute("r", null, cellReference),
+            new OpenXmlAttribute("t", null, "b") // b = boolean
+        };
+
+        if (styleIndex.HasValue)
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, styleIndex.Value.ToString()));
+        }
+
+        writer.WriteStartElement(new Cell(), attributes);
+        writer.WriteStartElement(new CellValue());
+        writer.WriteString(boolValue ? "1" : "0");
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+    }
+
+    private static void WriteNumericValue(OpenXmlWriter writer, string cellReference, object value, uint? styleIndex)
+    {
+        var attributes = new List<OpenXmlAttribute>
+        {
+            new OpenXmlAttribute("r", null, cellReference)
+        };
+
+        if (styleIndex.HasValue)
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, styleIndex.Value.ToString()));
+        }
+
+        writer.WriteStartElement(new Cell(), attributes);
+        writer.WriteStartElement(new CellValue());
+        writer.WriteString(Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty);
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+    }
+
+    private void WriteGenericValue(OpenXmlWriter writer, string cellReference, object value, uint? styleIndex)
+    {
+        var valueString = SanitizeForXml(value?.ToString() ?? string.Empty);
+
+        if (_sharedStringCache == null || _sharedStrings == null)
+        {
+            throw new InvalidOperationException("SharedStringTable must be initialized before writing string values. Call InitializeSharedStringTable first.");
+        }
+
+        var sharedStringId = GetOrCreateSharedStringId(valueString);
+        
+        var attributes = new List<OpenXmlAttribute>
+        {
+            new OpenXmlAttribute("r", null, cellReference),
+            new OpenXmlAttribute("t", null, "s") // s = shared string
+        };
+
+        if (styleIndex.HasValue)
+        {
+            attributes.Add(new OpenXmlAttribute("s", null, styleIndex.Value.ToString()));
+        }
+
+        writer.WriteStartElement(new Cell(), attributes);
+        writer.WriteStartElement(new CellValue());
+        writer.WriteString(sharedStringId.ToString());
+        writer.WriteEndElement();
+        writer.WriteEndElement();
+    }
+
+    private static string SanitizeForXml(string? input)
+    {
+        if (string.IsNullOrEmpty(input))
+        {
+            return string.Empty;
+        }
+
+        var sanitized = new StringBuilder(input.Length);
+
+        foreach (var c in input)
+        {
+            if (IsValidXmlChar(c))
+            {
+                sanitized.Append(c);
+            }
+        }
+
+        return sanitized.ToString();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsValidXmlChar(char c)
+    {
+        return c is '\x9' or '\xA' or '\xD' or
+               (>= '\x20' and <= '\xD7FF') or
+               (>= '\xE000' and <= '\xFFFD');
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsNumericType(Type type)
+    {
+        return TypeValidator.IsNumericType(type);
+    }
+}
