@@ -1,0 +1,153 @@
+public sealed class SheetBuilder<T> : ISheetBuilder<T> where T : class, new()
+{
+    private readonly ExcelFileBuilder _fileBuilder;
+    private readonly SheetConfiguration<T> _configuration;
+    private const int MaxRowsPerSheet = 400_000;
+    private const int ColumnThreshold = 40;
+
+    public SheetBuilder(ExcelFileBuilder fileBuilder, string sheetName)
+    {
+        _fileBuilder = fileBuilder ?? throw new ArgumentNullException(nameof(fileBuilder));
+        _configuration = new SheetConfiguration<T>(sheetName);
+    }
+
+    public ISheetBuilder<T> WithData(List<T> data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+
+        if (ShouldSplitData(data))
+        {
+            SplitDataAcrossSheets(data);
+        }
+        else
+        {
+            _configuration.Data = data;
+        }
+
+        return this;
+    }
+
+    private bool ShouldSplitData(List<T> data)
+    {
+        if (data.Count < MaxRowsPerSheet)
+        { 
+            return false;
+        }
+
+        var propertyCount = typeof(T)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Count(p => p.GetCustomAttribute<ExcelColumnAttribute>() != null || (!_configuration.ExcludedProperties.Contains(p.Name) && p.CanRead));
+
+        return propertyCount > ColumnThreshold;
+    }
+
+    private void SplitDataAcrossSheets(List<T> data)
+    {
+        var sheetIndex = 0;
+        var totalRows = data.Count;
+        var processedRows = 0;
+
+        while (processedRows < totalRows)
+        {
+            var rowsToTake = Math.Min(MaxRowsPerSheet, totalRows - processedRows);
+            var sheetData = data.Skip(processedRows).Take(rowsToTake).ToList();
+
+            if (sheetIndex == 0)
+            {
+                _configuration.Data = sheetData;
+            }
+            else
+            {
+                var additionalSheetName = $"{_configuration.SheetName} {sheetIndex}";
+                var additionalConfiguration = CloneConfiguration(additionalSheetName);
+                additionalConfiguration.Data = sheetData;
+                _fileBuilder.AddSheetConfiguration(additionalConfiguration);
+            }
+
+            processedRows += rowsToTake;
+            sheetIndex++;
+        }
+    }
+
+    private SheetConfiguration<T> CloneConfiguration(string sheetName)
+    {
+        var newConfiguration = new SheetConfiguration<T>(sheetName)
+        {
+            DropdownData = _configuration.DropdownData,
+            DropdownSheetName = _configuration.DropdownSheetName,
+            ConditionalRules = _configuration.ConditionalRules
+        };
+
+        foreach (var excludedProperty in _configuration.ExcludedProperties)
+        {
+            newConfiguration.ExcludedProperties.Add(excludedProperty);
+        }
+
+        return newConfiguration;
+    }
+
+    public ISheetBuilder<T> ExcludeProperties(params Expression<Func<T, object>>[] excludeProperties)
+    {
+        ArgumentNullException.ThrowIfNull(excludeProperties);
+
+        var propertyNames = ExtractPropertyNames(excludeProperties);
+        foreach (var propertyName in propertyNames)
+        {
+            _configuration.ExcludedProperties.Add(propertyName);
+        }
+
+        return this;
+    }
+
+    public ISheetBuilder<T> WithDropdownData(List<ExcelDropdownData> dropdownData, string dropdownSheetName = "Static Data")
+    {
+        ArgumentNullException.ThrowIfNull(dropdownData);
+
+        _configuration.DropdownData = dropdownData;
+        _configuration.DropdownSheetName = dropdownSheetName;
+        return this;
+    }
+
+    public ISheetBuilder<T> WithConditionalRules(IExcelConditionalRulesFactory<T> conditionalFactory)
+    {
+        ArgumentNullException.ThrowIfNull(conditionalFactory);
+        _configuration.ConditionalRules = conditionalFactory.Rules;
+        return this;
+    }
+
+    public IExcelFileBuilder Done()
+    {
+        _fileBuilder.AddSheetConfiguration(_configuration);
+        return _fileBuilder;
+    }
+
+    private HashSet<string> ExtractPropertyNames(Expression<Func<T, object>>[] expressions)
+    {
+        var propertyNames = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var expression in expressions)
+        {
+            var propertyName = ExtractPropertyName(expression);
+            propertyNames.Add(propertyName);
+        }
+
+        return propertyNames;
+    }
+
+    private static string ExtractPropertyName(Expression<Func<T, object>> expression)
+    {
+        var body = expression.Body;
+
+        if (body is UnaryExpression unaryExpression && unaryExpression.NodeType == ExpressionType.Convert)
+        {
+            body = unaryExpression.Operand;
+        }
+
+        if (body is MemberExpression memberExpression && memberExpression.Member is PropertyInfo property)
+        {
+            return property.Name;
+        }
+
+        throw new ArgumentException($"Expression '{expression}' does not refer to a property.");
+    }
+}
