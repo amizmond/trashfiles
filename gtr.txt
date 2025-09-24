@@ -1,0 +1,614 @@
+// First, add this to your main project's AssemblyInfo.cs or .csproj file:
+// [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("DynamicExcel.Write.Tests")]
+
+using NUnit.Framework;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
+
+namespace DynamicExcel.Write.Tests
+{
+    [TestFixture]
+    public class SheetBuilderInternalMethodsTests
+    {
+        private ExcelFileBuilder _fileBuilder;
+        private SheetBuilder<TestModel> _sheetBuilder;
+        private SheetBuilder<LargeColumnModel> _largeColumnSheetBuilder;
+
+        #region Test Models
+
+        public class TestModel
+        {
+            [ExcelColumn("Id", 1)]
+            public int Id { get; set; }
+
+            [ExcelColumn("Name", 2)]
+            public string Name { get; set; }
+
+            [ExcelColumn("Description", 3)]
+            public string Description { get; set; }
+
+            [ExcelColumn("Status", 4)]
+            public string Status { get; set; }
+
+            [ExcelColumn("CreatedDate", 5)]
+            public DateTime CreatedDate { get; set; }
+        }
+
+        public class LargeColumnModel
+        {
+            // Simulating a model with 60 columns
+            [ExcelColumn("Column1", 1)]
+            public string Column1 { get; set; }
+
+            [ExcelColumn("Column2", 2)]
+            public string Column2 { get; set; }
+
+            [ExcelColumn("Column3", 3)]
+            public string Column3 { get; set; }
+
+            // ... imagine columns 4-59 here ...
+
+            [ExcelColumn("Column60", 60)]
+            public string Column60 { get; set; }
+
+            // For testing purposes, we'll have 60 properties marked with ExcelColumn attribute
+            public string Column4 { get; set; }
+            public string Column5 { get; set; }
+            public string Column6 { get; set; }
+            public string Column7 { get; set; }
+            public string Column8 { get; set; }
+            public string Column9 { get; set; }
+            public string Column10 { get; set; }
+            public string Column11 { get; set; }
+            public string Column12 { get; set; }
+            public string Column13 { get; set; }
+            public string Column14 { get; set; }
+            public string Column15 { get; set; }
+            public string Column16 { get; set; }
+            public string Column17 { get; set; }
+            public string Column18 { get; set; }
+            public string Column19 { get; set; }
+            public string Column20 { get; set; }
+            public string Column21 { get; set; }
+            public string Column22 { get; set; }
+            public string Column23 { get; set; }
+            public string Column24 { get; set; }
+            public string Column25 { get; set; }
+            public string Column26 { get; set; }
+            public string Column27 { get; set; }
+            public string Column28 { get; set; }
+            public string Column29 { get; set; }
+            public string Column30 { get; set; }
+            public string Column31 { get; set; }
+            public string Column32 { get; set; }
+            public string Column33 { get; set; }
+            public string Column34 { get; set; }
+            public string Column35 { get; set; }
+            public string Column36 { get; set; }
+            public string Column37 { get; set; }
+            public string Column38 { get; set; }
+            public string Column39 { get; set; }
+            public string Column40 { get; set; }
+            public string Column41 { get; set; }
+            public string Column42 { get; set; }
+            public string Column43 { get; set; }
+            public string Column44 { get; set; }
+            public string Column45 { get; set; }
+            public string Column46 { get; set; }
+            public string Column47 { get; set; }
+            public string Column48 { get; set; }
+            public string Column49 { get; set; }
+            public string Column50 { get; set; }
+            public string Column51 { get; set; }
+            public string Column52 { get; set; }
+            public string Column53 { get; set; }
+            public string Column54 { get; set; }
+            public string Column55 { get; set; }
+            public string Column56 { get; set; }
+            public string Column57 { get; set; }
+            public string Column58 { get; set; }
+            public string Column59 { get; set; }
+        }
+
+        #endregion
+
+        [SetUp]
+        public void Setup()
+        {
+            // Setup dependencies
+            var cacheManager = new ExcelCacheManager();
+            var cellWriter = new ExcelCellWriter();
+            var styleManager = new ExcelStyleManager(cacheManager);
+            var validationManager = new ExcelValidationManager(cacheManager);
+            var stringBuilderPool = new StringBuilderPool();
+            var propertyNameFormatter = new PropertyNameFormatter();
+            var workbookWriter = new ExcelWorkbookWriter();
+
+            _fileBuilder = new ExcelFileBuilder(
+                cacheManager,
+                cellWriter,
+                styleManager,
+                validationManager,
+                stringBuilderPool,
+                propertyNameFormatter,
+                workbookWriter);
+
+            _sheetBuilder = new SheetBuilder<TestModel>(_fileBuilder, "TestSheet");
+            _largeColumnSheetBuilder = new SheetBuilder<LargeColumnModel>(_fileBuilder, "LargeSheet");
+        }
+
+        #region ShouldSplitData Tests
+
+        [Test]
+        public void ShouldSplitData_WithLessThan1MillionRows_ReturnsFalse()
+        {
+            // Arrange
+            var data = GenerateTestData<TestModel>(999_999);
+
+            // Act
+            var result = _sheetBuilder.ShouldSplitData(data);
+
+            // Assert
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void ShouldSplitData_WithExactly1MillionRowsAnd5Columns_ReturnsFalse()
+        {
+            // Arrange
+            var data = GenerateTestData<TestModel>(1_000_000);
+
+            // Act
+            var result = _sheetBuilder.ShouldSplitData(data);
+
+            // Assert
+            Assert.That(result, Is.False, "Should not split with only 5 columns");
+        }
+
+        [Test]
+        public void ShouldSplitData_WithMoreThan1MillionRowsAndLessThan50Columns_ReturnsFalse()
+        {
+            // Arrange
+            var data = GenerateTestData<TestModel>(1_500_000);
+
+            // Act
+            var result = _sheetBuilder.ShouldSplitData(data);
+
+            // Assert
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void ShouldSplitData_With1MillionRowsAndMoreThan50Columns_ReturnsTrue()
+        {
+            // Arrange
+            var data = GenerateTestData<LargeColumnModel>(1_000_000);
+
+            // Act
+            var result = _largeColumnSheetBuilder.ShouldSplitData(data);
+
+            // Assert
+            Assert.That(result, Is.True, "Should split with 1M rows and 60 columns");
+        }
+
+        [Test]
+        public void ShouldSplitData_ConsidersExcludedProperties()
+        {
+            // Arrange
+            var data = GenerateTestData<LargeColumnModel>(1_000_000);
+            
+            // Exclude enough properties to bring column count below 50
+            for (int i = 4; i <= 15; i++)
+            {
+                _largeColumnSheetBuilder.ExcludeProperties(x => GetPropertyByName(x, $"Column{i}"));
+            }
+
+            // Act
+            var result = _largeColumnSheetBuilder.ShouldSplitData(data);
+
+            // Assert
+            Assert.That(result, Is.False, "Should not split when excluded properties bring column count below threshold");
+        }
+
+        #endregion
+
+        #region SplitDataAcrossSheets Tests
+
+        [Test]
+        public void SplitDataAcrossSheets_Creates3SheetsFor1MillionRows()
+        {
+            // Arrange
+            var data = GenerateTestDataWithIds(1_000_000);
+
+            // Act
+            _largeColumnSheetBuilder.SplitDataAcrossSheets(data);
+
+            // Assert
+            // The first sheet's data is set on the original configuration
+            var originalConfig = GetConfiguration(_largeColumnSheetBuilder);
+            Assert.That(originalConfig.Data.Count, Is.EqualTo(400_000));
+            
+            // Additional sheets are added to the file builder
+            var addedSheets = GetAddedSheets();
+            Assert.That(addedSheets.Count, Is.GreaterThanOrEqualTo(2));
+        }
+
+        [Test]
+        public void SplitDataAcrossSheets_CorrectlyNamesSheets()
+        {
+            // Arrange
+            var data = GenerateTestDataWithIds(800_001);
+
+            // Act
+            _largeColumnSheetBuilder.SplitDataAcrossSheets(data);
+
+            // Assert
+            var originalConfig = GetConfiguration(_largeColumnSheetBuilder);
+            Assert.That(originalConfig.SheetName, Is.EqualTo("LargeSheet"));
+            
+            var addedSheets = GetAddedSheets();
+            var sheetNames = addedSheets.Select(s => s.SheetName).ToList();
+            Assert.That(sheetNames, Contains.Item("LargeSheet 1"));
+            Assert.That(sheetNames, Contains.Item("LargeSheet 2"));
+        }
+
+        [Test]
+        public void SplitDataAcrossSheets_PreservesDataOrder()
+        {
+            // Arrange
+            var data = new List<LargeColumnModel>();
+            for (int i = 1; i <= 800_001; i++)
+            {
+                data.Add(new LargeColumnModel { Column1 = $"Row{i}" });
+            }
+
+            // Act
+            _largeColumnSheetBuilder.SplitDataAcrossSheets(data);
+
+            // Assert
+            var originalConfig = GetConfiguration(_largeColumnSheetBuilder);
+            Assert.That(originalConfig.Data.First().Column1, Is.EqualTo("Row1"));
+            Assert.That(originalConfig.Data.Last().Column1, Is.EqualTo("Row400000"));
+
+            var addedSheets = GetAddedSheets();
+            var sheet1Data = ((SheetConfiguration<LargeColumnModel>)addedSheets[addedSheets.Count - 2]).Data;
+            var sheet2Data = ((SheetConfiguration<LargeColumnModel>)addedSheets[addedSheets.Count - 1]).Data;
+            
+            Assert.That(sheet1Data.First().Column1, Is.EqualTo("Row400001"));
+            Assert.That(sheet1Data.Last().Column1, Is.EqualTo("Row800000"));
+            Assert.That(sheet2Data.First().Column1, Is.EqualTo("Row800001"));
+        }
+
+        [Test]
+        public void SplitDataAcrossSheets_HandlesExactMultipleOf400k()
+        {
+            // Arrange
+            var data = GenerateTestDataWithIds(800_000);
+
+            // Act
+            _largeColumnSheetBuilder.SplitDataAcrossSheets(data);
+
+            // Assert
+            var originalConfig = GetConfiguration(_largeColumnSheetBuilder);
+            Assert.That(originalConfig.Data.Count, Is.EqualTo(400_000));
+            
+            var addedSheets = GetAddedSheets();
+            var lastSheet = (SheetConfiguration<LargeColumnModel>)addedSheets.Last();
+            Assert.That(lastSheet.Data.Count, Is.EqualTo(400_000));
+        }
+
+        [Test]
+        public void SplitDataAcrossSheets_HandlesSmallRemainder()
+        {
+            // Arrange
+            var data = GenerateTestDataWithIds(400_001);
+
+            // Act
+            _largeColumnSheetBuilder.SplitDataAcrossSheets(data);
+
+            // Assert
+            var originalConfig = GetConfiguration(_largeColumnSheetBuilder);
+            Assert.That(originalConfig.Data.Count, Is.EqualTo(400_000));
+            
+            var addedSheets = GetAddedSheets();
+            var lastSheet = (SheetConfiguration<LargeColumnModel>)addedSheets.Last();
+            Assert.That(lastSheet.Data.Count, Is.EqualTo(1));
+        }
+
+        #endregion
+
+        #region CloneConfiguration Tests
+
+        [Test]
+        public void CloneConfiguration_CreatesNewInstanceWithCorrectName()
+        {
+            // Arrange
+            SetupOriginalConfiguration();
+
+            // Act
+            var cloned = _largeColumnSheetBuilder.CloneConfiguration("NewSheet");
+
+            // Assert
+            Assert.That(cloned, Is.Not.Null);
+            Assert.That(cloned.SheetName, Is.EqualTo("NewSheet"));
+            Assert.That(cloned, Is.Not.SameAs(GetConfiguration(_largeColumnSheetBuilder)));
+        }
+
+        [Test]
+        public void CloneConfiguration_CopiesDropdownData()
+        {
+            // Arrange
+            var dropdownData = new List<ExcelDropdownData>
+            {
+                new ExcelDropdownData
+                {
+                    ColumnName = "Status",
+                    DataList = new List<object> { "Active", "Inactive", "Pending" },
+                    BindProperties = new List<string> { "Column1" }
+                }
+            };
+            _largeColumnSheetBuilder.WithDropdownData(dropdownData, "DropdownSheet");
+
+            // Act
+            var cloned = _largeColumnSheetBuilder.CloneConfiguration("ClonedSheet");
+
+            // Assert
+            Assert.That(cloned.DropdownData, Is.Not.Null);
+            Assert.That(cloned.DropdownData.Count, Is.EqualTo(1));
+            Assert.That(cloned.DropdownData[0].ColumnName, Is.EqualTo("Status"));
+            Assert.That(cloned.DropdownSheetName, Is.EqualTo("DropdownSheet"));
+        }
+
+        [Test]
+        public void CloneConfiguration_CopiesConditionalRules()
+        {
+            // Arrange
+            var rules = new List<ExcelConditionalRule>
+            {
+                new ExcelConditionalRule
+                {
+                    SourcePropertyName = "Column1",
+                    TargetPropertyName = "Column2",
+                    Operator = ConditionalOperator.Equal,
+                    Values = new List<string> { "TestValue" },
+                    Actions = new List<ConditionalAction>
+                    {
+                        new ConditionalAction
+                        {
+                            Type = ConditionalActionType.ChangeBackgroundColor,
+                            Value = "#FF0000"
+                        }
+                    }
+                }
+            };
+            
+            var conditionalFactory = new TestConditionalRulesFactory<LargeColumnModel>(rules);
+            _largeColumnSheetBuilder.WithConditionalRules(conditionalFactory);
+
+            // Act
+            var cloned = _largeColumnSheetBuilder.CloneConfiguration("ClonedSheet");
+
+            // Assert
+            Assert.That(cloned.ConditionalRules, Is.Not.Null);
+            Assert.That(cloned.ConditionalRules.Count, Is.EqualTo(1));
+            Assert.That(cloned.ConditionalRules[0].SourcePropertyName, Is.EqualTo("Column1"));
+        }
+
+        [Test]
+        public void CloneConfiguration_CopiesExcludedProperties()
+        {
+            // Arrange
+            _largeColumnSheetBuilder.ExcludeProperties(
+                x => x.Column1,
+                x => x.Column2,
+                x => x.Column3
+            );
+
+            // Act
+            var cloned = _largeColumnSheetBuilder.CloneConfiguration("ClonedSheet");
+
+            // Assert
+            Assert.That(cloned.ExcludedProperties, Is.Not.Null);
+            Assert.That(cloned.ExcludedProperties.Count, Is.EqualTo(3));
+            Assert.That(cloned.ExcludedProperties, Contains.Item("Column1"));
+            Assert.That(cloned.ExcludedProperties, Contains.Item("Column2"));
+            Assert.That(cloned.ExcludedProperties, Contains.Item("Column3"));
+        }
+
+        [Test]
+        public void CloneConfiguration_DoesNotCopyData()
+        {
+            // Arrange
+            var originalData = GenerateTestData<LargeColumnModel>(100);
+            _largeColumnSheetBuilder.WithData(originalData);
+
+            // Act
+            var cloned = _largeColumnSheetBuilder.CloneConfiguration("ClonedSheet");
+
+            // Assert
+            Assert.That(cloned.Data, Is.Not.Null);
+            Assert.That(cloned.Data.Count, Is.EqualTo(0), "Cloned configuration should start with empty data");
+        }
+
+        [Test]
+        public void CloneConfiguration_IndependentExcludedProperties()
+        {
+            // Arrange
+            _largeColumnSheetBuilder.ExcludeProperties(x => x.Column1);
+            var cloned = _largeColumnSheetBuilder.CloneConfiguration("ClonedSheet");
+
+            // Act - Modify cloned excluded properties
+            cloned.ExcludedProperties.Add("Column99");
+
+            // Assert - Original should not be affected
+            var original = GetConfiguration(_largeColumnSheetBuilder);
+            Assert.That(original.ExcludedProperties, Does.Not.Contain("Column99"));
+            Assert.That(cloned.ExcludedProperties, Contains.Item("Column99"));
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        private List<T> GenerateTestData<T>(int count) where T : new()
+        {
+            var data = new List<T>();
+            for (int i = 0; i < count; i++)
+            {
+                data.Add(new T());
+            }
+            return data;
+        }
+
+        private List<LargeColumnModel> GenerateTestDataWithIds(int count)
+        {
+            var data = new List<LargeColumnModel>();
+            for (int i = 1; i <= count; i++)
+            {
+                data.Add(new LargeColumnModel { Column1 = i.ToString() });
+            }
+            return data;
+        }
+
+        private SheetConfiguration<T> GetConfiguration<T>(SheetBuilder<T> builder) where T : class, new()
+        {
+            // Access the private _configuration field
+            var field = typeof(SheetBuilder<T>).GetField("_configuration", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            return (SheetConfiguration<T>)field.GetValue(builder);
+        }
+
+        private List<ISheetConfiguration> GetAddedSheets()
+        {
+            // Access the private _sheets field from ExcelFileBuilder
+            var field = typeof(ExcelFileBuilder).GetField("_sheets", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            return (List<ISheetConfiguration>)field.GetValue(_fileBuilder);
+        }
+
+        private void SetupOriginalConfiguration()
+        {
+            var config = GetConfiguration(_largeColumnSheetBuilder);
+            config.DropdownData = new List<ExcelDropdownData>();
+            config.ConditionalRules = new List<ExcelConditionalRule>();
+        }
+
+        private object GetPropertyByName<T>(T obj, string propertyName)
+        {
+            var property = typeof(T).GetProperty(propertyName);
+            return property?.GetValue(obj);
+        }
+
+        private class TestConditionalRulesFactory<T> : IExcelConditionalRulesFactory<T> where T : class
+        {
+            public List<ExcelConditionalRule> Rules { get; }
+
+            public TestConditionalRulesFactory(List<ExcelConditionalRule> rules)
+            {
+                Rules = rules;
+            }
+        }
+
+        #endregion
+    }
+
+    [TestFixture]
+    public class ExcelFileBuilderInternalMethodsTests
+    {
+        private ExcelFileBuilder _fileBuilder;
+
+        [SetUp]
+        public void Setup()
+        {
+            var cacheManager = new ExcelCacheManager();
+            var cellWriter = new ExcelCellWriter();
+            var styleManager = new ExcelStyleManager(cacheManager);
+            var validationManager = new ExcelValidationManager(cacheManager);
+            var stringBuilderPool = new StringBuilderPool();
+            var propertyNameFormatter = new PropertyNameFormatter();
+            var workbookWriter = new ExcelWorkbookWriter();
+
+            _fileBuilder = new ExcelFileBuilder(
+                cacheManager,
+                cellWriter,
+                styleManager,
+                validationManager,
+                stringBuilderPool,
+                propertyNameFormatter,
+                workbookWriter);
+        }
+
+        [Test]
+        public void ShouldSplitSimpleSheetData_WithLessThan1MillionRows_ReturnsFalse()
+        {
+            // Arrange
+            var data = GenerateSimpleTestData(999_999);
+
+            // Act
+            var result = _fileBuilder.ShouldSplitSimpleSheetData(data);
+
+            // Assert
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void ShouldSplitSimpleSheetData_With1MillionRowsAndFewColumns_ReturnsFalse()
+        {
+            // Arrange
+            var data = GenerateSimpleTestData(1_000_000);
+
+            // Act
+            var result = _fileBuilder.ShouldSplitSimpleSheetData(data);
+
+            // Assert
+            Assert.That(result, Is.False);
+        }
+
+        [Test]
+        public void SplitSimpleSheetData_CreatesMultipleSheetsCorrectly()
+        {
+            // Arrange
+            var data = GenerateLargeSimpleTestData(800_001);
+
+            // Act
+            _fileBuilder.SplitSimpleSheetData(data, "BaseSheet");
+
+            // Assert
+            var sheets = GetSheets();
+            Assert.That(sheets.Count, Is.EqualTo(3));
+            Assert.That(sheets[0].SheetName, Is.EqualTo("BaseSheet"));
+            Assert.That(sheets[1].SheetName, Is.EqualTo("BaseSheet 1"));
+            Assert.That(sheets[2].SheetName, Is.EqualTo("BaseSheet 2"));
+        }
+
+        private List<SheetBuilderInternalMethodsTests.TestModel> GenerateSimpleTestData(int count)
+        {
+            var data = new List<SheetBuilderInternalMethodsTests.TestModel>();
+            for (int i = 0; i < count; i++)
+            {
+                data.Add(new SheetBuilderInternalMethodsTests.TestModel { Id = i });
+            }
+            return data;
+        }
+
+        private List<SheetBuilderInternalMethodsTests.LargeColumnModel> GenerateLargeSimpleTestData(int count)
+        {
+            var data = new List<SheetBuilderInternalMethodsTests.LargeColumnModel>();
+            for (int i = 0; i < count; i++)
+            {
+                data.Add(new SheetBuilderInternalMethodsTests.LargeColumnModel { Column1 = i.ToString() });
+            }
+            return data;
+        }
+
+        private List<ISheetConfiguration> GetSheets()
+        {
+            var field = typeof(ExcelFileBuilder).GetField("_sheets",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            return (List<ISheetConfiguration>)field.GetValue(_fileBuilder);
+        }
+    }
+}
