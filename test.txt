@@ -167,11 +167,13 @@ try {
         $output += "Max Query String: $(Get-SafeValue $maxQueryString.Value $maxQueryString)"
         
         # File Extensions
-        $fileExtensions = Get-WebConfiguration -Filter "system.webServer/security/requestFiltering/fileExtensions/*" -PSPath "IIS:\" | Select-Object -First 10
+        $fileExtensions = Get-WebConfiguration -Filter "system.webServer/security/requestFiltering/fileExtensions/*" -PSPath "IIS:\" | Sort-Object fileExtension
         if ($fileExtensions) {
-            $output += "Denied File Extensions (first 10):"
-            foreach ($ext in $fileExtensions) {
-                if ($ext.allowed -eq $false) {
+            $deniedExtensions = $fileExtensions | Where-Object { $_.allowed -eq $false }
+            if ($deniedExtensions) {
+                $deniedCount = ($deniedExtensions | Measure-Object).Count
+                $output += "Denied File Extensions (Total: $deniedCount):"
+                foreach ($ext in $deniedExtensions) {
                     $output += "  - $($ext.fileExtension)"
                 }
             }
@@ -183,7 +185,9 @@ try {
     # 2. ALL APPLICATION POOLS
     Add-Section "APPLICATION POOLS"
     try {
-        $appPools = Get-ChildItem IIS:\AppPools\ -ErrorAction SilentlyContinue
+        $appPools = Get-ChildItem IIS:\AppPools\ -ErrorAction SilentlyContinue | Sort-Object Name
+        $poolCount = ($appPools | Measure-Object).Count
+        $output += "Total Application Pools: $poolCount"
         foreach ($pool in $appPools) {
             $output += ""
             $output += "Pool Name: $($pool.Name)"
@@ -214,7 +218,9 @@ try {
     # 3. ALL SITES SUMMARY
     Add-Section "SITES SUMMARY"
     try {
-        $sites = Get-ChildItem IIS:\Sites\ -ErrorAction SilentlyContinue
+        $sites = Get-ChildItem IIS:\Sites\ -ErrorAction SilentlyContinue | Sort-Object Name
+        $siteCount = ($sites | Measure-Object).Count
+        $output += "Total Sites: $siteCount"
         foreach ($site in $sites) {
             $output += ""
             $output += "Site: $($site.Name) [ID: $($site.Id)]"
@@ -338,6 +344,7 @@ try {
                 $defaultDocs = Get-WebConfiguration -Filter "system.webServer/defaultDocument/files/*" `
                               -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
                 if ($defaultDocs) {
+                    # Default docs typically have a specific order, so we won't sort them
                     foreach ($doc in $defaultDocs) {
                         $output += "  - $($doc.value)"
                     }
@@ -351,12 +358,13 @@ try {
                 $errorPages = Get-WebConfiguration -Filter "system.webServer/httpErrors/*" `
                              -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
                 if ($errorPages) {
-                    $customErrors = $errorPages | Where-Object { $_.path -ne $null } | Select-Object -First 5
+                    $customErrors = $errorPages | Where-Object { $_.path -ne $null } | Sort-Object statusCode, subStatusCode
                     if ($customErrors) {
+                        $errorCount = ($customErrors | Measure-Object).Count
+                        $output += "Total Custom Error Pages: $errorCount"
                         foreach ($error in $customErrors) {
                             $output += "  Status: $($error.statusCode).$($error.subStatusCode) - Path: $($error.path)"
                         }
-                        $output += "  ... (showing first 5)"
                     } else {
                         $output += "  No custom error pages configured"
                     }
@@ -370,7 +378,8 @@ try {
                 $headers = Get-WebConfiguration -Filter "system.webServer/httpProtocol/customHeaders/*" `
                           -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
                 if ($headers) {
-                    foreach ($header in $headers) {
+                    $sortedHeaders = $headers | Sort-Object name
+                    foreach ($header in $sortedHeaders) {
                         $output += "  $($header.name): $($header.value)"
                     }
                 } else {
@@ -384,7 +393,10 @@ try {
                     $rules = Get-WebConfiguration -Filter "system.webServer/rewrite/rules/*" `
                             -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
                     if ($rules) {
-                        foreach ($rule in $rules | Select-Object -First 5) {
+                        $sortedRules = $rules | Sort-Object name
+                        $ruleCount = ($sortedRules | Measure-Object).Count
+                        $output += "Total Rules: $ruleCount"
+                        foreach ($rule in $sortedRules) {
                             $output += "  - $($rule.name) [Enabled: $(Get-SafeValue $rule.enabled)]"
                         }
                     } else {
@@ -403,9 +415,12 @@ try {
     }
     
     # 5. HANDLER MAPPINGS
-    Add-Section "HANDLER MAPPINGS (First 20)"
+    Add-Section "HANDLER MAPPINGS"
     try {
-        $handlers = Get-WebConfiguration -Filter "system.webServer/handlers/*" -PSPath "IIS:\" | Select-Object -First 20
+        $handlers = Get-WebConfiguration -Filter "system.webServer/handlers/*" -PSPath "IIS:\" | Sort-Object name
+        $handlerCount = ($handlers | Measure-Object).Count
+        $output += "Total Handler Mappings: $handlerCount"
+        $output += ""
         foreach ($handler in $handlers) {
             $output += "  $($handler.name): $($handler.path) -> $($handler.type)"
         }
@@ -414,9 +429,12 @@ try {
     }
     
     # 6. MODULES
-    Add-Section "GLOBAL MODULES (First 20)"
+    Add-Section "GLOBAL MODULES"
     try {
-        $modules = Get-WebConfiguration -Filter "system.webServer/modules/*" -PSPath "IIS:\" | Select-Object -First 20
+        $modules = Get-WebConfiguration -Filter "system.webServer/modules/*" -PSPath "IIS:\" | Sort-Object name
+        $moduleCount = ($modules | Measure-Object).Count
+        $output += "Total Modules: $moduleCount"
+        $output += ""
         foreach ($module in $modules) {
             $output += "  $($module.name)"
         }
@@ -429,7 +447,11 @@ try {
     try {
         $filters = Get-WebConfiguration -Filter "system.webServer/isapiFilters/*" -PSPath "IIS:\" -ErrorAction SilentlyContinue
         if ($filters) {
-            foreach ($filter in $filters) {
+            $sortedFilters = $filters | Sort-Object name
+            $filterCount = ($sortedFilters | Measure-Object).Count
+            $output += "Total ISAPI Filters: $filterCount"
+            $output += ""
+            foreach ($filter in $sortedFilters) {
                 $output += "  $($filter.name): $($filter.path)"
             }
         } else {
