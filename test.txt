@@ -1,5 +1,5 @@
 # IIS Configuration Export Script
-# Requires IIS PowerShell module (WebAdministration)
+# Compatible with IIS 7.0+
 # Run as Administrator
 
 param(
@@ -20,9 +20,9 @@ if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 # Import IIS module
 try {
     Import-Module WebAdministration -ErrorAction Stop
-    Import-Module IISAdministration -ErrorAction SilentlyContinue
+    Write-Host "WebAdministration module loaded successfully" -ForegroundColor Green
 } catch {
-    Write-Error "Failed to import IIS modules. Ensure IIS Management Scripts and Tools are installed."
+    Write-Error "Failed to import WebAdministration module. Ensure IIS Management Scripts and Tools are installed."
     exit 1
 }
 
@@ -46,14 +46,11 @@ function Add-Section {
 
 # Function to safely get property value
 function Get-SafeValue {
-    param($Object, [string]$Property)
-    try {
-        $value = $Object.$Property
-        if ($null -eq $value) { return "Not Set" }
-        return $value
-    } catch {
-        return "N/A"
+    param($Value, [string]$Default = "Not Set")
+    if ($null -eq $Value -or $Value -eq "") { 
+        return $Default 
     }
+    return $Value.ToString()
 }
 
 try {
@@ -61,226 +58,390 @@ try {
     Add-Section "SERVER-LEVEL CONFIGURATION"
     
     # IIS Version and Status
-    $iisVersion = Get-ItemProperty HKLM:\SOFTWARE\Microsoft\InetStp\ -Name VersionString -ErrorAction SilentlyContinue
-    $output += "IIS Version: $($iisVersion.VersionString)"
+    try {
+        $iisVersion = Get-ItemProperty HKLM:\SOFTWARE\Microsoft\InetStp\ -ErrorAction SilentlyContinue
+        $output += "IIS Version: $(Get-SafeValue $iisVersion.VersionString)"
+        $output += "IIS Major Version: $(Get-SafeValue $iisVersion.MajorVersion)"
+        $output += "IIS Minor Version: $(Get-SafeValue $iisVersion.MinorVersion)"
+        $output += "Installation Path: $(Get-SafeValue $iisVersion.InstallPath)"
+    } catch {
+        $output += "IIS Version: Unable to retrieve"
+    }
     
-    # Server Runtime Status
-    $serverManager = Get-IISServerManager
-    $output += "Server State: $($serverManager.State)"
+    # Server State
+    try {
+        $serverState = (Get-Service -Name W3SVC -ErrorAction SilentlyContinue).Status
+        $output += "W3SVC Service State: $serverState"
+        
+        $wasState = (Get-Service -Name WAS -ErrorAction SilentlyContinue).Status
+        $output += "WAS Service State: $wasState"
+    } catch {
+        $output += "Service State: Unable to retrieve"
+    }
     
     # Application Pool Defaults
     Add-Section "APPLICATION POOL DEFAULTS"
-    $appPoolDefaults = Get-IISConfigSection -SectionPath "system.applicationHost/applicationPools/applicationPoolDefaults"
-    $output += "Process Identity: $((Get-IISConfigAttributeValue -ConfigElement $appPoolDefaults.ProcessModel -AttributeName 'identityType'))"
-    $output += "Pipeline Mode: $((Get-IISConfigAttributeValue -ConfigElement $appPoolDefaults -AttributeName 'managedPipelineMode'))"
-    $output += "Runtime Version: $((Get-IISConfigAttributeValue -ConfigElement $appPoolDefaults -AttributeName 'managedRuntimeVersion'))"
-    $output += "Enable 32-Bit: $((Get-IISConfigAttributeValue -ConfigElement $appPoolDefaults -AttributeName 'enable32BitAppOnWin64'))"
-    $output += "Queue Length: $((Get-IISConfigAttributeValue -ConfigElement $appPoolDefaults -AttributeName 'queueLength'))"
-    
-    # Recycling Settings
-    $recycling = $appPoolDefaults.GetChildElement('recycling')
-    $periodicRestart = $recycling.GetChildElement('periodicRestart')
-    $output += "Recycling - Regular Time Interval: $((Get-IISConfigAttributeValue -ConfigElement $periodicRestart -AttributeName 'time')) minutes"
+    try {
+        # Get App Pool Defaults using WebAdministration cmdlets
+        $processModel = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/processModel' -Name *
+        $output += "Process Identity Type: $(Get-SafeValue $processModel.identityType)"
+        $output += "Idle Timeout (minutes): $(Get-SafeValue $processModel.idleTimeout.TotalMinutes)"
+        $output += "Max Worker Processes: $(Get-SafeValue $processModel.maxProcesses)"
+        $output += "Load User Profile: $(Get-SafeValue $processModel.loadUserProfile)"
+        
+        # Pipeline and Runtime
+        $poolDefaults = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults' -Name *
+        $output += "Managed Pipeline Mode: $(Get-SafeValue $poolDefaults.managedPipelineMode)"
+        $output += "Managed Runtime Version: $(Get-SafeValue $poolDefaults.managedRuntimeVersion)"
+        $output += "Enable 32-Bit Applications: $(Get-SafeValue $poolDefaults.enable32BitAppOnWin64)"
+        $output += "Queue Length: $(Get-SafeValue $poolDefaults.queueLength)"
+        $output += "Start Mode: $(Get-SafeValue $poolDefaults.startMode)"
+        
+        # Recycling
+        $recycling = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/recycling/periodicRestart' -Name *
+        $output += "Regular Time Interval (minutes): $(Get-SafeValue $recycling.time.TotalMinutes)"
+        $output += "Specific Times: $(Get-SafeValue ($recycling.schedule.Collection -join ', ') 'None')"
+        $output += "Memory Limit (KB): $(Get-SafeValue $recycling.memory 0)"
+        $output += "Virtual Memory Limit (KB): $(Get-SafeValue $recycling.privateMemory 0)"
+        
+    } catch {
+        $output += "Unable to retrieve application pool defaults: $_"
+    }
     
     # Site Defaults
     Add-Section "SITE DEFAULTS"
-    $siteDefaults = Get-IISConfigSection -SectionPath "system.applicationHost/sites/siteDefaults"
-    $output += "Server Auto Start: $((Get-IISConfigAttributeValue -ConfigElement $siteDefaults -AttributeName 'serverAutoStart'))"
+    try {
+        $siteDefaults = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults' -Name *
+        $output += "Server Auto Start: $(Get-SafeValue $siteDefaults.serverAutoStart)"
+        
+        # Limits
+        $limits = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults/limits' -Name *
+        $output += "Connection Timeout (seconds): $(Get-SafeValue $limits.connectionTimeout.TotalSeconds)"
+        $output += "Max Bandwidth (bytes/sec): $(Get-SafeValue $limits.maxBandwidth)"
+        $output += "Max Connections: $(Get-SafeValue $limits.maxConnections)"
+        $output += "Max URL Segments: $(Get-SafeValue $limits.maxUrlSegments)"
+    } catch {
+        $output += "Unable to retrieve site defaults: $_"
+    }
     
     # Logging Configuration
     Add-Section "LOGGING CONFIGURATION"
-    $logFile = $siteDefaults.GetChildElement('logFile')
-    $output += "Log Format: $((Get-IISConfigAttributeValue -ConfigElement $logFile -AttributeName 'logFormat'))"
-    $output += "Log Directory: $((Get-IISConfigAttributeValue -ConfigElement $logFile -AttributeName 'directory'))"
-    $output += "Log Period: $((Get-IISConfigAttributeValue -ConfigElement $logFile -AttributeName 'period'))"
-    $output += "Log File Rollover: $((Get-IISConfigAttributeValue -ConfigElement $logFile -AttributeName 'localTimeRollover'))"
+    try {
+        $logging = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name *
+        $output += "Log Format: $(Get-SafeValue $logging.logFormat)"
+        $output += "Log Directory: $(Get-SafeValue $logging.directory)"
+        $output += "Log Period: $(Get-SafeValue $logging.period)"
+        $output += "Local Time Rollover: $(Get-SafeValue $logging.localTimeRollover)"
+        $output += "Truncate Size (bytes): $(Get-SafeValue $logging.truncateSize)"
+        $output += "Log Target: $(Get-SafeValue $logging.logTargetW3C)"
+    } catch {
+        $output += "Unable to retrieve logging configuration: $_"
+    }
     
     # Compression Settings
     Add-Section "COMPRESSION SETTINGS"
-    $staticCompression = Get-IISConfigSection -SectionPath "system.webServer/httpCompression" | Get-IISConfigElement -ChildElementName "staticTypes"
-    $dynamicCompression = Get-IISConfigSection -SectionPath "system.webServer/httpCompression" | Get-IISConfigElement -ChildElementName "dynamicTypes"
-    $output += "Static Compression Enabled: $(Get-WebConfigurationProperty -Filter "system.webServer/urlCompression" -PSPath "IIS:\" -Name "doStaticCompression")"
-    $output += "Dynamic Compression Enabled: $(Get-WebConfigurationProperty -Filter "system.webServer/urlCompression" -PSPath "IIS:\" -Name "doDynamicCompression")"
+    try {
+        $staticComp = Get-WebConfigurationProperty -Filter "system.webServer/urlCompression" -PSPath "IIS:\" -Name "doStaticCompression"
+        $dynamicComp = Get-WebConfigurationProperty -Filter "system.webServer/urlCompression" -PSPath "IIS:\" -Name "doDynamicCompression"
+        $output += "Static Compression Enabled: $(Get-SafeValue $staticComp.Value $staticComp)"
+        $output += "Dynamic Compression Enabled: $(Get-SafeValue $dynamicComp.Value $dynamicComp)"
+        
+        # Compression levels
+        $httpComp = Get-WebConfigurationProperty -Filter "system.webServer/httpCompression" -PSPath "IIS:\" -Name *
+        $output += "Static Compression Level: $(Get-SafeValue $httpComp.staticCompressionLevel)"
+        $output += "Dynamic Compression Level: $(Get-SafeValue $httpComp.dynamicCompressionLevel)"
+        $output += "Min File Size for Compression: $(Get-SafeValue $httpComp.minFileSizeForComp)"
+    } catch {
+        $output += "Unable to retrieve compression settings: $_"
+    }
     
     # Request Filtering
     Add-Section "REQUEST FILTERING"
-    $requestFiltering = Get-IISConfigSection -SectionPath "system.webServer/security/requestFiltering"
-    $requestLimits = $requestFiltering.GetChildElement('requestLimits')
-    $output += "Max Allowed Content Length: $((Get-IISConfigAttributeValue -ConfigElement $requestLimits -AttributeName 'maxAllowedContentLength')) bytes"
-    $output += "Max URL Length: $((Get-IISConfigAttributeValue -ConfigElement $requestLimits -AttributeName 'maxUrl'))"
-    $output += "Max Query String: $((Get-IISConfigAttributeValue -ConfigElement $requestLimits -AttributeName 'maxQueryString'))"
+    try {
+        $maxAllowedContentLength = Get-WebConfigurationProperty -Filter "system.webServer/security/requestFiltering/requestLimits" -PSPath "IIS:\" -Name "maxAllowedContentLength"
+        $maxUrl = Get-WebConfigurationProperty -Filter "system.webServer/security/requestFiltering/requestLimits" -PSPath "IIS:\" -Name "maxUrl"
+        $maxQueryString = Get-WebConfigurationProperty -Filter "system.webServer/security/requestFiltering/requestLimits" -PSPath "IIS:\" -Name "maxQueryString"
+        
+        $output += "Max Allowed Content Length: $(Get-SafeValue $maxAllowedContentLength.Value $maxAllowedContentLength) bytes"
+        $output += "Max URL Length: $(Get-SafeValue $maxUrl.Value $maxUrl)"
+        $output += "Max Query String: $(Get-SafeValue $maxQueryString.Value $maxQueryString)"
+        
+        # File Extensions
+        $fileExtensions = Get-WebConfiguration -Filter "system.webServer/security/requestFiltering/fileExtensions/*" -PSPath "IIS:\" | Select-Object -First 10
+        if ($fileExtensions) {
+            $output += "Denied File Extensions (first 10):"
+            foreach ($ext in $fileExtensions) {
+                if ($ext.allowed -eq $false) {
+                    $output += "  - $($ext.fileExtension)"
+                }
+            }
+        }
+    } catch {
+        $output += "Unable to retrieve request filtering settings: $_"
+    }
     
     # 2. ALL APPLICATION POOLS
     Add-Section "APPLICATION POOLS"
-    $appPools = Get-IISAppPool
-    foreach ($pool in $appPools) {
-        $output += ""
-        $output += "Pool Name: $($pool.Name)"
-        $output += "  State: $($pool.State)"
-        $output += "  Auto Start: $($pool.AutoStart)"
-        $output += "  Pipeline Mode: $($pool.ManagedPipelineMode)"
-        $output += "  Runtime Version: $($pool.ManagedRuntimeVersion)"
-        $output += "  Enable 32-Bit: $($pool.Enable32BitAppOnWin64)"
-        $output += "  Identity Type: $($pool.ProcessModel.IdentityType)"
-        $output += "  Idle Timeout: $($pool.ProcessModel.IdleTimeout)"
-        $output += "  Max Worker Processes: $($pool.ProcessModel.MaxProcesses)"
+    try {
+        $appPools = Get-ChildItem IIS:\AppPools\ -ErrorAction SilentlyContinue
+        foreach ($pool in $appPools) {
+            $output += ""
+            $output += "Pool Name: $($pool.Name)"
+            $output += "  State: $($pool.State)"
+            $output += "  Auto Start: $(Get-SafeValue $pool.autoStart)"
+            $output += "  Pipeline Mode: $(Get-SafeValue $pool.managedPipelineMode)"
+            $output += "  Runtime Version: $(Get-SafeValue $pool.managedRuntimeVersion)"
+            $output += "  Enable 32-Bit: $(Get-SafeValue $pool.enable32BitAppOnWin64)"
+            $output += "  Start Mode: $(Get-SafeValue $pool.startMode)"
+            $output += "  Queue Length: $(Get-SafeValue $pool.queueLength)"
+            
+            # Process Model
+            $output += "  Process Identity: $(Get-SafeValue $pool.processModel.identityType)"
+            $output += "  Idle Timeout: $(Get-SafeValue $pool.processModel.idleTimeout)"
+            $output += "  Max Processes: $(Get-SafeValue $pool.processModel.maxProcesses)"
+            
+            # CPU
+            $output += "  CPU Limit (%): $(Get-SafeValue $pool.cpu.limit)"
+            $output += "  CPU Action: $(Get-SafeValue $pool.cpu.action)"
+            
+            # Recycling
+            $output += "  Recycling Time Interval: $(Get-SafeValue $pool.recycling.periodicRestart.time)"
+        }
+    } catch {
+        $output += "Unable to retrieve application pools: $_"
     }
     
     # 3. ALL SITES SUMMARY
     Add-Section "SITES SUMMARY"
-    $sites = Get-IISSite
-    foreach ($site in $sites) {
-        $output += ""
-        $output += "Site: $($site.Name) [ID: $($site.Id)]"
-        $output += "  State: $($site.State)"
-        $output += "  Physical Path: $($site.Applications['/'].VirtualDirectories['/'].PhysicalPath)"
-        $output += "  Application Pool: $($site.Applications['/'].ApplicationPoolName)"
-        $output += "  Bindings:"
-        foreach ($binding in $site.Bindings) {
-            $output += "    - $($binding.Protocol)://$($binding.BindingInformation)"
-            if ($binding.Protocol -eq "https") {
-                $output += "      SSL Flags: $($binding.SslFlags)"
+    try {
+        $sites = Get-ChildItem IIS:\Sites\ -ErrorAction SilentlyContinue
+        foreach ($site in $sites) {
+            $output += ""
+            $output += "Site: $($site.Name) [ID: $($site.Id)]"
+            $output += "  State: $($site.State)"
+            $output += "  Physical Path: $(Get-SafeValue $site.physicalPath)"
+            $output += "  Application Pool: $(Get-SafeValue $site.applicationPool)"
+            $output += "  Enabled Protocols: $(Get-SafeValue $site.enabledProtocols)"
+            $output += "  Bindings:"
+            
+            $bindings = Get-WebBinding -Name $site.Name -ErrorAction SilentlyContinue
+            foreach ($binding in $bindings) {
+                $bindingInfo = $binding.bindingInformation
+                $output += "    - $($binding.protocol)://$bindingInfo"
+                if ($binding.sslFlags) {
+                    $output += "      SSL Flags: $($binding.sslFlags)"
+                }
             }
         }
+    } catch {
+        $output += "Unable to retrieve sites: $_"
     }
     
     # 4. SPECIFIC SITE DETAILS (if site name provided)
     if ($SiteName) {
         Add-Section "DETAILED CONFIGURATION FOR SITE: $SiteName"
         
-        $site = Get-IISSite -Name $SiteName -ErrorAction SilentlyContinue
-        if ($site) {
-            # Basic Info
-            $output += "Site Name: $($site.Name)"
-            $output += "Site ID: $($site.Id)"
-            $output += "State: $($site.State)"
-            $output += "Server Auto Start: $($site.ServerAutoStart)"
-            
-            # Bindings Detail
-            $output += ""
-            $output += "BINDINGS:"
-            foreach ($binding in $site.Bindings) {
-                $bindingInfo = $binding.BindingInformation -split ':'
-                $output += "  Protocol: $($binding.Protocol)"
-                $output += "  IP Address: $(if($bindingInfo[0]) {$bindingInfo[0]} else {'All Unassigned'})"
-                $output += "  Port: $($bindingInfo[1])"
-                $output += "  Host Name: $($bindingInfo[2])"
-                if ($binding.Protocol -eq "https") {
-                    $output += "  SSL Flags: $($binding.SslFlags)"
-                    $output += "  Certificate Hash: $(if($binding.CertificateHash) {[System.BitConverter]::ToString($binding.CertificateHash)} else {'None'})"
-                }
+        $siteExists = Test-Path "IIS:\Sites\$SiteName"
+        if ($siteExists) {
+            try {
+                $site = Get-Item "IIS:\Sites\$SiteName"
+                
+                # Basic Info
+                $output += "Site Name: $($site.Name)"
+                $output += "Site ID: $($site.Id)"
+                $output += "State: $($site.State)"
+                $output += "Physical Path: $(Get-SafeValue $site.physicalPath)"
+                $output += "Application Pool: $(Get-SafeValue $site.applicationPool)"
+                $output += "Server Auto Start: $(Get-SafeValue $site.serverAutoStart)"
+                $output += "Enabled Protocols: $(Get-SafeValue $site.enabledProtocols)"
+                
+                # Bindings Detail
                 $output += ""
-            }
-            
-            # Applications
-            $output += "APPLICATIONS:"
-            foreach ($app in $site.Applications) {
-                $output += "  Path: $($app.Path)"
-                $output += "    Application Pool: $($app.ApplicationPoolName)"
-                $output += "    Enabled Protocols: $($app.EnabledProtocols)"
+                $output += "BINDINGS:"
+                $bindings = Get-WebBinding -Name $SiteName
+                foreach ($binding in $bindings) {
+                    $bindingInfo = $binding.bindingInformation -split ':'
+                    $output += "  Protocol: $($binding.protocol)"
+                    $output += "  IP Address: $(if($bindingInfo[0]) {$bindingInfo[0]} else {'All Unassigned'})"
+                    $output += "  Port: $($bindingInfo[1])"
+                    $output += "  Host Name: $(Get-SafeValue $bindingInfo[2] 'None')"
+                    if ($binding.protocol -eq "https") {
+                        $output += "  SSL Flags: $(Get-SafeValue $binding.sslFlags)"
+                        $cert = Get-ChildItem IIS:SSLBindings | Where-Object { $_.Port -eq $bindingInfo[1] } | Select-Object -First 1
+                        if ($cert) {
+                            $output += "  Certificate Thumbprint: $($cert.Thumbprint)"
+                        }
+                    }
+                    $output += ""
+                }
                 
                 # Virtual Directories
-                $output += "    Virtual Directories:"
-                foreach ($vdir in $app.VirtualDirectories) {
-                    $output += "      Path: $($vdir.Path)"
-                    $output += "        Physical Path: $($vdir.PhysicalPath)"
-                    $output += "        Logon Method: $($vdir.LogonMethod)"
-                    if ($vdir.UserName) {
-                        $output += "        Username: $($vdir.UserName)"
+                $output += "VIRTUAL DIRECTORIES:"
+                $vdirs = Get-WebVirtualDirectory -Site $SiteName -ErrorAction SilentlyContinue
+                if ($vdirs) {
+                    foreach ($vdir in $vdirs) {
+                        $output += "  Path: $($vdir.path)"
+                        $output += "    Physical Path: $($vdir.physicalPath)"
+                    }
+                } else {
+                    $output += "  Default: $($site.physicalPath)"
+                }
+                
+                # Applications
+                $output += ""
+                $output += "APPLICATIONS:"
+                $apps = Get-WebApplication -Site $SiteName -ErrorAction SilentlyContinue
+                if ($apps) {
+                    foreach ($app in $apps) {
+                        $output += "  Path: $($app.path)"
+                        $output += "    Physical Path: $($app.physicalPath)"
+                        $output += "    Application Pool: $($app.applicationPool)"
+                        $output += "    Enabled Protocols: $(Get-SafeValue $app.enabledProtocols)"
+                    }
+                } else {
+                    $output += "  No additional applications configured"
+                }
+                
+                # Authentication Settings
+                $output += ""
+                $output += "AUTHENTICATION:"
+                $authTypes = @(
+                    @{Name='Anonymous'; Path='anonymousAuthentication'},
+                    @{Name='Basic'; Path='basicAuthentication'},
+                    @{Name='Windows'; Path='windowsAuthentication'},
+                    @{Name='Digest'; Path='digestAuthentication'},
+                    @{Name='Forms'; Path='formsAuthentication'}
+                )
+                
+                foreach ($authType in $authTypes) {
+                    try {
+                        $auth = Get-WebConfigurationProperty -Filter "system.webServer/security/authentication/$($authType.Path)" `
+                                -Name "enabled" -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
+                        $authValue = if ($null -ne $auth.Value) { $auth.Value } elseif ($null -ne $auth) { $auth } else { "Not Configured" }
+                        $output += "  $($authType.Name) Authentication: $authValue"
+                    } catch {
+                        $output += "  $($authType.Name) Authentication: Not Configured"
                     }
                 }
-            }
-            
-            # Authentication Settings
-            $output += ""
-            $output += "AUTHENTICATION:"
-            $authTypes = @('anonymousAuthentication', 'basicAuthentication', 'digestAuthentication', 
-                          'windowsAuthentication', 'formsAuthentication')
-            
-            foreach ($authType in $authTypes) {
-                try {
-                    $auth = Get-WebConfigurationProperty -Filter "system.webServer/security/authentication/$authType" `
-                            -Name "enabled" -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                    $output += "  $($authType): $auth"
-                } catch {
-                    $output += "  $($authType): Not Configured"
+                
+                # Directory Browsing
+                $dirBrowse = Get-WebConfigurationProperty -Filter "system.webServer/directoryBrowse" `
+                             -Name "enabled" -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
+                $output += ""
+                $output += "FEATURES:"
+                $dirBrowseValue = if ($null -ne $dirBrowse.Value) { $dirBrowse.Value } elseif ($null -ne $dirBrowse) { $dirBrowse } else { "Not Set" }
+                $output += "  Directory Browsing: $dirBrowseValue"
+                
+                # Default Documents
+                $output += ""
+                $output += "DEFAULT DOCUMENTS:"
+                $defaultDocs = Get-WebConfiguration -Filter "system.webServer/defaultDocument/files/*" `
+                              -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
+                if ($defaultDocs) {
+                    foreach ($doc in $defaultDocs) {
+                        $output += "  - $($doc.value)"
+                    }
+                } else {
+                    $output += "  Using global defaults"
                 }
-            }
-            
-            # Directory Browsing
-            $dirBrowse = Get-WebConfigurationProperty -Filter "system.webServer/directoryBrowse" `
-                         -Name "enabled" -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-            $output += ""
-            $output += "FEATURES:"
-            $output += "  Directory Browsing: $dirBrowse"
-            
-            # Default Documents
-            $output += ""
-            $output += "DEFAULT DOCUMENTS:"
-            $defaultDocs = Get-WebConfiguration -Filter "system.webServer/defaultDocument/files/*" `
+                
+                # Custom Error Pages
+                $output += ""
+                $output += "CUSTOM ERROR PAGES:"
+                $errorPages = Get-WebConfiguration -Filter "system.webServer/httpErrors/*" `
+                             -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
+                if ($errorPages) {
+                    $customErrors = $errorPages | Where-Object { $_.path -ne $null } | Select-Object -First 5
+                    if ($customErrors) {
+                        foreach ($error in $customErrors) {
+                            $output += "  Status: $($error.statusCode).$($error.subStatusCode) - Path: $($error.path)"
+                        }
+                        $output += "  ... (showing first 5)"
+                    } else {
+                        $output += "  No custom error pages configured"
+                    }
+                } else {
+                    $output += "  Using default error pages"
+                }
+                
+                # Response Headers
+                $output += ""
+                $output += "CUSTOM RESPONSE HEADERS:"
+                $headers = Get-WebConfiguration -Filter "system.webServer/httpProtocol/customHeaders/*" `
                           -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-            foreach ($doc in $defaultDocs) {
-                $output += "  - $($doc.value)"
-            }
-            
-            # Error Pages
-            $output += ""
-            $output += "CUSTOM ERROR PAGES:"
-            $errorPages = Get-WebConfiguration -Filter "system.webServer/httpErrors/*" `
-                         -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-            foreach ($error in $errorPages) {
-                if ($error.path) {
-                    $output += "  Status Code: $($error.statusCode) - Path: $($error.path)"
+                if ($headers) {
+                    foreach ($header in $headers) {
+                        $output += "  $($header.name): $($header.value)"
+                    }
+                } else {
+                    $output += "  No custom headers configured"
                 }
+                
+                # URL Rewrite Rules (if module is installed)
+                $output += ""
+                $output += "URL REWRITE RULES:"
+                try {
+                    $rules = Get-WebConfiguration -Filter "system.webServer/rewrite/rules/*" `
+                            -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
+                    if ($rules) {
+                        foreach ($rule in $rules | Select-Object -First 5) {
+                            $output += "  - $($rule.name) [Enabled: $(Get-SafeValue $rule.enabled)]"
+                        }
+                    } else {
+                        $output += "  No URL rewrite rules configured"
+                    }
+                } catch {
+                    $output += "  URL Rewrite module not installed or no rules configured"
+                }
+                
+            } catch {
+                $output += "ERROR retrieving site details: $_"
             }
-            
-            # Mime Types
-            $output += ""
-            $output += "MIME TYPES (Site-Specific):"
-            $mimeTypes = Get-WebConfiguration -Filter "system.webServer/staticContent/*" `
-                        -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue | 
-                        Where-Object { $_.fileExtension -ne $null } | Select-Object -First 10
-            foreach ($mime in $mimeTypes) {
-                $output += "  $($mime.fileExtension) : $($mime.mimeType)"
-            }
-            $output += "  ... (showing first 10)"
-            
-            # Response Headers
-            $output += ""
-            $output += "CUSTOM RESPONSE HEADERS:"
-            $headers = Get-WebConfiguration -Filter "system.webServer/httpProtocol/customHeaders/*" `
-                      -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-            foreach ($header in $headers) {
-                $output += "  $($header.name): $($header.value)"
-            }
-            
         } else {
             $output += "ERROR: Site '$SiteName' not found!"
         }
     }
     
-    # 5. MODULES
-    Add-Section "GLOBAL MODULES"
-    $modules = Get-WebConfiguration -Filter "system.webServer/globalModules/*" -PSPath "IIS:\" | Select-Object -First 20
-    foreach ($module in $modules) {
-        $output += "  $($module.name)"
-    }
-    $output += "  ... (showing first 20)"
-    
-    # 6. ISAPI FILTERS
-    Add-Section "ISAPI FILTERS"
-    $filters = Get-WebConfiguration -Filter "system.webServer/isapiFilters/*" -PSPath "IIS:\" -ErrorAction SilentlyContinue
-    if ($filters) {
-        foreach ($filter in $filters) {
-            $output += "  $($filter.name): $($filter.path)"
+    # 5. HANDLER MAPPINGS
+    Add-Section "HANDLER MAPPINGS (First 20)"
+    try {
+        $handlers = Get-WebConfiguration -Filter "system.webServer/handlers/*" -PSPath "IIS:\" | Select-Object -First 20
+        foreach ($handler in $handlers) {
+            $output += "  $($handler.name): $($handler.path) -> $($handler.type)"
         }
-    } else {
-        $output += "  No ISAPI filters configured"
+    } catch {
+        $output += "Unable to retrieve handler mappings: $_"
+    }
+    
+    # 6. MODULES
+    Add-Section "GLOBAL MODULES (First 20)"
+    try {
+        $modules = Get-WebConfiguration -Filter "system.webServer/modules/*" -PSPath "IIS:\" | Select-Object -First 20
+        foreach ($module in $modules) {
+            $output += "  $($module.name)"
+        }
+    } catch {
+        $output += "Unable to retrieve modules: $_"
+    }
+    
+    # 7. ISAPI FILTERS
+    Add-Section "ISAPI FILTERS"
+    try {
+        $filters = Get-WebConfiguration -Filter "system.webServer/isapiFilters/*" -PSPath "IIS:\" -ErrorAction SilentlyContinue
+        if ($filters) {
+            foreach ($filter in $filters) {
+                $output += "  $($filter.name): $($filter.path)"
+            }
+        } else {
+            $output += "  No ISAPI filters configured"
+        }
+    } catch {
+        $output += "  Unable to retrieve ISAPI filters or none configured"
     }
     
 } catch {
     $output += ""
-    $output += "ERROR: $($_.Exception.Message)"
+    $output += "GENERAL ERROR: $($_.Exception.Message)"
     $output += "Stack Trace: $($_.ScriptStackTrace)"
 }
 
@@ -293,14 +454,28 @@ $output += "=" * 80
 # Save to file
 $output | Out-File -FilePath $OutputPath -Encoding UTF8
 
+Write-Host ""
 Write-Host "IIS configuration exported successfully!" -ForegroundColor Green
 Write-Host "Output file: $OutputPath" -ForegroundColor Cyan
 
 # Display summary
 Write-Host ""
 Write-Host "Summary:" -ForegroundColor Yellow
-Write-Host "  - Total Sites: $($sites.Count)"
-Write-Host "  - Total Application Pools: $($appPools.Count)"
+try {
+    $siteCount = (Get-ChildItem IIS:\Sites\ -ErrorAction SilentlyContinue | Measure-Object).Count
+    $poolCount = (Get-ChildItem IIS:\AppPools\ -ErrorAction SilentlyContinue | Measure-Object).Count
+    Write-Host "  - Total Sites: $siteCount"
+    Write-Host "  - Total Application Pools: $poolCount"
+} catch {
+    Write-Host "  - Configuration exported (counts unavailable)"
+}
+
 if ($SiteName) {
     Write-Host "  - Detailed export for site: $SiteName" -ForegroundColor Cyan
+}
+
+# Open file option
+$openFile = Read-Host "`nDo you want to open the output file now? (Y/N)"
+if ($openFile -eq 'Y' -or $openFile -eq 'y') {
+    Start-Process notepad.exe -ArgumentList $OutputPath
 }
