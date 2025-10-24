@@ -271,7 +271,384 @@
 
             _dbContextMock
                 .Setup(x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId)))using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Moq;
+using NUnit.Framework;
+
+namespace YourNamespace.Tests
+{
+    [TestFixture]
+    public class HousekeepingRepositoryTests
+    {
+        private Mock<ILogger<IAdjustmentRepository>> _loggerMock;
+        private Mock<IDbContextFactory<TestDbContext>> _dbContextFactoryMock;
+        private Mock<TestDbContext> _dbContextMock;
+        private Mock<ILoggerFactory> _loggerFactoryMock;
+        private HousekeepingRepository<TestDbContext> _repository;
+
+        [SetUp]
+        public void SetUp()
+        {
+            _loggerMock = new Mock<ILogger<IAdjustmentRepository>>();
+            _dbContextFactoryMock = new Mock<IDbContextFactory<TestDbContext>>();
+            _loggerFactoryMock = new Mock<ILoggerFactory>();
+            
+            // Create DbContextOptions for TestDbContext
+            var options = new DbContextOptionsBuilder<TestDbContext>()
+                .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+                .Options;
+
+            _dbContextMock = new Mock<TestDbContext>(options, _loggerFactoryMock.Object);
+
+            _dbContextFactoryMock
+                .Setup(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(_dbContextMock.Object);
+
+            _repository = new HousekeepingRepository<TestDbContext>(
+                _loggerMock.Object,
+                _dbContextFactoryMock.Object);
+        }
+
+        #region GetHousekeepingRequestTypes Tests
+
+        [Test]
+        public async Task GetHousekeepingRequestTypes_WithNullWorkspace_ReturnsAllRequestTypes()
+        {
+            // Arrange
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" },
+                new HkRequestType { RequestTypeId = 3, RequestTypeDesc = "Type 3", Workspace = "WS3" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes(null);
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.AreEqual(3, result.Count);
+            _dbContextFactoryMock.Verify(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        [Test]
+        public async Task GetHousekeepingRequestTypes_WithEmptyWorkspace_ReturnsAllRequestTypes()
+        {
+            // Arrange
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes(string.Empty);
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
+        }
+
+        [Test]
+        public async Task GetHousekeepingRequestTypes_WithSpecificWorkspace_ReturnsFilteredRequestTypes()
+        {
+            // Arrange
+            var workspace = "WS1";
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" },
+                new HkRequestType { RequestTypeId = 3, RequestTypeDesc = "Type 3", Workspace = "WS1" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes(workspace);
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
+            Assert.That(result, Has.All.Property("Workspace").EqualTo(workspace));
+        }
+
+        [Test]
+        public async Task GetHousekeepingRequestTypes_WithNonExistentWorkspace_ReturnsEmptyList()
+        {
+            // Arrange
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes("NonExistent");
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.IsEmpty(result);
+        }
+
+        #endregion
+
+        #region GetHousekeepingRequests Tests
+
+        [Test]
+        public async Task GetHousekeepingRequests_WithValidRequestTypeId_ReturnsRequests()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            var expectedRequests = new List<HkRequest>
+            {
+                new HkRequest { RequestId = 1, LastHoldDate = DateTime.Now },
+                new HkRequest { RequestId = 2, LastHoldDate = DateTime.Now.AddDays(-1) }
+            };
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)))
+                .ReturnsAsync(expectedRequests);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
+            Assert.AreEqual(expectedRequests, result);
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)),
+                Times.Once);
+        }
+
+        [Test]
+        public async Task GetHousekeepingRequests_WithNoResults_ReturnsEmptyList()
+        {
+            // Arrange
+            var requestTypeId = 999;
+            var expectedRequests = new List<HkRequest>();
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)))
+                .ReturnsAsync(expectedRequests);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            Assert.IsNotNull(result);
+            Assert.IsEmpty(result);
+        }
+
+        [Test]
+        public async Task GetHousekeepingRequests_CreatesNewDbContext()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.IsAny<GetHkRequestIdListParameter>()))
+                .ReturnsAsync(new List<HkRequest>());
+
+            // Act
+            await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            _dbContextFactoryMock.Verify(
+                x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        #endregion
+
+        #region UpdateRequestHousekeeping Tests
+
+        [Test]
+        public async Task UpdateRequestHousekeeping_WithValidDateAndRequestTypeId_CallsStoredProcedure()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            var date = DateTime.Now;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == date)))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == date)),
+                Times.Once);
+        }
+
+        [Test]
+        public async Task UpdateRequestHousekeeping_WithNullDate_CallsStoredProcedureWithNullDate()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            DateTime? date = null;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == null)))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == null)),
+                Times.Once);
+        }
+
+        [Test]
+        public async Task UpdateRequestHousekeeping_CreatesNewDbContext()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            var date = DateTime.Now;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(It.IsAny<HoldRequestHkParameter>()))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextFactoryMock.Verify(
+                x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        [TestCase(1)]
+        [TestCase(100)]
+        [TestCase(999)]
+        public async Task UpdateRequestHousekeeping_WithDifferentRequestTypeIds_PassesCorrectId(int requestTypeId)
+        {
+            // Arrange
+            var date = DateTime.Now;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(
                     It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId)))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId)),
+                Times.Once);
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        private Mock<DbSet<T>> CreateMockDbSet<T>(List<T> data) where T : class
+        {
+            var queryable = data.AsQueryable();
+            var mockDbSet = new Mock<DbSet<T>>();
+
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.Provider).Returns(queryable.Provider);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.Expression).Returns(queryable.Expression);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.ElementType).Returns(queryable.ElementType);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.GetEnumerator()).Returns(queryable.GetEnumerator());
+            mockDbSet.As<IAsyncEnumerable<T>>()
+                .Setup(m => m.GetAsyncEnumerator(It.IsAny<CancellationToken>()))
+                .Returns(new TestAsyncEnumerator<T>(queryable.GetEnumerator()));
+
+            return mockDbSet;
+        }
+
+        #endregion
+    }
+
+    #region Test Helper Classes
+
+    // Test DbContext for testing purposes
+    public class TestDbContext : BaseDbContext
+    {
+        public TestDbContext(DbContextOptions<TestDbContext> options, ILoggerFactory loggerFactory)
+            : base(options, loggerFactory)
+        {
+        }
+
+        public virtual DbSet<HkRequestType> HousekeepingRequestTypes { get; set; }
+
+        public virtual Task<IList<TResult>> ExecuteStoredProcedureAsync<TResult, TParameter>(TParameter parameter)
+        {
+            return Task.FromResult<IList<TResult>>(new List<TResult>());
+        }
+
+        public virtual Task ExecuteStoredProcedureAsync<TParameter>(TParameter parameter)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    // Helper class for async enumerable mocking
+    internal class TestAsyncEnumerator<T> : IAsyncEnumerator<T>
+    {
+        private readonly IEnumerator<T> _inner;
+
+        public TestAsyncEnumerator(IEnumerator<T> inner)
+        {
+            _inner = inner;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            _inner.Dispose();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<bool> MoveNextAsync()
+        {
+            return ValueTask.FromResult(_inner.MoveNext());
+        }
+
+        public T Current => _inner.Current;
+    }
+
+    #endregion
+}
                 .Returns(Task.CompletedTask);
 
             // Act
