@@ -6,18 +6,20 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Moq;
-using Xunit;
+using NUnit.Framework;
 
 namespace YourNamespace.Tests
 {
+    [TestFixture]
     public class HousekeepingRepositoryTests
     {
-        private readonly Mock<ILogger<IAdjustmentRepository>> _loggerMock;
-        private readonly Mock<IDbContextFactory<TestDbContext>> _dbContextFactoryMock;
-        private readonly Mock<TestDbContext> _dbContextMock;
-        private readonly HousekeepingRepository<TestDbContext> _repository;
+        private Mock<ILogger<IAdjustmentRepository>> _loggerMock;
+        private Mock<IDbContextFactory<TestDbContext>> _dbContextFactoryMock;
+        private Mock<TestDbContext> _dbContextMock;
+        private HousekeepingRepository<TestDbContext> _repository;
 
-        public HousekeepingRepositoryTests()
+        [SetUp]
+        public void SetUp()
         {
             _loggerMock = new Mock<ILogger<IAdjustmentRepository>>();
             _dbContextFactoryMock = new Mock<IDbContextFactory<TestDbContext>>();
@@ -34,7 +36,7 @@ namespace YourNamespace.Tests
 
         #region GetHousekeepingRequestTypes Tests
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequestTypes_WithNullWorkspace_ReturnsAllRequestTypes()
         {
             // Arrange
@@ -57,7 +59,7 @@ namespace YourNamespace.Tests
             _dbContextFactoryMock.Verify(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()), Times.Once);
         }
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequestTypes_WithEmptyWorkspace_ReturnsAllRequestTypes()
         {
             // Arrange
@@ -78,7 +80,7 @@ namespace YourNamespace.Tests
             Assert.Equal(2, result.Count);
         }
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequestTypes_WithSpecificWorkspace_ReturnsFilteredRequestTypes()
         {
             // Arrange
@@ -102,7 +104,7 @@ namespace YourNamespace.Tests
             Assert.All(result, rt => Assert.Equal(workspace, rt.Workspace));
         }
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequestTypes_WithNonExistentWorkspace_ReturnsEmptyList()
         {
             // Arrange
@@ -127,7 +129,7 @@ namespace YourNamespace.Tests
 
         #region GetHousekeepingRequests Tests
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequests_WithValidRequestTypeId_ReturnsRequests()
         {
             // Arrange
@@ -156,7 +158,7 @@ namespace YourNamespace.Tests
                 Times.Once);
         }
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequests_WithNoResults_ReturnsEmptyList()
         {
             // Arrange
@@ -176,7 +178,7 @@ namespace YourNamespace.Tests
             Assert.Empty(result);
         }
 
-        [Fact]
+        [Test]
         public async Task GetHousekeepingRequests_CreatesNewDbContext()
         {
             // Arrange
@@ -199,7 +201,7 @@ namespace YourNamespace.Tests
 
         #region UpdateRequestHousekeeping Tests
 
-        [Fact]
+        [Test]
         public async Task UpdateRequestHousekeeping_WithValidDateAndRequestTypeId_CallsStoredProcedure()
         {
             // Arrange
@@ -225,7 +227,7 @@ namespace YourNamespace.Tests
                 Times.Once);
         }
 
-        [Fact]
+        [Test]
         public async Task UpdateRequestHousekeeping_WithNullDate_CallsStoredProcedureWithNullDate()
         {
             // Arrange
@@ -251,7 +253,7 @@ namespace YourNamespace.Tests
                 Times.Once);
         }
 
-        [Fact]
+        [Test]
         public async Task UpdateRequestHousekeeping_CreatesNewDbContext()
         {
             // Arrange
@@ -271,10 +273,9 @@ namespace YourNamespace.Tests
                 Times.Once);
         }
 
-        [Theory]
-        [InlineData(1)]
-        [InlineData(100)]
-        [InlineData(999)]
+        [TestCase(1)]
+        [TestCase(100)]
+        [TestCase(999)]
         public async Task UpdateRequestHousekeeping_WithDifferentRequestTypeIds_PassesCorrectId(int requestTypeId)
         {
             // Arrange
