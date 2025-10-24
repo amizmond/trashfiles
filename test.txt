@@ -1,15 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
-using Moq;
-using NUnit.Framework;
-
-namespace YourNamespace.Tests
-{
     [TestFixture]
     public class HousekeepingRepositoryTests
     {
@@ -54,8 +42,8 @@ namespace YourNamespace.Tests
             var result = await _repository.GetHousekeepingRequestTypes(null);
 
             // Assert
-            Assert.NotNull(result);
-            Assert.Equal(3, result.Count);
+            Assert.IsNotNull(result);
+            Assert.AreEqual(3, result.Count);
             _dbContextFactoryMock.Verify(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()), Times.Once);
         }
 
@@ -76,8 +64,8 @@ namespace YourNamespace.Tests
             var result = await _repository.GetHousekeepingRequestTypes(string.Empty);
 
             // Assert
-            Assert.NotNull(result);
-            Assert.Equal(2, result.Count);
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
         }
 
         [Test]
@@ -99,9 +87,9 @@ namespace YourNamespace.Tests
             var result = await _repository.GetHousekeepingRequestTypes(workspace);
 
             // Assert
-            Assert.NotNull(result);
-            Assert.Equal(2, result.Count);
-            Assert.All(result, rt => Assert.Equal(workspace, rt.Workspace));
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
+            Assert.That(result, Has.All.Property("Workspace").EqualTo(workspace));
         }
 
         [Test]
@@ -121,8 +109,8 @@ namespace YourNamespace.Tests
             var result = await _repository.GetHousekeepingRequestTypes("NonExistent");
 
             // Assert
-            Assert.NotNull(result);
-            Assert.Empty(result);
+            Assert.IsNotNull(result);
+            Assert.IsEmpty(result);
         }
 
         #endregion
@@ -149,9 +137,9 @@ namespace YourNamespace.Tests
             var result = await _repository.GetHousekeepingRequests(requestTypeId);
 
             // Assert
-            Assert.NotNull(result);
-            Assert.Equal(2, result.Count);
-            Assert.Equal(expectedRequests, result);
+            Assert.IsNotNull(result);
+            Assert.AreEqual(2, result.Count);
+            Assert.AreEqual(expectedRequests, result);
             _dbContextMock.Verify(
                 x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
                     It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)),
@@ -174,8 +162,8 @@ namespace YourNamespace.Tests
             var result = await _repository.GetHousekeepingRequests(requestTypeId);
 
             // Assert
-            Assert.NotNull(result);
-            Assert.Empty(result);
+            Assert.IsNotNull(result);
+            Assert.IsEmpty(result);
         }
 
         [Test]
