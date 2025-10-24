@@ -1,503 +1,364 @@
-# IIS Configuration Export Script
-# Compatible with IIS 7.0+
-# Run as Administrator
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Xunit;
 
-param(
-    [Parameter(Mandatory=$false)]
-    [string]$SiteName = "",
-    
-    [Parameter(Mandatory=$false)]
-    [string]$OutputPath = ".\IIS_Config_Export_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-)
-
-# Check if running as Administrator
-if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator"))
+namespace YourNamespace.Tests
 {
-    Write-Error "This script must be run as Administrator. Exiting..."
-    exit 1
-}
+    public class HousekeepingRepositoryTests
+    {
+        private readonly Mock<ILogger<IAdjustmentRepository>> _loggerMock;
+        private readonly Mock<IDbContextFactory<TestDbContext>> _dbContextFactoryMock;
+        private readonly Mock<TestDbContext> _dbContextMock;
+        private readonly HousekeepingRepository<TestDbContext> _repository;
 
-# Import IIS module
-try {
-    Import-Module WebAdministration -ErrorAction Stop
-    Write-Host "WebAdministration module loaded successfully" -ForegroundColor Green
-} catch {
-    Write-Error "Failed to import WebAdministration module. Ensure IIS Management Scripts and Tools are installed."
-    exit 1
-}
+        public HousekeepingRepositoryTests()
+        {
+            _loggerMock = new Mock<ILogger<IAdjustmentRepository>>();
+            _dbContextFactoryMock = new Mock<IDbContextFactory<TestDbContext>>();
+            _dbContextMock = new Mock<TestDbContext>();
 
-# Initialize output
-$output = @()
-$output += "=" * 80
-$output += "IIS CONFIGURATION EXPORT"
-$output += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-$output += "Server: $env:COMPUTERNAME"
-$output += "=" * 80
-$output += ""
+            _dbContextFactoryMock
+                .Setup(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(_dbContextMock.Object);
 
-# Function to format output sections
-function Add-Section {
-    param([string]$Title)
-    $script:output += ""
-    $script:output += "-" * 60
-    $script:output += $Title
-    $script:output += "-" * 60
-}
-
-# Function to safely get property value
-function Get-SafeValue {
-    param($Value, [string]$Default = "Not Set")
-    if ($null -eq $Value -or $Value -eq "") { 
-        return $Default 
-    }
-    return $Value.ToString()
-}
-
-try {
-    # 1. SERVER-LEVEL SETTINGS
-    Add-Section "SERVER-LEVEL CONFIGURATION"
-    
-    # IIS Version and Status
-    try {
-        $iisVersion = Get-ItemProperty HKLM:\SOFTWARE\Microsoft\InetStp\ -ErrorAction SilentlyContinue
-        $output += "IIS Version: $(Get-SafeValue $iisVersion.VersionString)"
-        $output += "IIS Major Version: $(Get-SafeValue $iisVersion.MajorVersion)"
-        $output += "IIS Minor Version: $(Get-SafeValue $iisVersion.MinorVersion)"
-        $output += "Installation Path: $(Get-SafeValue $iisVersion.InstallPath)"
-    } catch {
-        $output += "IIS Version: Unable to retrieve"
-    }
-    
-    # Server State
-    try {
-        $serverState = (Get-Service -Name W3SVC -ErrorAction SilentlyContinue).Status
-        $output += "W3SVC Service State: $serverState"
-        
-        $wasState = (Get-Service -Name WAS -ErrorAction SilentlyContinue).Status
-        $output += "WAS Service State: $wasState"
-    } catch {
-        $output += "Service State: Unable to retrieve"
-    }
-    
-    # Application Pool Defaults
-    Add-Section "APPLICATION POOL DEFAULTS"
-    try {
-        # Get App Pool Defaults using WebAdministration cmdlets
-        $processModel = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/processModel' -Name *
-        $output += "Process Identity Type: $(Get-SafeValue $processModel.identityType)"
-        $output += "Idle Timeout (minutes): $(Get-SafeValue $processModel.idleTimeout.TotalMinutes)"
-        $output += "Max Worker Processes: $(Get-SafeValue $processModel.maxProcesses)"
-        $output += "Load User Profile: $(Get-SafeValue $processModel.loadUserProfile)"
-        
-        # Pipeline and Runtime
-        $poolDefaults = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults' -Name *
-        $output += "Managed Pipeline Mode: $(Get-SafeValue $poolDefaults.managedPipelineMode)"
-        $output += "Managed Runtime Version: $(Get-SafeValue $poolDefaults.managedRuntimeVersion)"
-        $output += "Enable 32-Bit Applications: $(Get-SafeValue $poolDefaults.enable32BitAppOnWin64)"
-        $output += "Queue Length: $(Get-SafeValue $poolDefaults.queueLength)"
-        $output += "Start Mode: $(Get-SafeValue $poolDefaults.startMode)"
-        
-        # Recycling
-        $recycling = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/applicationPools/applicationPoolDefaults/recycling/periodicRestart' -Name *
-        $output += "Regular Time Interval (minutes): $(Get-SafeValue $recycling.time.TotalMinutes)"
-        $output += "Specific Times: $(Get-SafeValue ($recycling.schedule.Collection -join ', ') 'None')"
-        $output += "Memory Limit (KB): $(Get-SafeValue $recycling.memory 0)"
-        $output += "Virtual Memory Limit (KB): $(Get-SafeValue $recycling.privateMemory 0)"
-        
-    } catch {
-        $output += "Unable to retrieve application pool defaults: $_"
-    }
-    
-    # Site Defaults
-    Add-Section "SITE DEFAULTS"
-    try {
-        $siteDefaults = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults' -Name *
-        $output += "Server Auto Start: $(Get-SafeValue $siteDefaults.serverAutoStart)"
-        
-        # Limits
-        $limits = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults/limits' -Name *
-        $output += "Connection Timeout (seconds): $(Get-SafeValue $limits.connectionTimeout.TotalSeconds)"
-        $output += "Max Bandwidth (bytes/sec): $(Get-SafeValue $limits.maxBandwidth)"
-        $output += "Max Connections: $(Get-SafeValue $limits.maxConnections)"
-        $output += "Max URL Segments: $(Get-SafeValue $limits.maxUrlSegments)"
-    } catch {
-        $output += "Unable to retrieve site defaults: $_"
-    }
-    
-    # Logging Configuration
-    Add-Section "LOGGING CONFIGURATION"
-    try {
-        $logging = Get-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter 'system.applicationHost/sites/siteDefaults/logFile' -Name *
-        $output += "Log Format: $(Get-SafeValue $logging.logFormat)"
-        $output += "Log Directory: $(Get-SafeValue $logging.directory)"
-        $output += "Log Period: $(Get-SafeValue $logging.period)"
-        $output += "Local Time Rollover: $(Get-SafeValue $logging.localTimeRollover)"
-        $output += "Truncate Size (bytes): $(Get-SafeValue $logging.truncateSize)"
-        $output += "Log Target: $(Get-SafeValue $logging.logTargetW3C)"
-    } catch {
-        $output += "Unable to retrieve logging configuration: $_"
-    }
-    
-    # Compression Settings
-    Add-Section "COMPRESSION SETTINGS"
-    try {
-        $staticComp = Get-WebConfigurationProperty -Filter "system.webServer/urlCompression" -PSPath "IIS:\" -Name "doStaticCompression"
-        $dynamicComp = Get-WebConfigurationProperty -Filter "system.webServer/urlCompression" -PSPath "IIS:\" -Name "doDynamicCompression"
-        $output += "Static Compression Enabled: $(Get-SafeValue $staticComp.Value $staticComp)"
-        $output += "Dynamic Compression Enabled: $(Get-SafeValue $dynamicComp.Value $dynamicComp)"
-        
-        # Compression levels
-        $httpComp = Get-WebConfigurationProperty -Filter "system.webServer/httpCompression" -PSPath "IIS:\" -Name *
-        $output += "Static Compression Level: $(Get-SafeValue $httpComp.staticCompressionLevel)"
-        $output += "Dynamic Compression Level: $(Get-SafeValue $httpComp.dynamicCompressionLevel)"
-        $output += "Min File Size for Compression: $(Get-SafeValue $httpComp.minFileSizeForComp)"
-    } catch {
-        $output += "Unable to retrieve compression settings: $_"
-    }
-    
-    # Request Filtering
-    Add-Section "REQUEST FILTERING"
-    try {
-        $maxAllowedContentLength = Get-WebConfigurationProperty -Filter "system.webServer/security/requestFiltering/requestLimits" -PSPath "IIS:\" -Name "maxAllowedContentLength"
-        $maxUrl = Get-WebConfigurationProperty -Filter "system.webServer/security/requestFiltering/requestLimits" -PSPath "IIS:\" -Name "maxUrl"
-        $maxQueryString = Get-WebConfigurationProperty -Filter "system.webServer/security/requestFiltering/requestLimits" -PSPath "IIS:\" -Name "maxQueryString"
-        
-        $output += "Max Allowed Content Length: $(Get-SafeValue $maxAllowedContentLength.Value $maxAllowedContentLength) bytes"
-        $output += "Max URL Length: $(Get-SafeValue $maxUrl.Value $maxUrl)"
-        $output += "Max Query String: $(Get-SafeValue $maxQueryString.Value $maxQueryString)"
-        
-        # File Extensions
-        $fileExtensions = Get-WebConfiguration -Filter "system.webServer/security/requestFiltering/fileExtensions/*" -PSPath "IIS:\" | Sort-Object fileExtension
-        if ($fileExtensions) {
-            $deniedExtensions = $fileExtensions | Where-Object { $_.allowed -eq $false }
-            if ($deniedExtensions) {
-                $deniedCount = ($deniedExtensions | Measure-Object).Count
-                $output += "Denied File Extensions (Total: $deniedCount):"
-                foreach ($ext in $deniedExtensions) {
-                    $output += "  - $($ext.fileExtension)"
-                }
-            }
+            _repository = new HousekeepingRepository<TestDbContext>(
+                _loggerMock.Object,
+                _dbContextFactoryMock.Object);
         }
-    } catch {
-        $output += "Unable to retrieve request filtering settings: $_"
-    }
-    
-    # 2. ALL APPLICATION POOLS
-    Add-Section "APPLICATION POOLS"
-    try {
-        $appPools = Get-ChildItem IIS:\AppPools\ -ErrorAction SilentlyContinue | Sort-Object Name
-        $poolCount = ($appPools | Measure-Object).Count
-        $output += "Total Application Pools: $poolCount"
-        foreach ($pool in $appPools) {
-            $output += ""
-            $output += "Pool Name: $($pool.Name)"
-            $output += "  State: $($pool.State)"
-            $output += "  Auto Start: $(Get-SafeValue $pool.autoStart)"
-            $output += "  Pipeline Mode: $(Get-SafeValue $pool.managedPipelineMode)"
-            $output += "  Runtime Version: $(Get-SafeValue $pool.managedRuntimeVersion)"
-            $output += "  Enable 32-Bit: $(Get-SafeValue $pool.enable32BitAppOnWin64)"
-            $output += "  Start Mode: $(Get-SafeValue $pool.startMode)"
-            $output += "  Queue Length: $(Get-SafeValue $pool.queueLength)"
-            
-            # Process Model
-            $output += "  Process Identity: $(Get-SafeValue $pool.processModel.identityType)"
-            $output += "  Idle Timeout: $(Get-SafeValue $pool.processModel.idleTimeout)"
-            $output += "  Max Processes: $(Get-SafeValue $pool.processModel.maxProcesses)"
-            
-            # CPU
-            $output += "  CPU Limit (%): $(Get-SafeValue $pool.cpu.limit)"
-            $output += "  CPU Action: $(Get-SafeValue $pool.cpu.action)"
-            
-            # Recycling
-            $output += "  Recycling Time Interval: $(Get-SafeValue $pool.recycling.periodicRestart.time)"
+
+        #region GetHousekeepingRequestTypes Tests
+
+        [Fact]
+        public async Task GetHousekeepingRequestTypes_WithNullWorkspace_ReturnsAllRequestTypes()
+        {
+            // Arrange
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" },
+                new HkRequestType { RequestTypeId = 3, RequestTypeDesc = "Type 3", Workspace = "WS3" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes(null);
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Equal(3, result.Count);
+            _dbContextFactoryMock.Verify(x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()), Times.Once);
         }
-    } catch {
-        $output += "Unable to retrieve application pools: $_"
-    }
-    
-    # 3. ALL SITES SUMMARY
-    Add-Section "SITES SUMMARY"
-    try {
-        $sites = Get-ChildItem IIS:\Sites\ -ErrorAction SilentlyContinue | Sort-Object Name
-        $siteCount = ($sites | Measure-Object).Count
-        $output += "Total Sites: $siteCount"
-        foreach ($site in $sites) {
-            $output += ""
-            $output += "Site: $($site.Name) [ID: $($site.Id)]"
-            $output += "  State: $($site.State)"
-            $output += "  Physical Path: $(Get-SafeValue $site.physicalPath)"
-            $output += "  Application Pool: $(Get-SafeValue $site.applicationPool)"
-            $output += "  Enabled Protocols: $(Get-SafeValue $site.enabledProtocols)"
-            $output += "  Bindings:"
-            
-            $bindings = Get-WebBinding -Name $site.Name -ErrorAction SilentlyContinue
-            foreach ($binding in $bindings) {
-                $bindingInfo = $binding.bindingInformation
-                $output += "    - $($binding.protocol)://$bindingInfo"
-                if ($binding.sslFlags) {
-                    $output += "      SSL Flags: $($binding.sslFlags)"
-                }
-            }
+
+        [Fact]
+        public async Task GetHousekeepingRequestTypes_WithEmptyWorkspace_ReturnsAllRequestTypes()
+        {
+            // Arrange
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes(string.Empty);
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Equal(2, result.Count);
         }
-    } catch {
-        $output += "Unable to retrieve sites: $_"
+
+        [Fact]
+        public async Task GetHousekeepingRequestTypes_WithSpecificWorkspace_ReturnsFilteredRequestTypes()
+        {
+            // Arrange
+            var workspace = "WS1";
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" },
+                new HkRequestType { RequestTypeId = 3, RequestTypeDesc = "Type 3", Workspace = "WS1" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes(workspace);
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Equal(2, result.Count);
+            Assert.All(result, rt => Assert.Equal(workspace, rt.Workspace));
+        }
+
+        [Fact]
+        public async Task GetHousekeepingRequestTypes_WithNonExistentWorkspace_ReturnsEmptyList()
+        {
+            // Arrange
+            var requestTypes = new List<HkRequestType>
+            {
+                new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "WS1" },
+                new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "WS2" }
+            };
+
+            var mockDbSet = CreateMockDbSet(requestTypes);
+            _dbContextMock.Setup(x => x.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequestTypes("NonExistent");
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Empty(result);
+        }
+
+        #endregion
+
+        #region GetHousekeepingRequests Tests
+
+        [Fact]
+        public async Task GetHousekeepingRequests_WithValidRequestTypeId_ReturnsRequests()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            var expectedRequests = new List<HkRequest>
+            {
+                new HkRequest { RequestId = 1, LastHoldDate = DateTime.Now },
+                new HkRequest { RequestId = 2, LastHoldDate = DateTime.Now.AddDays(-1) }
+            };
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)))
+                .ReturnsAsync(expectedRequests);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Equal(2, result.Count);
+            Assert.Equal(expectedRequests, result);
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task GetHousekeepingRequests_WithNoResults_ReturnsEmptyList()
+        {
+            // Arrange
+            var requestTypeId = 999;
+            var expectedRequests = new List<HkRequest>();
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)))
+                .ReturnsAsync(expectedRequests);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            Assert.NotNull(result);
+            Assert.Empty(result);
+        }
+
+        [Fact]
+        public async Task GetHousekeepingRequests_CreatesNewDbContext()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.IsAny<GetHkRequestIdListParameter>()))
+                .ReturnsAsync(new List<HkRequest>());
+
+            // Act
+            await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            _dbContextFactoryMock.Verify(
+                x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        #endregion
+
+        #region UpdateRequestHousekeeping Tests
+
+        [Fact]
+        public async Task UpdateRequestHousekeeping_WithValidDateAndRequestTypeId_CallsStoredProcedure()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            var date = DateTime.Now;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == date)))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == date)),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task UpdateRequestHousekeeping_WithNullDate_CallsStoredProcedureWithNullDate()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            DateTime? date = null;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == null)))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => 
+                        p.RequestId == requestTypeId && 
+                        p.LastHoldDate == null)),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task UpdateRequestHousekeeping_CreatesNewDbContext()
+        {
+            // Arrange
+            var requestTypeId = 1;
+            var date = DateTime.Now;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(It.IsAny<HoldRequestHkParameter>()))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextFactoryMock.Verify(
+                x => x.CreateDbContextAsync(It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        [Theory]
+        [InlineData(1)]
+        [InlineData(100)]
+        [InlineData(999)]
+        public async Task UpdateRequestHousekeeping_WithDifferentRequestTypeIds_PassesCorrectId(int requestTypeId)
+        {
+            // Arrange
+            var date = DateTime.Now;
+
+            _dbContextMock
+                .Setup(x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId)))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _dbContextMock.Verify(
+                x => x.ExecuteStoredProcedureAsync(
+                    It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId)),
+                Times.Once);
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        private Mock<DbSet<T>> CreateMockDbSet<T>(List<T> data) where T : class
+        {
+            var queryable = data.AsQueryable();
+            var mockDbSet = new Mock<DbSet<T>>();
+
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.Provider).Returns(queryable.Provider);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.Expression).Returns(queryable.Expression);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.ElementType).Returns(queryable.ElementType);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.GetEnumerator()).Returns(queryable.GetEnumerator());
+            mockDbSet.As<IAsyncEnumerable<T>>()
+                .Setup(m => m.GetAsyncEnumerator(It.IsAny<CancellationToken>()))
+                .Returns(new TestAsyncEnumerator<T>(queryable.GetEnumerator()));
+
+            return mockDbSet;
+        }
+
+        #endregion
     }
-    
-    # 4. SPECIFIC SITE DETAILS (if site name provided)
-    if ($SiteName) {
-        Add-Section "DETAILED CONFIGURATION FOR SITE: $SiteName"
-        
-        $siteExists = Test-Path "IIS:\Sites\$SiteName"
-        if ($siteExists) {
-            try {
-                $site = Get-Item "IIS:\Sites\$SiteName"
-                
-                # Basic Info
-                $output += "Site Name: $($site.Name)"
-                $output += "Site ID: $($site.Id)"
-                $output += "State: $($site.State)"
-                $output += "Physical Path: $(Get-SafeValue $site.physicalPath)"
-                $output += "Application Pool: $(Get-SafeValue $site.applicationPool)"
-                $output += "Server Auto Start: $(Get-SafeValue $site.serverAutoStart)"
-                $output += "Enabled Protocols: $(Get-SafeValue $site.enabledProtocols)"
-                
-                # Bindings Detail
-                $output += ""
-                $output += "BINDINGS:"
-                $bindings = Get-WebBinding -Name $SiteName
-                foreach ($binding in $bindings) {
-                    $bindingInfo = $binding.bindingInformation -split ':'
-                    $output += "  Protocol: $($binding.protocol)"
-                    $output += "  IP Address: $(if($bindingInfo[0]) {$bindingInfo[0]} else {'All Unassigned'})"
-                    $output += "  Port: $($bindingInfo[1])"
-                    $output += "  Host Name: $(Get-SafeValue $bindingInfo[2] 'None')"
-                    if ($binding.protocol -eq "https") {
-                        $output += "  SSL Flags: $(Get-SafeValue $binding.sslFlags)"
-                        $cert = Get-ChildItem IIS:SSLBindings | Where-Object { $_.Port -eq $bindingInfo[1] } | Select-Object -First 1
-                        if ($cert) {
-                            $output += "  Certificate Thumbprint: $($cert.Thumbprint)"
-                        }
-                    }
-                    $output += ""
-                }
-                
-                # Virtual Directories
-                $output += "VIRTUAL DIRECTORIES:"
-                $vdirs = Get-WebVirtualDirectory -Site $SiteName -ErrorAction SilentlyContinue
-                if ($vdirs) {
-                    foreach ($vdir in $vdirs) {
-                        $output += "  Path: $($vdir.path)"
-                        $output += "    Physical Path: $($vdir.physicalPath)"
-                    }
-                } else {
-                    $output += "  Default: $($site.physicalPath)"
-                }
-                
-                # Applications
-                $output += ""
-                $output += "APPLICATIONS:"
-                $apps = Get-WebApplication -Site $SiteName -ErrorAction SilentlyContinue
-                if ($apps) {
-                    foreach ($app in $apps) {
-                        $output += "  Path: $($app.path)"
-                        $output += "    Physical Path: $($app.physicalPath)"
-                        $output += "    Application Pool: $($app.applicationPool)"
-                        $output += "    Enabled Protocols: $(Get-SafeValue $app.enabledProtocols)"
-                    }
-                } else {
-                    $output += "  No additional applications configured"
-                }
-                
-                # Authentication Settings
-                $output += ""
-                $output += "AUTHENTICATION:"
-                $authTypes = @(
-                    @{Name='Anonymous'; Path='anonymousAuthentication'},
-                    @{Name='Basic'; Path='basicAuthentication'},
-                    @{Name='Windows'; Path='windowsAuthentication'},
-                    @{Name='Digest'; Path='digestAuthentication'},
-                    @{Name='Forms'; Path='formsAuthentication'}
-                )
-                
-                foreach ($authType in $authTypes) {
-                    try {
-                        $auth = Get-WebConfigurationProperty -Filter "system.webServer/security/authentication/$($authType.Path)" `
-                                -Name "enabled" -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                        $authValue = if ($null -ne $auth.Value) { $auth.Value } elseif ($null -ne $auth) { $auth } else { "Not Configured" }
-                        $output += "  $($authType.Name) Authentication: $authValue"
-                    } catch {
-                        $output += "  $($authType.Name) Authentication: Not Configured"
-                    }
-                }
-                
-                # Directory Browsing
-                $dirBrowse = Get-WebConfigurationProperty -Filter "system.webServer/directoryBrowse" `
-                             -Name "enabled" -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                $output += ""
-                $output += "FEATURES:"
-                $dirBrowseValue = if ($null -ne $dirBrowse.Value) { $dirBrowse.Value } elseif ($null -ne $dirBrowse) { $dirBrowse } else { "Not Set" }
-                $output += "  Directory Browsing: $dirBrowseValue"
-                
-                # Default Documents
-                $output += ""
-                $output += "DEFAULT DOCUMENTS:"
-                $defaultDocs = Get-WebConfiguration -Filter "system.webServer/defaultDocument/files/*" `
-                              -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                if ($defaultDocs) {
-                    # Default docs typically have a specific order, so we won't sort them
-                    foreach ($doc in $defaultDocs) {
-                        $output += "  - $($doc.value)"
-                    }
-                } else {
-                    $output += "  Using global defaults"
-                }
-                
-                # Custom Error Pages
-                $output += ""
-                $output += "CUSTOM ERROR PAGES:"
-                $errorPages = Get-WebConfiguration -Filter "system.webServer/httpErrors/*" `
-                             -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                if ($errorPages) {
-                    $customErrors = $errorPages | Where-Object { $_.path -ne $null } | Sort-Object statusCode, subStatusCode
-                    if ($customErrors) {
-                        $errorCount = ($customErrors | Measure-Object).Count
-                        $output += "Total Custom Error Pages: $errorCount"
-                        foreach ($error in $customErrors) {
-                            $output += "  Status: $($error.statusCode).$($error.subStatusCode) - Path: $($error.path)"
-                        }
-                    } else {
-                        $output += "  No custom error pages configured"
-                    }
-                } else {
-                    $output += "  Using default error pages"
-                }
-                
-                # Response Headers
-                $output += ""
-                $output += "CUSTOM RESPONSE HEADERS:"
-                $headers = Get-WebConfiguration -Filter "system.webServer/httpProtocol/customHeaders/*" `
-                          -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                if ($headers) {
-                    $sortedHeaders = $headers | Sort-Object name
-                    foreach ($header in $sortedHeaders) {
-                        $output += "  $($header.name): $($header.value)"
-                    }
-                } else {
-                    $output += "  No custom headers configured"
-                }
-                
-                # URL Rewrite Rules (if module is installed)
-                $output += ""
-                $output += "URL REWRITE RULES:"
-                try {
-                    $rules = Get-WebConfiguration -Filter "system.webServer/rewrite/rules/*" `
-                            -PSPath "IIS:\Sites\$SiteName" -ErrorAction SilentlyContinue
-                    if ($rules) {
-                        $sortedRules = $rules | Sort-Object name
-                        $ruleCount = ($sortedRules | Measure-Object).Count
-                        $output += "Total Rules: $ruleCount"
-                        foreach ($rule in $sortedRules) {
-                            $output += "  - $($rule.name) [Enabled: $(Get-SafeValue $rule.enabled)]"
-                        }
-                    } else {
-                        $output += "  No URL rewrite rules configured"
-                    }
-                } catch {
-                    $output += "  URL Rewrite module not installed or no rules configured"
-                }
-                
-            } catch {
-                $output += "ERROR retrieving site details: $_"
-            }
-        } else {
-            $output += "ERROR: Site '$SiteName' not found!"
+
+    #region Test Helper Classes
+
+    // Test DbContext for testing purposes
+    public class TestDbContext : BaseDbContext
+    {
+        public virtual DbSet<HkRequestType> HousekeepingRequestTypes { get; set; }
+
+        public virtual Task<IList<TResult>> ExecuteStoredProcedureAsync<TResult, TParameter>(TParameter parameter)
+        {
+            return Task.FromResult<IList<TResult>>(new List<TResult>());
+        }
+
+        public virtual Task ExecuteStoredProcedureAsync<TParameter>(TParameter parameter)
+        {
+            return Task.CompletedTask;
         }
     }
-    
-    # 5. HANDLER MAPPINGS
-    Add-Section "HANDLER MAPPINGS"
-    try {
-        $handlers = Get-WebConfiguration -Filter "system.webServer/handlers/*" -PSPath "IIS:\" | Sort-Object name
-        $handlerCount = ($handlers | Measure-Object).Count
-        $output += "Total Handler Mappings: $handlerCount"
-        $output += ""
-        foreach ($handler in $handlers) {
-            $output += "  $($handler.name): $($handler.path) -> $($handler.type)"
+
+    // Helper class for async enumerable mocking
+    internal class TestAsyncEnumerator<T> : IAsyncEnumerator<T>
+    {
+        private readonly IEnumerator<T> _inner;
+
+        public TestAsyncEnumerator(IEnumerator<T> inner)
+        {
+            _inner = inner;
         }
-    } catch {
-        $output += "Unable to retrieve handler mappings: $_"
-    }
-    
-    # 6. MODULES
-    Add-Section "GLOBAL MODULES"
-    try {
-        $modules = Get-WebConfiguration -Filter "system.webServer/modules/*" -PSPath "IIS:\" | Sort-Object name
-        $moduleCount = ($modules | Measure-Object).Count
-        $output += "Total Modules: $moduleCount"
-        $output += ""
-        foreach ($module in $modules) {
-            $output += "  $($module.name)"
+
+        public ValueTask DisposeAsync()
+        {
+            _inner.Dispose();
+            return ValueTask.CompletedTask;
         }
-    } catch {
-        $output += "Unable to retrieve modules: $_"
-    }
-    
-    # 7. ISAPI FILTERS
-    Add-Section "ISAPI FILTERS"
-    try {
-        $filters = Get-WebConfiguration -Filter "system.webServer/isapiFilters/*" -PSPath "IIS:\" -ErrorAction SilentlyContinue
-        if ($filters) {
-            $sortedFilters = $filters | Sort-Object name
-            $filterCount = ($sortedFilters | Measure-Object).Count
-            $output += "Total ISAPI Filters: $filterCount"
-            $output += ""
-            foreach ($filter in $sortedFilters) {
-                $output += "  $($filter.name): $($filter.path)"
-            }
-        } else {
-            $output += "  No ISAPI filters configured"
+
+        public ValueTask<bool> MoveNextAsync()
+        {
+            return ValueTask.FromResult(_inner.MoveNext());
         }
-    } catch {
-        $output += "  Unable to retrieve ISAPI filters or none configured"
+
+        public T Current => _inner.Current;
     }
-    
-} catch {
-    $output += ""
-    $output += "GENERAL ERROR: $($_.Exception.Message)"
-    $output += "Stack Trace: $($_.ScriptStackTrace)"
-}
 
-# Write to file
-$output += ""
-$output += "=" * 80
-$output += "Export completed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-$output += "=" * 80
-
-# Save to file
-$output | Out-File -FilePath $OutputPath -Encoding UTF8
-
-Write-Host ""
-Write-Host "IIS configuration exported successfully!" -ForegroundColor Green
-Write-Host "Output file: $OutputPath" -ForegroundColor Cyan
-
-# Display summary
-Write-Host ""
-Write-Host "Summary:" -ForegroundColor Yellow
-try {
-    $siteCount = (Get-ChildItem IIS:\Sites\ -ErrorAction SilentlyContinue | Measure-Object).Count
-    $poolCount = (Get-ChildItem IIS:\AppPools\ -ErrorAction SilentlyContinue | Measure-Object).Count
-    Write-Host "  - Total Sites: $siteCount"
-    Write-Host "  - Total Application Pools: $poolCount"
-} catch {
-    Write-Host "  - Configuration exported (counts unavailable)"
-}
-
-if ($SiteName) {
-    Write-Host "  - Detailed export for site: $SiteName" -ForegroundColor Cyan
-}
-
-# Open file option
-$openFile = Read-Host "`nDo you want to open the output file now? (Y/N)"
-if ($openFile -eq 'Y' -or $openFile -eq 'y') {
-    Start-Process notepad.exe -ArgumentList $OutputPath
+    #endregion
 }
