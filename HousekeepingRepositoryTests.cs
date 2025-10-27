@@ -11,9 +11,6 @@ using System.Threading.Tasks;
 public class HousekeepingRepositoryTests
 {
     private Mock<ILogger<IAdjustmentRepository>> _mockLogger;
-    private Mock<IDbContextFactory<HousekeepingTestDbContext>> _mockDbContextFactory;
-    private HousekeepingTestDbContextWithConfig _testContext;
-    private HousekeepingRepository<HousekeepingTestDbContext> _repository;
     private DbContextOptions<BaseDbContext> _options;
 
     [SetUp]
@@ -23,78 +20,108 @@ public class HousekeepingRepositoryTests
             .UseInMemoryDatabase(databaseName: $"HousekeepingTestDb_{Guid.NewGuid()}")
             .Options;
 
-        var mockLoggerFactory = new Mock<ILoggerFactory>();
         _mockLogger = new Mock<ILogger<IAdjustmentRepository>>();
-        
-        _testContext = new HousekeepingTestDbContextWithConfig(_options, mockLoggerFactory.Object, true);
-        
-        _mockDbContextFactory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
-        _mockDbContextFactory
-            .Setup(f => f.CreateDbContextAsync(default))
-            .ReturnsAsync(_testContext);
-        
-        _repository = new HousekeepingRepository<HousekeepingTestDbContext>(
-            _mockLogger.Object,
-            _mockDbContextFactory.Object);
-        
-        SeedTestData();
-    }
-
-    [TearDown]
-    public void TearDown()
-    {
-        _testContext?.Database.EnsureDeleted();
-        _testContext?.Dispose();
-    }
-
-    private void SeedTestData()
-    {
-        var requestTypes = new List<HkRequestType>
-        {
-            new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "Workspace1" },
-            new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "Workspace1" },
-            new HkRequestType { RequestTypeId = 3, RequestTypeDesc = "Type 3", Workspace = "Workspace2" }
-        };
-
-        _testContext.HousekeepingRequestTypes.AddRange(requestTypes);
-        _testContext.SaveChanges();
     }
 
     [Test]
     public async Task GetHousekeepingRequestTypes_WithoutWorkspace_ReturnsAllRequestTypes()
     {
-        var result = await _repository.GetHousekeepingRequestTypes();
+        // Arrange
+        var context = new HousekeepingTestDbContextWithConfig(_options, Mock.Of<ILoggerFactory>(), true);
+        SeedTestData(context);
 
+        var factory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
+        factory.Setup(f => f.CreateDbContextAsync(default)).ReturnsAsync(context);
+
+        var repository = new HousekeepingRepository<HousekeepingTestDbContext>(
+            _mockLogger.Object,
+            factory.Object);
+
+        // Act
+        var result = await repository.GetHousekeepingRequestTypes();
+
+        // Assert
         Assert.That(result, Is.Not.Null);
         Assert.That(result.Count, Is.EqualTo(3));
+
+        context.Database.EnsureDeleted();
+        context.Dispose();
     }
 
     [Test]
     public async Task GetHousekeepingRequestTypes_WithWorkspace_ReturnsFilteredRequestTypes()
     {
-        var result = await _repository.GetHousekeepingRequestTypes("Workspace1");
+        // Arrange
+        var context = new HousekeepingTestDbContextWithConfig(_options, Mock.Of<ILoggerFactory>(), true);
+        SeedTestData(context);
 
+        var factory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
+        factory.Setup(f => f.CreateDbContextAsync(default)).ReturnsAsync(context);
+
+        var repository = new HousekeepingRepository<HousekeepingTestDbContext>(
+            _mockLogger.Object,
+            factory.Object);
+
+        // Act
+        var result = await repository.GetHousekeepingRequestTypes("Workspace1");
+
+        // Assert
         Assert.That(result, Is.Not.Null);
         Assert.That(result.Count, Is.EqualTo(2));
         Assert.That(result.All(r => r.Workspace == "Workspace1"), Is.True);
+
+        context.Database.EnsureDeleted();
+        context.Dispose();
     }
 
     [Test]
     public async Task GetHousekeepingRequestTypes_WithNonExistingWorkspace_ReturnsEmptyList()
     {
-        var result = await _repository.GetHousekeepingRequestTypes("NonExistingWorkspace");
+        // Arrange
+        var context = new HousekeepingTestDbContextWithConfig(_options, Mock.Of<ILoggerFactory>(), true);
+        SeedTestData(context);
 
+        var factory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
+        factory.Setup(f => f.CreateDbContextAsync(default)).ReturnsAsync(context);
+
+        var repository = new HousekeepingRepository<HousekeepingTestDbContext>(
+            _mockLogger.Object,
+            factory.Object);
+
+        // Act
+        var result = await repository.GetHousekeepingRequestTypes("NonExistingWorkspace");
+
+        // Assert
         Assert.That(result, Is.Not.Null);
         Assert.That(result.Count, Is.EqualTo(0));
+
+        context.Database.EnsureDeleted();
+        context.Dispose();
     }
 
     [Test]
     public async Task GetHousekeepingRequestTypes_WithEmptyWorkspace_ReturnsAllRequestTypes()
     {
-        var result = await _repository.GetHousekeepingRequestTypes(string.Empty);
+        // Arrange
+        var context = new HousekeepingTestDbContextWithConfig(_options, Mock.Of<ILoggerFactory>(), true);
+        SeedTestData(context);
 
+        var factory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
+        factory.Setup(f => f.CreateDbContextAsync(default)).ReturnsAsync(context);
+
+        var repository = new HousekeepingRepository<HousekeepingTestDbContext>(
+            _mockLogger.Object,
+            factory.Object);
+
+        // Act
+        var result = await repository.GetHousekeepingRequestTypes(string.Empty);
+
+        // Assert
         Assert.That(result, Is.Not.Null);
         Assert.That(result.Count, Is.EqualTo(3));
+
+        context.Database.EnsureDeleted();
+        context.Dispose();
     }
 
     [Test]
@@ -111,23 +138,22 @@ public class HousekeepingRepositoryTests
         var spyContext = new SpyHousekeepingTestDbContext(_options, Mock.Of<ILoggerFactory>(), true);
         spyContext.SetupGetHousekeepingRequestsResult(expectedRequests);
 
-        var spyFactory = new Mock<IDbContextFactory<SpyHousekeepingTestDbContext>>();
-        spyFactory
-            .Setup(f => f.CreateDbContextAsync(default))
-            .ReturnsAsync(spyContext);
+        var factory = new TestDbContextFactory<SpyHousekeepingTestDbContext>(spyContext);
 
-        var spyRepository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
+        var repository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
             _mockLogger.Object,
-            spyFactory.Object);
+            factory);
 
         // Act
-        var result = await spyRepository.GetHousekeepingRequests(requestTypeId);
+        var result = await repository.GetHousekeepingRequests(requestTypeId);
 
         // Assert
         Assert.That(result, Is.Not.Null);
         Assert.That(result.Count, Is.EqualTo(2));
         Assert.That(spyContext.GetHousekeepingRequestsCalled, Is.True);
         Assert.That(spyContext.LastGetHousekeepingRequestsParameter?.RequestTypeId, Is.EqualTo(requestTypeId));
+
+        spyContext.Dispose();
     }
 
     [Test]
@@ -139,23 +165,22 @@ public class HousekeepingRepositoryTests
 
         var spyContext = new SpyHousekeepingTestDbContext(_options, Mock.Of<ILoggerFactory>(), true);
 
-        var spyFactory = new Mock<IDbContextFactory<SpyHousekeepingTestDbContext>>();
-        spyFactory
-            .Setup(f => f.CreateDbContextAsync(default))
-            .ReturnsAsync(spyContext);
+        var factory = new TestDbContextFactory<SpyHousekeepingTestDbContext>(spyContext);
 
-        var spyRepository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
+        var repository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
             _mockLogger.Object,
-            spyFactory.Object);
+            factory);
 
         // Act
-        await spyRepository.UpdateRequestHousekeeping(requestTypeId, holdDate);
+        await repository.UpdateRequestHousekeeping(requestTypeId, holdDate);
 
         // Assert
         Assert.That(spyContext.UpdateRequestHousekeepingCalled, Is.True);
         Assert.That(spyContext.LastUpdateRequestHousekeepingParameter, Is.Not.Null);
         Assert.That(spyContext.LastUpdateRequestHousekeepingParameter.RequestId, Is.EqualTo(requestTypeId));
         Assert.That(spyContext.LastUpdateRequestHousekeepingParameter.LastHoldDate, Is.EqualTo(holdDate));
+
+        spyContext.Dispose();
     }
 
     [Test]
@@ -167,28 +192,62 @@ public class HousekeepingRepositoryTests
 
         var spyContext = new SpyHousekeepingTestDbContext(_options, Mock.Of<ILoggerFactory>(), true);
 
-        var spyFactory = new Mock<IDbContextFactory<SpyHousekeepingTestDbContext>>();
-        spyFactory
-            .Setup(f => f.CreateDbContextAsync(default))
-            .ReturnsAsync(spyContext);
+        var factory = new TestDbContextFactory<SpyHousekeepingTestDbContext>(spyContext);
 
-        var spyRepository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
+        var repository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
             _mockLogger.Object,
-            spyFactory.Object);
+            factory);
 
         // Act
-        await spyRepository.UpdateRequestHousekeeping(requestTypeId, holdDate);
+        await repository.UpdateRequestHousekeeping(requestTypeId, holdDate);
 
         // Assert
         Assert.That(spyContext.UpdateRequestHousekeepingCalled, Is.True);
         Assert.That(spyContext.LastUpdateRequestHousekeepingParameter, Is.Not.Null);
         Assert.That(spyContext.LastUpdateRequestHousekeepingParameter.RequestId, Is.EqualTo(requestTypeId));
         Assert.That(spyContext.LastUpdateRequestHousekeepingParameter.LastHoldDate, Is.Null);
+
+        spyContext.Dispose();
+    }
+
+    private void SeedTestData(HousekeepingTestDbContext context)
+    {
+        var requestTypes = new List<HkRequestType>
+        {
+            new HkRequestType { RequestTypeId = 1, RequestTypeDesc = "Type 1", Workspace = "Workspace1" },
+            new HkRequestType { RequestTypeId = 2, RequestTypeDesc = "Type 2", Workspace = "Workspace1" },
+            new HkRequestType { RequestTypeId = 3, RequestTypeDesc = "Type 3", Workspace = "Workspace2" }
+        };
+
+        context.HousekeepingRequestTypes.AddRange(requestTypes);
+        context.SaveChanges();
+    }
+}
+
+// Simple test factory that returns the provided context
+public class TestDbContextFactory<TContext> : IDbContextFactory<TContext> 
+    where TContext : DbContext
+{
+    private readonly TContext _context;
+
+    public TestDbContextFactory(TContext context)
+    {
+        _context = context;
+    }
+
+    public TContext CreateDbContext()
+    {
+        return _context;
+    }
+
+    public Task<TContext> CreateDbContextAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(_context);
     }
 }
 
 // Spy context that tracks stored procedure calls
-public class SpyHousekeepingTestDbContext : HousekeepingTestDbContextWithConfig
+public class SpyHousekeepingTestDbContext : HousekeepingTestDbContext
 {
     private IList<HkRequest> _getHousekeepingRequestsResult;
 
@@ -221,7 +280,7 @@ public class SpyHousekeepingTestDbContext : HousekeepingTestDbContextWithConfig
             return Task.FromResult(_getHousekeepingRequestsResult as IList<T>);
         }
 
-        return base.ExecuteStoredProcedureAsync<T, TParam>(parameter);
+        throw new NotImplementedException();
     }
 
     public override Task ExecuteStoredProcedureAsync<TParam>(TParam parameter)
@@ -233,7 +292,7 @@ public class SpyHousekeepingTestDbContext : HousekeepingTestDbContextWithConfig
             return Task.CompletedTask;
         }
 
-        return base.ExecuteStoredProcedureAsync(parameter);
+        throw new NotImplementedException();
     }
 }
 
