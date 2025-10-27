@@ -3,84 +3,88 @@ using Moq;
 using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Collections.Generic;
 
 [TestFixture]
 public class HousekeepingRepositoryTests
 {
+    private Mock<IDbContextFactory<HousekeepingTestDbContext>> _mockDbContextFactory;
+    private Mock<HousekeepingTestDbContext> _mockDbContext;
+    private Mock<ILogger<IAdjustmentRepository>> _mockLogger;
+    private HousekeepingRepository<HousekeepingTestDbContext> _repository;
+
+    [SetUp]
+    public void SetUp()
+    {
+        _mockLogger = new Mock<ILogger<IAdjustmentRepository>>();
+        
+        var options = new DbContextOptionsBuilder<BaseDbContext>().Options;
+        var mockLoggerFactory = new Mock<ILoggerFactory>();
+        
+        _mockDbContext = new Mock<HousekeepingTestDbContext>(
+            options, 
+            mockLoggerFactory.Object, 
+            true);
+
+        _mockDbContextFactory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
+        _mockDbContextFactory
+            .Setup(f => f.CreateDbContextAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(_mockDbContext.Object);
+
+        _repository = new HousekeepingRepository<HousekeepingTestDbContext>(
+            _mockLogger.Object,
+            _mockDbContextFactory.Object);
+    }
+
     [Test]
-    public async Task GetHousekeepingRequests_ShouldExecuteStoredProcedureAsync()
+    public async Task GetHousekeepingRequests_ShouldExecuteStoredProcedure()
     {
         // Arrange
-        var mockLogger = new Mock<ILogger<IAdjustmentRepository>>();
-        var mockDbContextFactory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
-        var mockDbContext = new Mock<HousekeepingTestDbContext>(
-            Mock.Of<DbContextOptions<BaseDbContext>>(),
-            Mock.Of<ILoggerFactory>(),
-            true);
-        
-        mockDbContextFactory
-            .Setup(f => f.CreateDbContextAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(mockDbContext.Object);
-        
-        var repository = new HousekeepingRepository<HousekeepingTestDbContext>(
-            mockLogger.Object,
-            mockDbContextFactory.Object);
-        
-        int requestTypeId = 123;
+        int requestTypeId = 1;
         var expectedResult = new List<HkRequest>();
-        
-        mockDbContext
+
+        _mockDbContext
             .Setup(c => c.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
                 It.IsAny<GetHkRequestIdListParameter>()))
             .ReturnsAsync(expectedResult);
 
         // Act
-        await repository.GetHousekeepingRequests(requestTypeId);
+        await _repository.GetHousekeepingRequests(requestTypeId);
 
         // Assert
-        mockDbContext.Verify(
+        _mockDbContext.Verify(
             c => c.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
                 It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)),
             Times.Once);
     }
 
     [Test]
-    public async Task UpdateRequestHousekeeping_ShouldExecuteStoredProcedureAsync()
+    public async Task UpdateRequestHousekeeping_ShouldExecuteStoredProcedure()
     {
         // Arrange
-        var mockLogger = new Mock<ILogger<IAdjustmentRepository>>();
-        var mockDbContextFactory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
-        var mockDbContext = new Mock<HousekeepingTestDbContext>(
-            Mock.Of<DbContextOptions<BaseDbContext>>(),
-            Mock.Of<ILoggerFactory>(),
-            true);
-        
-        mockDbContextFactory
-            .Setup(f => f.CreateDbContextAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(mockDbContext.Object);
-        
-        var repository = new HousekeepingRepository<HousekeepingTestDbContext>(
-            mockLogger.Object,
-            mockDbContextFactory.Object);
-        
-        int requestTypeId = 456;
-        DateTime? date = new DateTime(2025, 10, 27);
-        
-        mockDbContext
+        int requestTypeId = 1;
+        DateTime? date = DateTime.Now;
+
+        _mockDbContext
             .Setup(c => c.ExecuteStoredProcedureAsync(
                 It.IsAny<HoldRequestHkParameter>()))
             .Returns(Task.CompletedTask);
 
         // Act
-        await repository.UpdateRequestHousekeeping(requestTypeId, date);
+        await _repository.UpdateRequestHousekeeping(requestTypeId, date);
 
         // Assert
-        mockDbContext.Verify(
+        _mockDbContext.Verify(
             c => c.ExecuteStoredProcedureAsync(
                 It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId)),
             Times.Once);
+    }
+
+    [TearDown]
+    public void TearDown()
+    {
+        _mockDbContext?.Object?.Dispose();
     }
 }
