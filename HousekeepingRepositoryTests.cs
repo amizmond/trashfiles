@@ -111,13 +111,17 @@ public class HousekeepingRepositoryTests
         var spyContext = new SpyHousekeepingTestDbContext(_options, Mock.Of<ILoggerFactory>(), true);
         spyContext.SetupGetHousekeepingRequestsResult(expectedRequests);
 
-        _mockDbContextFactory.Reset();
-        _mockDbContextFactory
+        var spyFactory = new Mock<IDbContextFactory<SpyHousekeepingTestDbContext>>();
+        spyFactory
             .Setup(f => f.CreateDbContextAsync(default))
             .ReturnsAsync(spyContext);
 
+        var spyRepository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
+            _mockLogger.Object,
+            spyFactory.Object);
+
         // Act
-        var result = await _repository.GetHousekeepingRequests(requestTypeId);
+        var result = await spyRepository.GetHousekeepingRequests(requestTypeId);
 
         // Assert
         Assert.That(result, Is.Not.Null);
@@ -135,13 +139,17 @@ public class HousekeepingRepositoryTests
 
         var spyContext = new SpyHousekeepingTestDbContext(_options, Mock.Of<ILoggerFactory>(), true);
 
-        _mockDbContextFactory.Reset();
-        _mockDbContextFactory
+        var spyFactory = new Mock<IDbContextFactory<SpyHousekeepingTestDbContext>>();
+        spyFactory
             .Setup(f => f.CreateDbContextAsync(default))
             .ReturnsAsync(spyContext);
 
+        var spyRepository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
+            _mockLogger.Object,
+            spyFactory.Object);
+
         // Act
-        await _repository.UpdateRequestHousekeeping(requestTypeId, holdDate);
+        await spyRepository.UpdateRequestHousekeeping(requestTypeId, holdDate);
 
         // Assert
         Assert.That(spyContext.UpdateRequestHousekeepingCalled, Is.True);
@@ -159,13 +167,17 @@ public class HousekeepingRepositoryTests
 
         var spyContext = new SpyHousekeepingTestDbContext(_options, Mock.Of<ILoggerFactory>(), true);
 
-        _mockDbContextFactory.Reset();
-        _mockDbContextFactory
+        var spyFactory = new Mock<IDbContextFactory<SpyHousekeepingTestDbContext>>();
+        spyFactory
             .Setup(f => f.CreateDbContextAsync(default))
             .ReturnsAsync(spyContext);
 
+        var spyRepository = new HousekeepingRepository<SpyHousekeepingTestDbContext>(
+            _mockLogger.Object,
+            spyFactory.Object);
+
         // Act
-        await _repository.UpdateRequestHousekeeping(requestTypeId, holdDate);
+        await spyRepository.UpdateRequestHousekeeping(requestTypeId, holdDate);
 
         // Assert
         Assert.That(spyContext.UpdateRequestHousekeepingCalled, Is.True);
