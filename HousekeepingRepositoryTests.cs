@@ -27,8 +27,8 @@ public class HousekeepingRepositoryTests
         var mockLoggerFactory = new Mock<ILoggerFactory>();
         _mockLogger = new Mock<ILogger<IAdjustmentRepository>>();
         
-        // Create test context
-        _testContext = new HousekeepingTestDbContext(_options, mockLoggerFactory.Object, true);
+        // Create test context with model configuration
+        _testContext = new HousekeepingTestDbContextWithConfig(_options, mockLoggerFactory.Object, true);
         
         // Mock the DbContextFactory
         _mockDbContextFactory = new Mock<IDbContextFactory<HousekeepingTestDbContext>>();
@@ -187,5 +187,26 @@ public class HousekeepingRepositoryTests
         mockContext.Verify(c => c.ExecuteStoredProcedureAsync(
             It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId && p.LastHoldDate == null)), 
             Times.Once);
+    }
+}
+
+// Test context with model configuration
+public class HousekeepingTestDbContextWithConfig : HousekeepingTestDbContext
+{
+    public HousekeepingTestDbContextWithConfig(
+        DbContextOptions<BaseDbContext> options, 
+        ILoggerFactory loggerFactory, 
+        bool isUnderTest = true) 
+        : base(options, loggerFactory, isUnderTest)
+    {
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+
+        // Configure primary key for HkRequestType
+        modelBuilder.Entity<HkRequestType>()
+            .HasKey(e => e.RequestTypeId);
     }
 }
