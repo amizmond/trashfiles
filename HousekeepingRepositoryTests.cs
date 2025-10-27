@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -9,70 +10,49 @@ using NUnit.Framework;
 
 namespace YourNamespace.Tests
 {
-    // Test DbContext that inherits from BaseDbContext
-    public class TestDbContext : BaseDbContext
-    {
-        public TestDbContext(DbContextOptions<TestDbContext> options, ILoggerFactory loggerFactory)
-            : base(options, loggerFactory)
-        {
-        }
-
-        public DbSet<HkRequestType> HousekeepingRequestTypes { get; set; }
-        public DbSet<HkRequest> HousekeepingRequests { get; set; }
-    }
-
     [TestFixture]
     public class HousekeepingRepositoryTests
     {
         private Mock<ILogger<IAdjustmentRepository>> _mockLogger;
         private Mock<IDbContextFactory<TestDbContext>> _mockDbContextFactory;
+        private Mock<TestDbContext> _mockDbContext;
         private HousekeepingRepository<TestDbContext> _repository;
-        private TestDbContext _testContext;
-        private Mock<ILoggerFactory> _mockLoggerFactory;
 
         [SetUp]
         public void SetUp()
         {
-            // Setup logger mocks
             _mockLogger = new Mock<ILogger<IAdjustmentRepository>>();
-            _mockLoggerFactory = new Mock<ILoggerFactory>();
-
-            // Setup in-memory database
-            var options = new DbContextOptionsBuilder<TestDbContext>()
-                .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
-                .Options;
-
-            _testContext = new TestDbContext(options, _mockLoggerFactory.Object);
-
-            // Setup DbContextFactory mock
             _mockDbContextFactory = new Mock<IDbContextFactory<TestDbContext>>();
+            
+            // Create mock DbContext
+            var mockLoggerFactory = new Mock<ILoggerFactory>();
+            _mockDbContext = new Mock<TestDbContext>(
+                new DbContextOptionsBuilder<TestDbContext>().Options, 
+                mockLoggerFactory.Object);
+
+            // Setup factory to return mocked context
             _mockDbContextFactory
-                .Setup(f => f.CreateDbContextAsync(default))
-                .ReturnsAsync(_testContext);
+                .Setup(f => f.CreateDbContextAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(_mockDbContext.Object);
 
-            // Create repository
-            _repository = new HousekeepingRepository<TestDbContext>(_mockLogger.Object, _mockDbContextFactory.Object);
-        }
-
-        [TearDown]
-        public void TearDown()
-        {
-            _testContext?.Dispose();
+            _repository = new HousekeepingRepository<TestDbContext>(
+                _mockLogger.Object, 
+                _mockDbContextFactory.Object);
         }
 
         [Test]
         public async Task GetHousekeepingRequestTypes_WithoutWorkspace_ReturnsAllRequestTypes()
         {
             // Arrange
-            var requestTypes = new List<HkRequestType>
+            var data = new List<HkRequestType>
             {
                 new HkRequestType { RequestTypeId = 1, Workspace = "WorkspaceA", RequestTypeDesc = "Type A" },
                 new HkRequestType { RequestTypeId = 2, Workspace = "WorkspaceB", RequestTypeDesc = "Type B" },
                 new HkRequestType { RequestTypeId = 3, Workspace = "WorkspaceC", RequestTypeDesc = "Type C" }
             };
 
-            await _testContext.HousekeepingRequestTypes.AddRangeAsync(requestTypes);
-            await _testContext.SaveChangesAsync();
+            var mockDbSet = CreateMockDbSet(data);
+            _mockDbContext.Setup(c => c.HousekeepingRequestTypes).Returns(mockDbSet.Object);
 
             // Act
             var result = await _repository.GetHousekeepingRequestTypes();
@@ -80,21 +60,22 @@ namespace YourNamespace.Tests
             // Assert
             Assert.That(result, Is.Not.Null);
             Assert.That(result.Count, Is.EqualTo(3));
+            _mockDbContextFactory.Verify(f => f.CreateDbContextAsync(It.IsAny<CancellationToken>()), Times.Once);
         }
 
         [Test]
         public async Task GetHousekeepingRequestTypes_WithWorkspace_ReturnsFilteredRequestTypes()
         {
             // Arrange
-            var requestTypes = new List<HkRequestType>
+            var data = new List<HkRequestType>
             {
                 new HkRequestType { RequestTypeId = 1, Workspace = "WorkspaceA", RequestTypeDesc = "Type A" },
                 new HkRequestType { RequestTypeId = 2, Workspace = "WorkspaceB", RequestTypeDesc = "Type B" },
                 new HkRequestType { RequestTypeId = 3, Workspace = "WorkspaceA", RequestTypeDesc = "Type C" }
             };
 
-            await _testContext.HousekeepingRequestTypes.AddRangeAsync(requestTypes);
-            await _testContext.SaveChangesAsync();
+            var mockDbSet = CreateMockDbSet(data);
+            _mockDbContext.Setup(c => c.HousekeepingRequestTypes).Returns(mockDbSet.Object);
 
             // Act
             var result = await _repository.GetHousekeepingRequestTypes("WorkspaceA");
@@ -109,13 +90,13 @@ namespace YourNamespace.Tests
         public async Task GetHousekeepingRequestTypes_WithNonExistentWorkspace_ReturnsEmptyList()
         {
             // Arrange
-            var requestTypes = new List<HkRequestType>
+            var data = new List<HkRequestType>
             {
                 new HkRequestType { RequestTypeId = 1, Workspace = "WorkspaceA", RequestTypeDesc = "Type A" }
             };
 
-            await _testContext.HousekeepingRequestTypes.AddRangeAsync(requestTypes);
-            await _testContext.SaveChangesAsync();
+            var mockDbSet = CreateMockDbSet(data);
+            _mockDbContext.Setup(c => c.HousekeepingRequestTypes).Returns(mockDbSet.Object);
 
             // Act
             var result = await _repository.GetHousekeepingRequestTypes("NonExistent");
@@ -128,6 +109,11 @@ namespace YourNamespace.Tests
         [Test]
         public async Task GetHousekeepingRequestTypes_WithEmptyDatabase_ReturnsEmptyList()
         {
+            // Arrange
+            var data = new List<HkRequestType>();
+            var mockDbSet = CreateMockDbSet(data);
+            _mockDbContext.Setup(c => c.HousekeepingRequestTypes).Returns(mockDbSet.Object);
+
             // Act
             var result = await _repository.GetHousekeepingRequestTypes();
 
@@ -140,14 +126,14 @@ namespace YourNamespace.Tests
         public async Task GetHousekeepingRequestTypes_WithNullWorkspace_ReturnsAllRequestTypes()
         {
             // Arrange
-            var requestTypes = new List<HkRequestType>
+            var data = new List<HkRequestType>
             {
                 new HkRequestType { RequestTypeId = 1, Workspace = "WorkspaceA", RequestTypeDesc = "Type A" },
                 new HkRequestType { RequestTypeId = 2, Workspace = "WorkspaceB", RequestTypeDesc = "Type B" }
             };
 
-            await _testContext.HousekeepingRequestTypes.AddRangeAsync(requestTypes);
-            await _testContext.SaveChangesAsync();
+            var mockDbSet = CreateMockDbSet(data);
+            _mockDbContext.Setup(c => c.HousekeepingRequestTypes).Returns(mockDbSet.Object);
 
             // Act
             var result = await _repository.GetHousekeepingRequestTypes(null);
@@ -161,13 +147,13 @@ namespace YourNamespace.Tests
         public async Task GetHousekeepingRequestTypes_WithEmptyStringWorkspace_ReturnsAllRequestTypes()
         {
             // Arrange
-            var requestTypes = new List<HkRequestType>
+            var data = new List<HkRequestType>
             {
                 new HkRequestType { RequestTypeId = 1, Workspace = "WorkspaceA", RequestTypeDesc = "Type A" }
             };
 
-            await _testContext.HousekeepingRequestTypes.AddRangeAsync(requestTypes);
-            await _testContext.SaveChangesAsync();
+            var mockDbSet = CreateMockDbSet(data);
+            _mockDbContext.Setup(c => c.HousekeepingRequestTypes).Returns(mockDbSet.Object);
 
             // Act
             var result = await _repository.GetHousekeepingRequestTypes(string.Empty);
@@ -178,75 +164,128 @@ namespace YourNamespace.Tests
         }
 
         [Test]
-        public void GetHousekeepingRequests_CallsStoredProcedure()
+        public async Task GetHousekeepingRequests_CallsExecuteStoredProcedure()
         {
-            // Note: Testing stored procedures requires a real database or additional mocking
-            // This is a placeholder test to demonstrate the structure
-            // In a real scenario, you would need to mock ExecuteStoredProcedureAsync
-            
             // Arrange
             int requestTypeId = 1;
-
-            // Act & Assert
-            Assert.DoesNotThrowAsync(async () => 
+            var expectedResult = new List<HkRequest>
             {
-                try
-                {
-                    await _repository.GetHousekeepingRequests(requestTypeId);
-                }
-                catch (NotImplementedException)
-                {
-                    // Expected when ExecuteStoredProcedureAsync is not implemented in test context
-                    Assert.Pass("Method structure is correct. Stored procedure execution needs real DB or additional mocking.");
-                }
-            });
+                new HkRequest { RequestId = 1, LastHoldDate = DateTime.Now },
+                new HkRequest { RequestId = 2, LastHoldDate = DateTime.Now.AddDays(-1) }
+            };
+
+            _mockDbContext
+                .Setup(c => c.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)))
+                .ReturnsAsync(expectedResult);
+
+            // Act
+            var result = await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            Assert.That(result, Is.Not.Null);
+            Assert.That(result.Count, Is.EqualTo(2));
+            _mockDbContext.Verify(c => c.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                It.IsAny<GetHkRequestIdListParameter>()), Times.Once);
         }
 
         [Test]
-        public void UpdateRequestHousekeeping_CallsStoredProcedure()
+        public async Task UpdateRequestHousekeeping_WithDate_CallsStoredProcedure()
         {
-            // Note: Testing stored procedures requires a real database or additional mocking
-            // This is a placeholder test to demonstrate the structure
-            
             // Arrange
             int requestTypeId = 1;
             DateTime? date = DateTime.Now;
 
-            // Act & Assert
-            Assert.DoesNotThrowAsync(async () => 
-            {
-                try
-                {
-                    await _repository.UpdateRequestHousekeeping(requestTypeId, date);
-                }
-                catch (NotImplementedException)
-                {
-                    // Expected when ExecuteStoredProcedureAsync is not implemented in test context
-                    Assert.Pass("Method structure is correct. Stored procedure execution needs real DB or additional mocking.");
-                }
-            });
+            _mockDbContext
+                .Setup(c => c.ExecuteStoredProcedureAsync(It.IsAny<HoldRequestHkParameter>()))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _mockDbContext.Verify(c => c.ExecuteStoredProcedureAsync(
+                It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId && p.LastHoldDate == date)), 
+                Times.Once);
         }
 
         [Test]
-        public void UpdateRequestHousekeeping_WithNullDate_CallsStoredProcedure()
+        public async Task UpdateRequestHousekeeping_WithNullDate_CallsStoredProcedure()
         {
             // Arrange
             int requestTypeId = 1;
             DateTime? date = null;
 
-            // Act & Assert
-            Assert.DoesNotThrowAsync(async () => 
-            {
-                try
-                {
-                    await _repository.UpdateRequestHousekeeping(requestTypeId, date);
-                }
-                catch (NotImplementedException)
-                {
-                    // Expected when ExecuteStoredProcedureAsync is not implemented in test context
-                    Assert.Pass("Method structure is correct. Stored procedure execution needs real DB or additional mocking.");
-                }
-            });
+            _mockDbContext
+                .Setup(c => c.ExecuteStoredProcedureAsync(It.IsAny<HoldRequestHkParameter>()))
+                .Returns(Task.CompletedTask);
+
+            // Act
+            await _repository.UpdateRequestHousekeeping(requestTypeId, date);
+
+            // Assert
+            _mockDbContext.Verify(c => c.ExecuteStoredProcedureAsync(
+                It.Is<HoldRequestHkParameter>(p => p.RequestId == requestTypeId && p.LastHoldDate == null)), 
+                Times.Once);
+        }
+
+        [Test]
+        public async Task GetHousekeepingRequests_VerifiesCorrectParameter()
+        {
+            // Arrange
+            int requestTypeId = 123;
+            var expectedResult = new List<HkRequest>();
+
+            _mockDbContext
+                .Setup(c => c.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                    It.IsAny<GetHkRequestIdListParameter>()))
+                .ReturnsAsync(expectedResult);
+
+            // Act
+            await _repository.GetHousekeepingRequests(requestTypeId);
+
+            // Assert
+            _mockDbContext.Verify(c => c.ExecuteStoredProcedureAsync<HkRequest, GetHkRequestIdListParameter>(
+                It.Is<GetHkRequestIdListParameter>(p => p.RequestTypeId == requestTypeId)), 
+                Times.Once);
+        }
+
+        // Helper method to create a mockable DbSet
+        private Mock<DbSet<T>> CreateMockDbSet<T>(List<T> data) where T : class
+        {
+            var queryable = data.AsQueryable();
+            var mockDbSet = new Mock<DbSet<T>>();
+
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.Provider).Returns(queryable.Provider);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.Expression).Returns(queryable.Expression);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.ElementType).Returns(queryable.ElementType);
+            mockDbSet.As<IQueryable<T>>().Setup(m => m.GetEnumerator()).Returns(() => queryable.GetEnumerator());
+
+            return mockDbSet;
+        }
+    }
+
+    // Test DbContext that can be mocked
+    public class TestDbContext : BaseDbContext
+    {
+        public TestDbContext(DbContextOptions<TestDbContext> options, ILoggerFactory loggerFactory)
+            : base(options, loggerFactory)
+        {
+        }
+
+        public virtual DbSet<HkRequestType> HousekeepingRequestTypes { get; set; }
+        public virtual DbSet<HkRequest> HousekeepingRequests { get; set; }
+
+        // Make these virtual so they can be mocked
+        public virtual Task<IList<T>> ExecuteStoredProcedureAsync<T, TParameter>(TParameter parameter) 
+            where T : class
+        {
+            throw new NotImplementedException();
+        }
+
+        public virtual Task ExecuteStoredProcedureAsync<TParameter>(TParameter parameter)
+        {
+            throw new NotImplementedException();
         }
     }
 }
