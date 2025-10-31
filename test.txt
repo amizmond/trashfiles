@@ -1,138 +1,119 @@
-private (bool IsValid, TExcelModel Model) ProcessRow(Row row, Dictionary<string, int> columnMapping, Dictionary<string, string> sharedStrings)
-{
-    var model = new TExcelModel();
-    var cells = row.Elements<Cell>().ToList();
-
-    if (!cells.Any() || cells.All(c => string.IsNullOrWhiteSpace(GetCellValue(c, sharedStrings, false))))
+    protected string GetCellValue(Cell cell, Dictionary<string, string> sharedStrings, bool cleanNumericValues = false)
     {
-        return (false, model);
-    }
-
-    var hasAnyValue = false;
-
-    foreach (var propertyMapping in _propertyMappings)
-    {
-        var property = propertyMapping.Key;
-        var columnName = _propertyColumnNames[property];
-
-        if (columnMapping.TryGetValue(columnName, out var columnIndex))
+        if (cell.CellValue == null && cell.InlineString == null)
         {
-            var cell = cells.FirstOrDefault(c => GetColumnIndex(c.CellReference!) == columnIndex);
-
-            if (cell != null)
-            {
-                // Clean up numeric values only for string properties
-                var shouldCleanNumeric = property.PropertyType == typeof(string);
-                var cellValue = GetCellValue(cell, sharedStrings, shouldCleanNumeric);
-                
-                if (!string.IsNullOrWhiteSpace(cellValue))
-                {
-                    hasAnyValue = true;
-                }
-
-                SetPropertyValue(model, property, cellValue);
-            }
-            else if (property.PropertyType.IsValueType && Nullable.GetUnderlyingType(property.PropertyType) == null)
-            {
-                SetPropertyValue(model, property, null);
-            }
+            return string.Empty;
         }
-    }
 
-    return (hasAnyValue, model);
-}
-
-protected string GetCellValue(Cell cell, Dictionary<string, string> sharedStrings, bool cleanNumericValues = false)
-{
-    if (cell.CellValue == null && cell.InlineString == null)
-    {
-        return string.Empty;
-    }
-
-    if (cell.DataType != null)
-    {
-        if (cell.DataType.Value == CellValues.SharedString)
+        if (cell.DataType != null)
         {
-            if (cell.CellValue != null && sharedStrings.TryGetValue(cell.CellValue.Text, out var sharedString))
+            if (cell.DataType.Value == CellValues.SharedString)
             {
-                return sharedString.Trim();
-            }
-        }
-        else if (cell.DataType.Value == CellValues.InlineString)
-        {
-            if (cell.InlineString != null)
-            {
-                if (cell.InlineString.Text != null)
+                if (cell.CellValue != null && sharedStrings.TryGetValue(cell.CellValue.Text, out var sharedString))
                 {
-                    return cell.InlineString.Text.Text.Trim() ?? string.Empty;
+                    return sharedString.Trim();
                 }
-
-                var runs = cell.InlineString.Elements<Run>().ToList();
-                if (runs.Any())
+            }
+            else if (cell.DataType.Value == CellValues.InlineString)
+            {
+                if (cell.InlineString != null)
                 {
-                    var textBuilder = new System.Text.StringBuilder();
-                    foreach (var run in runs)
+                    if (cell.InlineString.Text != null)
                     {
-                        if (run.Text != null)
-                        {
-                            textBuilder.Append(run.Text.Text);
-                        }
+                        return cell.InlineString.Text.Text.Trim() ?? string.Empty;
                     }
-                    return textBuilder.ToString().Trim();
+
+                    var runs = cell.InlineString.Elements<Run>().ToList();
+                    if (runs.Any())
+                    {
+                        var textBuilder = new System.Text.StringBuilder();
+                        foreach (var run in runs)
+                        {
+                            if (run.Text != null)
+                            {
+                                textBuilder.Append(run.Text.Text);
+                            }
+                        }
+                        return textBuilder.ToString().Trim();
+                    }
                 }
             }
-        }
-        else if (cell.DataType.Value == CellValues.String)
-        {
-            if (cell.CellValue != null)
+            else if (cell.DataType.Value == CellValues.String && cell.CellValue != null)
             {
                 return cell.CellValue.Text.Trim();
             }
         }
-    }
 
-    // Handle numeric values
-    if (cell.CellValue != null)
-    {
-        var cellText = cell.CellValue.Text.Trim();
-        
-        // Only clean up numeric values if requested (for string properties)
-        if (cleanNumericValues && double.TryParse(cellText, NumberStyles.Any, CultureInfo.InvariantCulture, out var numericValue))
+        if (cell.CellValue != null)
         {
-            // Clean up floating-point artifacts for string representation
-            var formatted = numericValue.ToString("G15", CultureInfo.InvariantCulture);
-            
-            // Remove trailing zeros after decimal point
-            if (formatted.Contains('.'))
+            var cellText = cell.CellValue.Text.Trim();
+
+            if (cleanNumericValues && double.TryParse(cellText, NumberStyles.Any, CultureInfo.InvariantCulture, out var numericValue))
             {
-                formatted = formatted.TrimEnd('0').TrimEnd('.');
+                return FormatNumericValueForString(numericValue, cellText);
             }
-            
-            return formatted;
+
+            return cellText;
         }
-        
-        return cellText;
+
+        return string.Empty;
     }
 
-    return string.Empty;
-}
-
-protected Dictionary<string, int> ReadHeaderRow(Row headerRow, Dictionary<string, string> sharedStrings, CancellationToken cancellationToken)
-{
-    var columnMapping = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-    foreach (var cell in headerRow.Elements<Cell>())
+    protected string FormatNumericValueForString(double numericValue, string originalText)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var columnIndex = GetColumnIndex(cell.CellReference!);
-        var cellValue = GetCellValue(cell, sharedStrings, false); // Headers don't need cleanup
-
-        if (!string.IsNullOrWhiteSpace(cellValue))
+        if (double.IsNaN(numericValue) || double.IsInfinity(numericValue))
         {
-            columnMapping[cellValue.Trim()] = columnIndex;
+            return originalText;
+        }
+
+        var isInteger = Math.Abs(numericValue - Math.Round(numericValue)) < double.Epsilon;
+
+        if (isInteger)
+        {
+            return FormatLongNumber(numericValue);
+        }
+        else
+        {
+            return FormatDoubleNumber(numericValue, originalText);
         }
     }
 
-    return columnMapping;
-}
+    protected string FormatLongNumber(double numericValue)
+    {
+        if (Math.Abs(numericValue) < 1e18)
+        {
+            return numericValue.ToString("F0", CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            return numericValue.ToString("G17", CultureInfo.InvariantCulture);
+        }
+    }
+
+    protected string FormatDoubleNumber(double numericValue, string originalText)
+    {
+        var formatted = numericValue.ToString("G15", CultureInfo.InvariantCulture);
+
+        if (formatted.IndexOf('E') >= 0)
+        {
+            if (originalText.IndexOf('E', StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return formatted;
+            }
+
+            if (Math.Abs(numericValue) >= 1e-6 && Math.Abs(numericValue) < 1e10)
+            {
+                var magnitude = Math.Abs(numericValue) >= 1 ? (int)Math.Floor(Math.Log10(Math.Abs(numericValue))) + 1 : 0;
+                var decimalPlaces = Math.Max(0, Math.Min(15 - magnitude, 15));
+
+                formatted = numericValue.ToString($"F{decimalPlaces}", CultureInfo.InvariantCulture);
+            }
+        }
+
+        if (formatted.Contains('.'))
+        {
+            formatted = formatted.TrimEnd('0').TrimEnd('.');
+        }
+
+        return formatted;
+    }
