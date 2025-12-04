@@ -1,119 +1,917 @@
-    protected string GetCellValue(Cell cell, Dictionary<string, string> sharedStrings, bool cleanNumericValues = false)
+================================================================================
+           IFRAME-BASED ANGULAR PORTAL - STEP-BY-STEP GUIDE
+================================================================================
+
+INTRODUCTION
+------------
+This guide walks you through creating an iframe-based portal that serves as an
+entry point for multiple Angular applications across different environments.
+
+What You Will Build:
+- A home page displaying all available applications
+- Environment selector (Development, Staging, Production)
+- Application switcher in the header
+- Iframe container for embedded applications
+- Communication service for portal-to-app messaging
+
+Prerequisites:
+- Node.js 18+ installed
+- Angular CLI 17+ installed globally
+- Basic knowledge of Angular and TypeScript
+
+
+================================================================================
+STEP 1: CREATE NEW ANGULAR PROJECT
+================================================================================
+
+Run the following commands:
+
+    ng new app-portal --standalone --routing --style=scss
+    cd app-portal
+    ng add @angular/material    # Optional, for better UI
+
+
+================================================================================
+STEP 2: CREATE PROJECT STRUCTURE
+================================================================================
+
+Create the following folder structure:
+
+    src/app/
+    ├── core/
+    │   ├── models/
+    │   │   └── app-config.model.ts
+    │   └── services/
+    │       ├── app-registry.service.ts
+    │       └── portal-communication.service.ts
+    ├── features/
+    │   ├── home/
+    │   │   └── home.component.ts
+    │   └── portal/
+    │       └── portal.component.ts
+    ├── app.component.ts
+    ├── app.routes.ts
+    └── app.config.ts
+
+Commands to create folders:
+
+    mkdir -p src/app/core/models
+    mkdir -p src/app/core/services
+    mkdir -p src/app/features/home
+    mkdir -p src/app/features/portal
+
+
+================================================================================
+STEP 3: CREATE DATA MODELS
+================================================================================
+
+File: src/app/core/models/app-config.model.ts
+
+------------------------------------------------------------------------
+export interface Environment {
+  name: string;
+  url: string;
+  icon?: string;
+}
+
+export interface AppConfig {
+  id: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  environments: Environment[];
+}
+
+export interface PortalState {
+  currentApp: AppConfig | null;
+  currentEnvironment: Environment | null;
+  isLoading: boolean;
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 4: CREATE APP REGISTRY SERVICE
+================================================================================
+
+File: src/app/core/services/app-registry.service.ts
+
+------------------------------------------------------------------------
+import { Injectable, signal, computed } from '@angular/core';
+import { AppConfig, Environment, PortalState } from '../models/app-config.model';
+
+@Injectable({ providedIn: 'root' })
+export class AppRegistryService {
+  
+  // Define your applications here
+  private readonly applications: AppConfig[] = [
     {
-        if (cell.CellValue == null && cell.InlineString == null)
-        {
-            return string.Empty;
-        }
-
-        if (cell.DataType != null)
-        {
-            if (cell.DataType.Value == CellValues.SharedString)
-            {
-                if (cell.CellValue != null && sharedStrings.TryGetValue(cell.CellValue.Text, out var sharedString))
-                {
-                    return sharedString.Trim();
-                }
-            }
-            else if (cell.DataType.Value == CellValues.InlineString)
-            {
-                if (cell.InlineString != null)
-                {
-                    if (cell.InlineString.Text != null)
-                    {
-                        return cell.InlineString.Text.Text.Trim() ?? string.Empty;
-                    }
-
-                    var runs = cell.InlineString.Elements<Run>().ToList();
-                    if (runs.Any())
-                    {
-                        var textBuilder = new System.Text.StringBuilder();
-                        foreach (var run in runs)
-                        {
-                            if (run.Text != null)
-                            {
-                                textBuilder.Append(run.Text.Text);
-                            }
-                        }
-                        return textBuilder.ToString().Trim();
-                    }
-                }
-            }
-            else if (cell.DataType.Value == CellValues.String && cell.CellValue != null)
-            {
-                return cell.CellValue.Text.Trim();
-            }
-        }
-
-        if (cell.CellValue != null)
-        {
-            var cellText = cell.CellValue.Text.Trim();
-
-            if (cleanNumericValues && double.TryParse(cellText, NumberStyles.Any, CultureInfo.InvariantCulture, out var numericValue))
-            {
-                return FormatNumericValueForString(numericValue, cellText);
-            }
-
-            return cellText;
-        }
-
-        return string.Empty;
-    }
-
-    protected string FormatNumericValueForString(double numericValue, string originalText)
+      id: 'crm',
+      name: 'CRM System',
+      description: 'Customer Relationship Management',
+      icon: '👥',
+      color: '#4CAF50',
+      environments: [
+        { name: 'Development', url: 'https://dev-crm.yourcompany.com' },
+        { name: 'Staging', url: 'https://staging-crm.yourcompany.com' },
+        { name: 'Production', url: 'https://crm.yourcompany.com' }
+      ]
+    },
     {
-        if (double.IsNaN(numericValue) || double.IsInfinity(numericValue))
-        {
-            return originalText;
-        }
-
-        var isInteger = Math.Abs(numericValue - Math.Round(numericValue)) < double.Epsilon;
-
-        if (isInteger)
-        {
-            return FormatLongNumber(numericValue);
-        }
-        else
-        {
-            return FormatDoubleNumber(numericValue, originalText);
-        }
-    }
-
-    protected string FormatLongNumber(double numericValue)
+      id: 'inventory',
+      name: 'Inventory Management',
+      description: 'Stock and warehouse management',
+      icon: '📦',
+      color: '#2196F3',
+      environments: [
+        { name: 'Development', url: 'https://dev-inventory.yourcompany.com' },
+        { name: 'Staging', url: 'https://staging-inventory.yourcompany.com' },
+        { name: 'Production', url: 'https://inventory.yourcompany.com' }
+      ]
+    },
     {
-        if (Math.Abs(numericValue) < 1e18)
-        {
-            return numericValue.ToString("F0", CultureInfo.InvariantCulture);
-        }
-        else
-        {
-            return numericValue.ToString("G17", CultureInfo.InvariantCulture);
-        }
+      id: 'reports',
+      name: 'Reports & Analytics',
+      description: 'Business intelligence dashboard',
+      icon: '📊',
+      color: '#FF9800',
+      environments: [
+        { name: 'Development', url: 'https://dev-reports.yourcompany.com' },
+        { name: 'Staging', url: 'https://staging-reports.yourcompany.com' },
+        { name: 'Production', url: 'https://reports.yourcompany.com' }
+      ]
     }
+  ];
 
-    protected string FormatDoubleNumber(double numericValue, string originalText)
-    {
-        var formatted = numericValue.ToString("G15", CultureInfo.InvariantCulture);
+  // Signals for reactive state
+  private portalState = signal<PortalState>({
+    currentApp: null,
+    currentEnvironment: null,
+    isLoading: false
+  });
 
-        if (formatted.IndexOf('E') >= 0)
-        {
-            if (originalText.IndexOf('E', StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return formatted;
-            }
+  // Computed values
+  readonly state = this.portalState.asReadonly();
+  readonly currentApp = computed(() => this.portalState().currentApp);
+  readonly currentEnvironment = computed(() => this.portalState().currentEnvironment);
+  readonly isLoading = computed(() => this.portalState().isLoading);
+  readonly currentUrl = computed(() => this.portalState().currentEnvironment?.url || null);
 
-            if (Math.Abs(numericValue) >= 1e-6 && Math.Abs(numericValue) < 1e10)
-            {
-                var magnitude = Math.Abs(numericValue) >= 1 ? (int)Math.Floor(Math.Log10(Math.Abs(numericValue))) + 1 : 0;
-                var decimalPlaces = Math.Max(0, Math.Min(15 - magnitude, 15));
+  getApplications(): AppConfig[] {
+    return this.applications;
+  }
 
-                formatted = numericValue.ToString($"F{decimalPlaces}", CultureInfo.InvariantCulture);
-            }
-        }
+  getAppById(id: string): AppConfig | undefined {
+    return this.applications.find(app => app.id === id);
+  }
 
-        if (formatted.Contains('.'))
-        {
-            formatted = formatted.TrimEnd('0').TrimEnd('.');
-        }
-
-        return formatted;
+  selectApp(appId: string, environmentIndex: number = 0): void {
+    const app = this.getAppById(appId);
+    if (app) {
+      this.portalState.update(state => ({
+        ...state,
+        currentApp: app,
+        currentEnvironment: app.environments[environmentIndex],
+        isLoading: true
+      }));
     }
+  }
+
+  selectEnvironment(environment: Environment): void {
+    this.portalState.update(state => ({
+      ...state,
+      currentEnvironment: environment,
+      isLoading: true
+    }));
+  }
+
+  setLoading(isLoading: boolean): void {
+    this.portalState.update(state => ({ ...state, isLoading }));
+  }
+
+  goHome(): void {
+    this.portalState.set({
+      currentApp: null,
+      currentEnvironment: null,
+      isLoading: false
+    });
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 5: CREATE COMMUNICATION SERVICE
+================================================================================
+
+File: src/app/core/services/portal-communication.service.ts
+
+------------------------------------------------------------------------
+import { Injectable, NgZone } from '@angular/core';
+import { Subject, Observable, filter } from 'rxjs';
+
+export interface PortalMessage {
+  type: string;
+  payload?: any;
+  source?: string;
+  timestamp?: number;
+}
+
+@Injectable({ providedIn: 'root' })
+export class PortalCommunicationService {
+  private messageSubject = new Subject<PortalMessage>();
+  private iframeElement: HTMLIFrameElement | null = null;
+
+  constructor(private ngZone: NgZone) {
+    this.initMessageListener();
+  }
+
+  private initMessageListener(): void {
+    window.addEventListener('message', (event: MessageEvent) => {
+      this.ngZone.run(() => {
+        if (event.data && event.data.type) {
+          this.messageSubject.next({
+            ...event.data,
+            timestamp: Date.now()
+          });
+        }
+      });
+    });
+  }
+
+  setIframe(iframe: HTMLIFrameElement): void {
+    this.iframeElement = iframe;
+  }
+
+  sendToApp(message: PortalMessage): void {
+    if (this.iframeElement?.contentWindow) {
+      this.iframeElement.contentWindow.postMessage(
+        { ...message, source: 'portal', timestamp: Date.now() },
+        '*'
+      );
+    }
+  }
+
+  onMessage(type?: string): Observable<PortalMessage> {
+    if (type) {
+      return this.messageSubject.pipe(filter(msg => msg.type === type));
+    }
+    return this.messageSubject.asObservable();
+  }
+
+  sendUserInfo(user: any): void {
+    this.sendToApp({ type: 'USER_INFO', payload: user });
+  }
+
+  sendAuthToken(token: string): void {
+    this.sendToApp({ type: 'AUTH_TOKEN', payload: token });
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 6: CREATE HOME COMPONENT
+================================================================================
+
+File: src/app/features/home/home.component.ts
+
+------------------------------------------------------------------------
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
+import { AppRegistryService } from '../../core/services/app-registry.service';
+import { AppConfig } from '../../core/models/app-config.model';
+
+@Component({
+  selector: 'app-home',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="home-container">
+      <header class="home-header">
+        <h1>Application Portal</h1>
+        <p>Select an application to get started</p>
+      </header>
+
+      <div class="search-bar">
+        <input 
+          type="text" 
+          placeholder="Search applications..."
+          (input)="onSearch($event)"
+        >
+      </div>
+
+      <div class="apps-grid">
+        @for (app of filteredApps; track app.id) {
+          <div 
+            class="app-card" 
+            [style.--accent-color]="app.color"
+            (click)="openApp(app)"
+          >
+            <div class="app-icon">{{ app.icon }}</div>
+            <div class="app-info">
+              <h3>{{ app.name }}</h3>
+              <p>{{ app.description }}</p>
+            </div>
+            <div class="app-environments">
+              @for (env of app.environments; track env.name) {
+                <span 
+                  class="env-badge"
+                  (click)="openAppInEnv(app, $index, $event)"
+                >
+                  {{ env.name }}
+                </span>
+              }
+            </div>
+          </div>
+        }
+      </div>
+    </div>
+  `,
+  styles: [`
+    .home-container {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      padding: 2rem;
+    }
+    .home-header {
+      text-align: center;
+      color: white;
+      margin-bottom: 2rem;
+    }
+    .home-header h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
+    .home-header p { opacity: 0.7; font-size: 1.1rem; }
+    .search-bar {
+      max-width: 500px;
+      margin: 0 auto 2rem;
+    }
+    .search-bar input {
+      width: 100%;
+      padding: 1rem 1.5rem;
+      border: none;
+      border-radius: 50px;
+      font-size: 1rem;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      outline: none;
+    }
+    .search-bar input::placeholder { color: rgba(255, 255, 255, 0.5); }
+    .apps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .app-card {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
+      padding: 1.5rem;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      position: relative;
+      overflow: hidden;
+    }
+    .app-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 4px; height: 100%;
+      background: var(--accent-color, #4CAF50);
+    }
+    .app-card:hover {
+      transform: translateY(-4px);
+      background: rgba(255, 255, 255, 0.1);
+    }
+    .app-icon { font-size: 2.5rem; margin-bottom: 1rem; }
+    .app-info { color: white; }
+    .app-info h3 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    .app-info p { margin: 0; opacity: 0.7; font-size: 0.9rem; }
+    .app-environments {
+      margin-top: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .env-badge {
+      padding: 0.35rem 0.75rem;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 20px;
+      font-size: 0.75rem;
+      color: rgba(255, 255, 255, 0.8);
+      transition: all 0.2s;
+    }
+    .env-badge:hover {
+      background: var(--accent-color, #4CAF50);
+      color: white;
+    }
+  `]
+})
+export class HomeComponent {
+  private registry = inject(AppRegistryService);
+  private router = inject(Router);
+
+  applications = this.registry.getApplications();
+  filteredApps = [...this.applications];
+
+  onSearch(event: Event): void {
+    const term = (event.target as HTMLInputElement).value.toLowerCase();
+    this.filteredApps = this.applications.filter(app =>
+      app.name.toLowerCase().includes(term) ||
+      app.description?.toLowerCase().includes(term)
+    );
+  }
+
+  openApp(app: AppConfig): void {
+    this.registry.selectApp(app.id, 0);
+    this.router.navigate(['/portal']);
+  }
+
+  openAppInEnv(app: AppConfig, envIndex: number, event: Event): void {
+    event.stopPropagation();
+    this.registry.selectApp(app.id, envIndex);
+    this.router.navigate(['/portal']);
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 7: CREATE PORTAL COMPONENT
+================================================================================
+
+File: src/app/features/portal/portal.component.ts
+
+------------------------------------------------------------------------
+import { Component, inject, ViewChild, ElementRef } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { AppRegistryService } from '../../core/services/app-registry.service';
+import { PortalCommunicationService } from '../../core/services/portal-communication.service';
+
+@Component({
+  selector: 'app-portal',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="portal-container">
+      <header class="portal-header">
+        <button class="home-button" (click)="goHome()">🏠</button>
+
+        <div class="current-app" *ngIf="currentApp()">
+          <span class="app-icon">{{ currentApp()?.icon }}</span>
+          <span class="app-name">{{ currentApp()?.name }}</span>
+        </div>
+
+        <div class="selectors">
+          <div class="selector-group">
+            <label>Application:</label>
+            <select [value]="currentApp()?.id" (change)="onAppChange($event)">
+              @for (app of applications; track app.id) {
+                <option [value]="app.id">{{ app.name }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="selector-group">
+            <label>Environment:</label>
+            <select [value]="currentEnvironment()?.url" (change)="onEnvChange($event)">
+              @for (env of currentApp()?.environments; track env.name) {
+                <option [value]="env.url">{{ env.name }}</option>
+              }
+            </select>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button class="action-btn" (click)="refreshApp()">🔄</button>
+          <button class="action-btn" (click)="openInNewTab()">↗️</button>
+        </div>
+      </header>
+
+      <div class="loading-bar" *ngIf="isLoading()">
+        <div class="loading-progress"></div>
+      </div>
+
+      <main class="iframe-container">
+        <iframe
+          #appFrame
+          *ngIf="safeUrl"
+          [src]="safeUrl"
+          (load)="onIframeLoad()"
+          frameborder="0"
+        ></iframe>
+      </main>
+    </div>
+  `,
+  styles: [`
+    .portal-container {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: #0f0f1a;
+    }
+    .portal-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      background: #1a1a2e;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .home-button {
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1.25rem;
+    }
+    .home-button:hover { background: rgba(255, 255, 255, 0.2); }
+    .current-app {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: white;
+      padding: 0.5rem 1rem;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+    }
+    .selectors {
+      display: flex;
+      gap: 1rem;
+      margin-left: auto;
+    }
+    .selector-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .selector-group label {
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 0.85rem;
+    }
+    .selector-group select {
+      padding: 0.5rem 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .selector-group select option {
+      background: #1a1a2e;
+      color: white;
+    }
+    .header-actions { display: flex; gap: 0.5rem; }
+    .action-btn {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      padding: 0.5rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .action-btn:hover { background: rgba(255, 255, 255, 0.1); }
+    .loading-bar {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+    }
+    .loading-progress {
+      height: 100%;
+      width: 30%;
+      background: linear-gradient(90deg, #4CAF50, #8BC34A);
+      animation: loading 1s ease-in-out infinite;
+    }
+    @keyframes loading {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(400%); }
+    }
+    .iframe-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    .iframe-container iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: white;
+    }
+  `]
+})
+export class PortalComponent {
+  @ViewChild('appFrame') appFrame!: ElementRef<HTMLIFrameElement>;
+
+  private registry = inject(AppRegistryService);
+  private router = inject(Router);
+  private sanitizer = inject(DomSanitizer);
+  private communication = inject(PortalCommunicationService);
+
+  applications = this.registry.getApplications();
+  currentApp = this.registry.currentApp;
+  currentEnvironment = this.registry.currentEnvironment;
+  isLoading = this.registry.isLoading;
+  
+  safeUrl: SafeResourceUrl | null = null;
+
+  constructor() {
+    if (!this.currentApp()) {
+      this.router.navigate(['/']);
+      return;
+    }
+    this.updateSafeUrl();
+  }
+
+  private updateSafeUrl(): void {
+    const url = this.registry.currentUrl();
+    if (url) {
+      this.safeUrl = this.sanitizer.bypassSecurityTrustResourceUrl(url);
+    }
+  }
+
+  onAppChange(event: Event): void {
+    const appId = (event.target as HTMLSelectElement).value;
+    this.registry.selectApp(appId);
+    this.updateSafeUrl();
+  }
+
+  onEnvChange(event: Event): void {
+    const url = (event.target as HTMLSelectElement).value;
+    const env = this.currentApp()?.environments.find(e => e.url === url);
+    if (env) {
+      this.registry.selectEnvironment(env);
+      this.updateSafeUrl();
+    }
+  }
+
+  onIframeLoad(): void {
+    this.registry.setLoading(false);
+    if (this.appFrame) {
+      this.communication.setIframe(this.appFrame.nativeElement);
+    }
+  }
+
+  refreshApp(): void {
+    this.registry.setLoading(true);
+    const currentUrl = this.registry.currentUrl();
+    this.safeUrl = null;
+    setTimeout(() => {
+      if (currentUrl) {
+        this.safeUrl = this.sanitizer.bypassSecurityTrustResourceUrl(currentUrl);
+      }
+    }, 100);
+  }
+
+  openInNewTab(): void {
+    const url = this.registry.currentUrl();
+    if (url) window.open(url, '_blank');
+  }
+
+  goHome(): void {
+    this.registry.goHome();
+    this.router.navigate(['/']);
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 8: SETUP ROUTING
+================================================================================
+
+File: src/app/app.routes.ts
+
+------------------------------------------------------------------------
+import { Routes } from '@angular/router';
+
+export const routes: Routes = [
+  {
+    path: '',
+    loadComponent: () => import('./features/home/home.component')
+      .then(m => m.HomeComponent)
+  },
+  {
+    path: 'portal',
+    loadComponent: () => import('./features/portal/portal.component')
+      .then(m => m.PortalComponent)
+  },
+  {
+    path: '**',
+    redirectTo: ''
+  }
+];
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 9: UPDATE APP COMPONENT
+================================================================================
+
+File: src/app/app.component.ts
+
+------------------------------------------------------------------------
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [RouterOutlet],
+  template: `<router-outlet />`,
+  styles: [`
+    :host {
+      display: block;
+      height: 100vh;
+    }
+  `]
+})
+export class AppComponent {}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 10: UPDATE GLOBAL STYLES
+================================================================================
+
+File: src/styles.scss
+
+------------------------------------------------------------------------
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #0f0f1a;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 11: CONFIGURE CHILD APPS (Add to each Angular app you want to embed)
+================================================================================
+
+File: src/app/services/portal-bridge.service.ts (in each child app)
+
+------------------------------------------------------------------------
+import { Injectable, NgZone } from '@angular/core';
+import { Subject, Observable } from 'rxjs';
+
+@Injectable({ providedIn: 'root' })
+export class PortalBridgeService {
+  private messageSubject = new Subject<any>();
+  private isInPortal = window.parent !== window;
+
+  constructor(private ngZone: NgZone) {
+    window.addEventListener('message', (event) => {
+      this.ngZone.run(() => {
+        if (event.data?.source === 'portal') {
+          this.messageSubject.next(event.data);
+        }
+      });
+    });
+  }
+
+  sendToPortal(type: string, payload?: any): void {
+    if (this.isInPortal) {
+      window.parent.postMessage({ type, payload, source: 'app' }, '*');
+    }
+  }
+
+  notifyReady(): void {
+    this.sendToPortal('APP_READY');
+  }
+
+  onMessage(): Observable<any> {
+    return this.messageSubject.asObservable();
+  }
+
+  isRunningInPortal(): boolean {
+    return this.isInPortal;
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 12: HANDLE CORS AND X-FRAME-OPTIONS
+================================================================================
+
+Option A: Nginx Configuration
+-----------------------------
+server {
+    listen 80;
+    server_name dev-crm.yourcompany.com;
+
+    add_header X-Frame-Options "ALLOW-FROM https://portal.yourcompany.com";
+    add_header Content-Security-Policy "frame-ancestors https://portal.yourcompany.com";
+
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+
+Option B: Express Server
+------------------------
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'ALLOW-FROM https://portal.yourcompany.com');
+  res.setHeader('Content-Security-Policy', "frame-ancestors https://portal.yourcompany.com");
+  next();
+});
+
+
+================================================================================
+STEP 13: RUN AND TEST
+================================================================================
+
+Start the development server:
+
+    ng serve
+
+Access the portal at: http://localhost:4200
+
+Testing Checklist:
+[ ] Home page displays all applications
+[ ] Search/filter works correctly
+[ ] Clicking app card opens portal view
+[ ] Iframe loads the application
+[ ] Application switcher works
+[ ] Environment switcher works
+[ ] Refresh button reloads iframe
+[ ] Open in new tab button works
+[ ] Home button returns to app list
+
+
+================================================================================
+STEP 14: BUILD FOR PRODUCTION
+================================================================================
+
+Build command:
+
+    ng build --configuration=production
+
+Output will be in: dist/app-portal/
+
+Deployment options:
+- Deploy to Nginx/Apache web server
+- Deploy to cloud platforms (AWS S3, Azure Blob, etc.)
+- Deploy using Docker container
+- Deploy to CDN for global distribution
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+Components Created:
++---------------------------+---------------------------------------------+
+| Component                 | Purpose                                     |
++---------------------------+---------------------------------------------+
+| AppRegistryService        | Manages app configuration and state         |
+| PortalCommunicationService| Handles messaging between portal and apps   |
+| HomeComponent             | Landing page with app grid                  |
+| PortalComponent           | Main view with iframe and controls          |
+| PortalBridgeService       | Add to child apps for communication         |
++---------------------------+---------------------------------------------+
+
+Key Features:
+- Application selection from home screen
+- Environment switching in header
+- Refresh and open-in-new-tab functionality
+- Loading indicator and error handling
+- Bidirectional communication via postMessage
+- Responsive dark theme UI
+
+Next Steps:
+- Add authentication and share tokens with child apps
+- Implement deep linking to specific routes in child apps
+- Add favorites and recently used apps functionality
+- Consider Module Federation for better integration
+
+================================================================================
