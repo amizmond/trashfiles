@@ -28,7 +28,8 @@ Run the following commands:
 
     ng new app-portal --standalone --routing --style=scss
     cd app-portal
-    ng add @angular/material    # Optional, for better UI
+
+When prompted for SSR/SSG, select NO (not needed for this portal).
 
 
 ================================================================================
@@ -111,7 +112,7 @@ export class AppRegistryService {
       name: 'CRM System',
       description: 'Customer Relationship Management',
       icon: '👥',
-      color: '#4CAF50',
+      color: '#00aeef',
       environments: [
         { name: 'Development', url: 'https://dev-crm.yourcompany.com' },
         { name: 'Staging', url: 'https://staging-crm.yourcompany.com' },
@@ -123,7 +124,7 @@ export class AppRegistryService {
       name: 'Inventory Management',
       description: 'Stock and warehouse management',
       icon: '📦',
-      color: '#2196F3',
+      color: '#00aeef',
       environments: [
         { name: 'Development', url: 'https://dev-inventory.yourcompany.com' },
         { name: 'Staging', url: 'https://staging-inventory.yourcompany.com' },
@@ -135,7 +136,7 @@ export class AppRegistryService {
       name: 'Reports & Analytics',
       description: 'Business intelligence dashboard',
       icon: '📊',
-      color: '#FF9800',
+      color: '#00aeef',
       environments: [
         { name: 'Development', url: 'https://dev-reports.yourcompany.com' },
         { name: 'Staging', url: 'https://staging-reports.yourcompany.com' },
@@ -306,8 +307,7 @@ import { AppConfig } from '../../core/models/app-config.model';
       <div class="apps-grid">
         @for (app of filteredApps; track app.id) {
           <div 
-            class="app-card" 
-            [style.--accent-color]="app.color"
+            class="app-card"
             (click)="openApp(app)"
           >
             <div class="app-icon">{{ app.icon }}</div>
@@ -333,16 +333,23 @@ import { AppConfig } from '../../core/models/app-config.model';
   styles: [`
     .home-container {
       min-height: 100vh;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      background: #ffffff;
       padding: 2rem;
     }
     .home-header {
       text-align: center;
-      color: white;
+      color: #333333;
       margin-bottom: 2rem;
     }
-    .home-header h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-    .home-header p { opacity: 0.7; font-size: 1.1rem; }
+    .home-header h1 {
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
+      color: #00aeef;
+    }
+    .home-header p {
+      color: #666666;
+      font-size: 1.1rem;
+    }
     .search-bar {
       max-width: 500px;
       margin: 0 auto 2rem;
@@ -350,14 +357,20 @@ import { AppConfig } from '../../core/models/app-config.model';
     .search-bar input {
       width: 100%;
       padding: 1rem 1.5rem;
-      border: none;
+      border: 2px solid #e0e0e0;
       border-radius: 50px;
       font-size: 1rem;
-      background: rgba(255, 255, 255, 0.1);
-      color: white;
+      background: #ffffff;
+      color: #333333;
       outline: none;
+      transition: border-color 0.3s;
     }
-    .search-bar input::placeholder { color: rgba(255, 255, 255, 0.5); }
+    .search-bar input:focus {
+      border-color: #00aeef;
+    }
+    .search-bar input::placeholder {
+      color: #999999;
+    }
     .apps-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -366,30 +379,47 @@ import { AppConfig } from '../../core/models/app-config.model';
       margin: 0 auto;
     }
     .app-card {
-      background: rgba(255, 255, 255, 0.05);
+      background: #ffffff;
       border-radius: 16px;
       padding: 1.5rem;
       cursor: pointer;
       transition: all 0.3s ease;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: 1px solid #e0e0e0;
       position: relative;
       overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
     }
     .app-card::before {
       content: '';
       position: absolute;
-      top: 0; left: 0;
-      width: 4px; height: 100%;
-      background: var(--accent-color, #4CAF50);
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: #00aeef;
     }
     .app-card:hover {
       transform: translateY(-4px);
-      background: rgba(255, 255, 255, 0.1);
+      box-shadow: 0 8px 24px rgba(0, 174, 239, 0.15);
+      border-color: #00aeef;
     }
-    .app-icon { font-size: 2.5rem; margin-bottom: 1rem; }
-    .app-info { color: white; }
-    .app-info h3 { margin: 0 0 0.5rem; font-size: 1.25rem; }
-    .app-info p { margin: 0; opacity: 0.7; font-size: 0.9rem; }
+    .app-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+    }
+    .app-info {
+      color: #333333;
+    }
+    .app-info h3 {
+      margin: 0 0 0.5rem;
+      font-size: 1.25rem;
+      color: #222222;
+    }
+    .app-info p {
+      margin: 0;
+      color: #666666;
+      font-size: 0.9rem;
+    }
     .app-environments {
       margin-top: 1rem;
       display: flex;
@@ -398,15 +428,16 @@ import { AppConfig } from '../../core/models/app-config.model';
     }
     .env-badge {
       padding: 0.35rem 0.75rem;
-      background: rgba(255, 255, 255, 0.1);
+      background: #f0f9ff;
+      border: 1px solid #00aeef;
       border-radius: 20px;
       font-size: 0.75rem;
-      color: rgba(255, 255, 255, 0.8);
+      color: #00aeef;
       transition: all 0.2s;
     }
     .env-badge:hover {
-      background: var(--accent-color, #4CAF50);
-      color: white;
+      background: #00aeef;
+      color: #ffffff;
     }
   `]
 })
@@ -513,33 +544,39 @@ import { PortalCommunicationService } from '../../core/services/portal-communica
       display: flex;
       flex-direction: column;
       height: 100vh;
-      background: #0f0f1a;
+      background: #ffffff;
     }
     .portal-header {
       display: flex;
       align-items: center;
       gap: 1rem;
       padding: 0.75rem 1rem;
-      background: #1a1a2e;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      background: #00aeef;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
     }
     .home-button {
-      background: rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.2);
       border: none;
       padding: 0.5rem 0.75rem;
       border-radius: 8px;
       cursor: pointer;
       font-size: 1.25rem;
+      transition: background 0.2s;
     }
-    .home-button:hover { background: rgba(255, 255, 255, 0.2); }
+    .home-button:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
     .current-app {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      color: white;
+      color: #ffffff;
       padding: 0.5rem 1rem;
-      background: rgba(255, 255, 255, 0.05);
+      background: rgba(255, 255, 255, 0.15);
       border-radius: 8px;
+    }
+    .current-app .app-name {
+      font-weight: 500;
     }
     .selectors {
       display: flex;
@@ -552,41 +589,47 @@ import { PortalCommunicationService } from '../../core/services/portal-communica
       gap: 0.5rem;
     }
     .selector-group label {
-      color: rgba(255, 255, 255, 0.6);
+      color: rgba(255, 255, 255, 0.9);
       font-size: 0.85rem;
     }
     .selector-group select {
       padding: 0.5rem 1rem;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
       border-radius: 6px;
-      background: rgba(255, 255, 255, 0.1);
-      color: white;
+      background: rgba(255, 255, 255, 0.95);
+      color: #333333;
       font-size: 0.9rem;
       cursor: pointer;
+      outline: none;
     }
-    .selector-group select option {
-      background: #1a1a2e;
-      color: white;
+    .selector-group select:focus {
+      border-color: #ffffff;
     }
-    .header-actions { display: flex; gap: 0.5rem; }
+    .header-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
     .action-btn {
-      background: transparent;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
       padding: 0.5rem;
       border-radius: 6px;
       cursor: pointer;
       font-size: 1rem;
+      transition: all 0.2s;
     }
-    .action-btn:hover { background: rgba(255, 255, 255, 0.1); }
+    .action-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
     .loading-bar {
       height: 3px;
-      background: rgba(255, 255, 255, 0.1);
+      background: #e0e0e0;
       overflow: hidden;
     }
     .loading-progress {
       height: 100%;
       width: 30%;
-      background: linear-gradient(90deg, #4CAF50, #8BC34A);
+      background: linear-gradient(90deg, #00aeef, #00d4ff);
       animation: loading 1s ease-in-out infinite;
     }
     @keyframes loading {
@@ -602,7 +645,7 @@ import { PortalCommunicationService } from '../../core/services/portal-communica
       width: 100%;
       height: 100%;
       border: none;
-      background: white;
+      background: #ffffff;
     }
   `]
 })
@@ -752,7 +795,8 @@ File: src/styles.scss
 html, body {
   height: 100%;
   font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  background: #0f0f1a;
+  background: #ffffff;
+  color: #333333;
 }
 
 ::-webkit-scrollbar {
@@ -761,12 +805,31 @@ html, body {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
+  background: #f0f0f0;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: #00aeef;
   border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #0095cc;
+}
+
+/* Global link color */
+a {
+  color: #00aeef;
+}
+
+a:hover {
+  color: #0095cc;
+}
+
+/* Selection color */
+::selection {
+  background: #00aeef;
+  color: #ffffff;
 }
 ------------------------------------------------------------------------
 
@@ -886,6 +949,19 @@ Deployment options:
 
 
 ================================================================================
+COLOR SCHEME REFERENCE
+================================================================================
+
+Main Color:      #00aeef (Bright Blue/Cyan)
+Main Hover:      #0095cc (Darker Blue)
+Background:      #ffffff (White)
+Text Primary:    #333333 (Dark Gray)
+Text Secondary:  #666666 (Medium Gray)
+Border Color:    #e0e0e0 (Light Gray)
+Light Accent:    #f0f9ff (Very Light Blue)
+
+
+================================================================================
 SUMMARY
 ================================================================================
 
@@ -906,7 +982,7 @@ Key Features:
 - Refresh and open-in-new-tab functionality
 - Loading indicator and error handling
 - Bidirectional communication via postMessage
-- Responsive dark theme UI
+- Clean white theme with #00aeef accent color
 
 Next Steps:
 - Add authentication and share tokens with child apps
