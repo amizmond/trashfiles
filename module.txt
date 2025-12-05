@@ -1,0 +1,1411 @@
+================================================================================
+        MODULE FEDERATION ANGULAR PORTAL - STEP-BY-STEP GUIDE
+================================================================================
+
+INTRODUCTION
+------------
+Module Federation allows multiple Angular applications to share code and 
+dependencies at runtime. Unlike iframes, the remote apps are loaded directly 
+into the shell application, enabling seamless integration and shared state.
+
+Benefits over Iframe:
+- Shared dependencies (smaller bundle sizes)
+- Direct component communication
+- Shared authentication state
+- Better performance
+- Native Angular routing integration
+
+Prerequisites:
+- Node.js 18+ installed
+- Angular CLI 17+ installed globally
+- Basic knowledge of Angular and TypeScript
+
+
+================================================================================
+ARCHITECTURE OVERVIEW
+================================================================================
+
+    +-------------------+
+    |   Shell (Portal)  |  <-- Host application (port 4200)
+    |   - Header        |
+    |   - Navigation    |
+    |   - App Selector  |
+    +--------+----------+
+             |
+    +--------+----------+--------+
+    |        |          |        |
+    v        v          v        v
++-------+ +-------+ +-------+ +-------+
+| App 1 | | App 2 | | App 3 | | App 4 |  <-- Remote applications
+| :4201 | | :4202 | | :4203 | | :4204 |
++-------+ +-------+ +-------+ +-------+
+
+Each remote app exposes modules that the shell can load dynamically.
+
+
+================================================================================
+STEP 1: CREATE SHELL APPLICATION (PORTAL)
+================================================================================
+
+Create the host/shell application:
+
+    ng new shell-portal --standalone --routing --style=scss
+    cd shell-portal
+
+When prompted for SSR/SSG, select NO.
+
+Add Module Federation support:
+
+    ng add @angular-architects/module-federation --project shell-portal --type host --port 4200
+
+
+================================================================================
+STEP 2: CREATE REMOTE APPLICATIONS
+================================================================================
+
+Create remote applications (repeat for each app you need):
+
+Application 1 - CRM:
+--------------------
+    ng new mfe-crm --standalone --routing --style=scss
+    cd mfe-crm
+    ng add @angular-architects/module-federation --project mfe-crm --type remote --port 4201
+
+Application 2 - Inventory:
+--------------------------
+    ng new mfe-inventory --standalone --routing --style=scss
+    cd mfe-inventory
+    ng add @angular-architects/module-federation --project mfe-inventory --type remote --port 4202
+
+Application 3 - Reports:
+------------------------
+    ng new mfe-reports --standalone --routing --style=scss
+    cd mfe-reports
+    ng add @angular-architects/module-federation --project mfe-reports --type remote --port 4203
+
+
+================================================================================
+STEP 3: CONFIGURE SHELL (PORTAL) - webpack.config.js
+================================================================================
+
+File: shell-portal/webpack.config.js
+
+------------------------------------------------------------------------
+const { shareAll, withModuleFederationPlugin } = require('@angular-architects/module-federation/webpack');
+
+module.exports = withModuleFederationPlugin({
+  remotes: {
+    // Static remotes (if URLs are fixed)
+    // "mfeCrm": "http://localhost:4201/remoteEntry.js",
+    // "mfeInventory": "http://localhost:4202/remoteEntry.js",
+    // "mfeReports": "http://localhost:4203/remoteEntry.js",
+  },
+
+  shared: {
+    ...shareAll({ 
+      singleton: true, 
+      strictVersion: true, 
+      requiredVersion: 'auto' 
+    }),
+  },
+});
+------------------------------------------------------------------------
+
+Note: We'll use dynamic remotes, so the remotes object can be empty.
+
+
+================================================================================
+STEP 4: CONFIGURE REMOTE APPS - webpack.config.js
+================================================================================
+
+File: mfe-crm/webpack.config.js (repeat for each remote app)
+
+------------------------------------------------------------------------
+const { shareAll, withModuleFederationPlugin } = require('@angular-architects/module-federation/webpack');
+
+module.exports = withModuleFederationPlugin({
+  name: 'mfeCrm',
+
+  exposes: {
+    './Module': './src/app/remote-entry/entry.module.ts',
+    './Component': './src/app/remote-entry/entry.component.ts',
+  },
+
+  shared: {
+    ...shareAll({ 
+      singleton: true, 
+      strictVersion: true, 
+      requiredVersion: 'auto' 
+    }),
+  },
+});
+------------------------------------------------------------------------
+
+For mfe-inventory, change name to 'mfeInventory'.
+For mfe-reports, change name to 'mfeReports'.
+
+
+================================================================================
+STEP 5: CREATE REMOTE ENTRY COMPONENTS
+================================================================================
+
+Create entry point for each remote app:
+
+File: mfe-crm/src/app/remote-entry/entry.component.ts
+
+------------------------------------------------------------------------
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { RouterOutlet } from '@angular/router';
+
+@Component({
+  selector: 'app-crm-entry',
+  standalone: true,
+  imports: [CommonModule, RouterOutlet],
+  template: `
+    <div class="crm-container">
+      <div class="crm-header">
+        <h2>CRM System</h2>
+        <p>Customer Relationship Management</p>
+      </div>
+      <nav class="crm-nav">
+        <a routerLink="dashboard">Dashboard</a>
+        <a routerLink="customers">Customers</a>
+        <a routerLink="leads">Leads</a>
+      </nav>
+      <div class="crm-content">
+        <router-outlet></router-outlet>
+      </div>
+    </div>
+  `,
+  styles: [`
+    .crm-container {
+      padding: 1rem;
+      background: #ffffff;
+      min-height: 100%;
+    }
+    .crm-header {
+      margin-bottom: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 2px solid #00aeef;
+    }
+    .crm-header h2 {
+      color: #00aeef;
+      margin: 0 0 0.5rem;
+    }
+    .crm-header p {
+      color: #666666;
+      margin: 0;
+    }
+    .crm-nav {
+      display: flex;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    .crm-nav a {
+      padding: 0.5rem 1rem;
+      background: #f0f9ff;
+      border: 1px solid #00aeef;
+      border-radius: 4px;
+      color: #00aeef;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .crm-nav a:hover {
+      background: #00aeef;
+      color: #ffffff;
+    }
+    .crm-content {
+      padding: 1rem;
+      background: #f9f9f9;
+      border-radius: 8px;
+      min-height: 400px;
+    }
+  `]
+})
+export class EntryComponent {}
+------------------------------------------------------------------------
+
+
+File: mfe-crm/src/app/remote-entry/entry.routes.ts
+
+------------------------------------------------------------------------
+import { Routes } from '@angular/router';
+import { EntryComponent } from './entry.component';
+
+export const ENTRY_ROUTES: Routes = [
+  {
+    path: '',
+    component: EntryComponent,
+    children: [
+      {
+        path: '',
+        redirectTo: 'dashboard',
+        pathMatch: 'full'
+      },
+      {
+        path: 'dashboard',
+        loadComponent: () => import('../features/dashboard/dashboard.component')
+          .then(m => m.DashboardComponent)
+      },
+      {
+        path: 'customers',
+        loadComponent: () => import('../features/customers/customers.component')
+          .then(m => m.CustomersComponent)
+      },
+      {
+        path: 'leads',
+        loadComponent: () => import('../features/leads/leads.component')
+          .then(m => m.LeadsComponent)
+      }
+    ]
+  }
+];
+------------------------------------------------------------------------
+
+
+File: mfe-crm/src/app/remote-entry/entry.module.ts
+
+------------------------------------------------------------------------
+import { NgModule } from '@angular/core';
+import { RouterModule } from '@angular/router';
+import { ENTRY_ROUTES } from './entry.routes';
+
+@NgModule({
+  imports: [RouterModule.forChild(ENTRY_ROUTES)],
+  exports: [RouterModule]
+})
+export class EntryModule {}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 6: CREATE SAMPLE FEATURE COMPONENTS (Remote Apps)
+================================================================================
+
+File: mfe-crm/src/app/features/dashboard/dashboard.component.ts
+
+------------------------------------------------------------------------
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
+@Component({
+  selector: 'app-dashboard',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="dashboard">
+      <h3>CRM Dashboard</h3>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-value">1,234</span>
+          <span class="stat-label">Total Customers</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">56</span>
+          <span class="stat-label">New Leads</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">89%</span>
+          <span class="stat-label">Satisfaction</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value">$45.2K</span>
+          <span class="stat-label">Revenue</span>
+        </div>
+      </div>
+    </div>
+  `,
+  styles: [`
+    .dashboard h3 {
+      color: #333333;
+      margin-bottom: 1rem;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1rem;
+    }
+    .stat-card {
+      background: #ffffff;
+      padding: 1.5rem;
+      border-radius: 8px;
+      text-align: center;
+      border: 1px solid #e0e0e0;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .stat-value {
+      display: block;
+      font-size: 2rem;
+      font-weight: bold;
+      color: #00aeef;
+    }
+    .stat-label {
+      display: block;
+      color: #666666;
+      font-size: 0.9rem;
+      margin-top: 0.5rem;
+    }
+  `]
+})
+export class DashboardComponent {}
+------------------------------------------------------------------------
+
+
+File: mfe-crm/src/app/features/customers/customers.component.ts
+
+------------------------------------------------------------------------
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
+@Component({
+  selector: 'app-customers',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="customers">
+      <h3>Customers List</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let customer of customers">
+            <td>{{ customer.name }}</td>
+            <td>{{ customer.email }}</td>
+            <td>
+              <span class="status" [class]="customer.status">
+                {{ customer.status }}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `,
+  styles: [`
+    .customers h3 {
+      color: #333333;
+      margin-bottom: 1rem;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .data-table th,
+    .data-table td {
+      padding: 1rem;
+      text-align: left;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .data-table th {
+      background: #00aeef;
+      color: #ffffff;
+    }
+    .status {
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+    }
+    .status.active {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .status.inactive {
+      background: #ffebee;
+      color: #c62828;
+    }
+  `]
+})
+export class CustomersComponent {
+  customers = [
+    { name: 'John Doe', email: 'john@example.com', status: 'active' },
+    { name: 'Jane Smith', email: 'jane@example.com', status: 'active' },
+    { name: 'Bob Wilson', email: 'bob@example.com', status: 'inactive' }
+  ];
+}
+------------------------------------------------------------------------
+
+
+File: mfe-crm/src/app/features/leads/leads.component.ts
+
+------------------------------------------------------------------------
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+
+@Component({
+  selector: 'app-leads',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="leads">
+      <h3>Sales Leads</h3>
+      <p>Manage your sales leads here.</p>
+    </div>
+  `,
+  styles: [`
+    .leads h3 {
+      color: #333333;
+      margin-bottom: 1rem;
+    }
+  `]
+})
+export class LeadsComponent {}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 7: SHELL - CREATE DATA MODELS
+================================================================================
+
+File: shell-portal/src/app/core/models/app-config.model.ts
+
+------------------------------------------------------------------------
+export interface MfeConfig {
+  id: string;
+  name: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  remoteEntry: string;
+  exposedModule: string;
+  routePath: string;
+  environments: {
+    name: string;
+    remoteEntry: string;
+  }[];
+}
+
+export interface PortalState {
+  currentApp: MfeConfig | null;
+  currentEnvironment: string;
+  isLoading: boolean;
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 8: SHELL - CREATE APP REGISTRY SERVICE
+================================================================================
+
+File: shell-portal/src/app/core/services/app-registry.service.ts
+
+------------------------------------------------------------------------
+import { Injectable, signal, computed } from '@angular/core';
+import { MfeConfig, PortalState } from '../models/app-config.model';
+
+@Injectable({ providedIn: 'root' })
+export class AppRegistryService {
+  
+  private readonly applications: MfeConfig[] = [
+    {
+      id: 'crm',
+      name: 'CRM System',
+      description: 'Customer Relationship Management',
+      icon: '👥',
+      color: '#00aeef',
+      remoteEntry: 'http://localhost:4201/remoteEntry.js',
+      exposedModule: './Module',
+      routePath: 'crm',
+      environments: [
+        { name: 'Development', remoteEntry: 'http://localhost:4201/remoteEntry.js' },
+        { name: 'Staging', remoteEntry: 'https://staging-crm.yourcompany.com/remoteEntry.js' },
+        { name: 'Production', remoteEntry: 'https://crm.yourcompany.com/remoteEntry.js' }
+      ]
+    },
+    {
+      id: 'inventory',
+      name: 'Inventory Management',
+      description: 'Stock and warehouse management',
+      icon: '📦',
+      color: '#00aeef',
+      remoteEntry: 'http://localhost:4202/remoteEntry.js',
+      exposedModule: './Module',
+      routePath: 'inventory',
+      environments: [
+        { name: 'Development', remoteEntry: 'http://localhost:4202/remoteEntry.js' },
+        { name: 'Staging', remoteEntry: 'https://staging-inventory.yourcompany.com/remoteEntry.js' },
+        { name: 'Production', remoteEntry: 'https://inventory.yourcompany.com/remoteEntry.js' }
+      ]
+    },
+    {
+      id: 'reports',
+      name: 'Reports & Analytics',
+      description: 'Business intelligence dashboard',
+      icon: '📊',
+      color: '#00aeef',
+      remoteEntry: 'http://localhost:4203/remoteEntry.js',
+      exposedModule: './Module',
+      routePath: 'reports',
+      environments: [
+        { name: 'Development', remoteEntry: 'http://localhost:4203/remoteEntry.js' },
+        { name: 'Staging', remoteEntry: 'https://staging-reports.yourcompany.com/remoteEntry.js' },
+        { name: 'Production', remoteEntry: 'https://reports.yourcompany.com/remoteEntry.js' }
+      ]
+    }
+  ];
+
+  private portalState = signal<PortalState>({
+    currentApp: null,
+    currentEnvironment: 'Development',
+    isLoading: false
+  });
+
+  readonly currentApp = computed(() => this.portalState().currentApp);
+  readonly currentEnvironment = computed(() => this.portalState().currentEnvironment);
+  readonly isLoading = computed(() => this.portalState().isLoading);
+
+  getApplications(): MfeConfig[] {
+    return this.applications;
+  }
+
+  getAppById(id: string): MfeConfig | undefined {
+    return this.applications.find(app => app.id === id);
+  }
+
+  selectApp(appId: string): void {
+    const app = this.getAppById(appId);
+    if (app) {
+      this.portalState.update(state => ({
+        ...state,
+        currentApp: app,
+        isLoading: true
+      }));
+    }
+  }
+
+  setEnvironment(envName: string): void {
+    this.portalState.update(state => ({
+      ...state,
+      currentEnvironment: envName
+    }));
+  }
+
+  setLoading(isLoading: boolean): void {
+    this.portalState.update(state => ({ ...state, isLoading }));
+  }
+
+  goHome(): void {
+    this.portalState.update(state => ({
+      ...state,
+      currentApp: null,
+      isLoading: false
+    }));
+  }
+
+  getRemoteEntryForCurrentEnv(app: MfeConfig): string {
+    const env = app.environments.find(e => e.name === this.currentEnvironment());
+    return env?.remoteEntry || app.remoteEntry;
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 9: SHELL - CREATE DYNAMIC ROUTE LOADER
+================================================================================
+
+File: shell-portal/src/app/core/services/mfe-loader.service.ts
+
+------------------------------------------------------------------------
+import { Injectable } from '@angular/core';
+import { loadRemoteModule } from '@angular-architects/module-federation';
+import { Route } from '@angular/router';
+import { AppRegistryService } from './app-registry.service';
+import { MfeConfig } from '../models/app-config.model';
+
+@Injectable({ providedIn: 'root' })
+export class MfeLoaderService {
+  
+  constructor(private registry: AppRegistryService) {}
+
+  buildRoutes(): Route[] {
+    const apps = this.registry.getApplications();
+    
+    return apps.map(app => ({
+      path: app.routePath,
+      loadChildren: () => this.loadRemoteModule(app)
+    }));
+  }
+
+  async loadRemoteModule(app: MfeConfig): Promise<any> {
+    const remoteEntry = this.registry.getRemoteEntryForCurrentEnv(app);
+    
+    try {
+      this.registry.setLoading(true);
+      
+      const module = await loadRemoteModule({
+        type: 'module',
+        remoteEntry: remoteEntry,
+        exposedModule: app.exposedModule
+      });
+      
+      this.registry.setLoading(false);
+      return module.EntryModule;
+      
+    } catch (error) {
+      console.error(`Failed to load remote module: ${app.name}`, error);
+      this.registry.setLoading(false);
+      throw error;
+    }
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 10: SHELL - SETUP ROUTING
+================================================================================
+
+File: shell-portal/src/app/app.routes.ts
+
+------------------------------------------------------------------------
+import { Routes } from '@angular/router';
+import { loadRemoteModule } from '@angular-architects/module-federation';
+
+export const routes: Routes = [
+  {
+    path: '',
+    loadComponent: () => import('./features/home/home.component')
+      .then(m => m.HomeComponent)
+  },
+  {
+    path: 'crm',
+    loadChildren: () => loadRemoteModule({
+      type: 'module',
+      remoteEntry: 'http://localhost:4201/remoteEntry.js',
+      exposedModule: './Module'
+    }).then(m => m.EntryModule)
+  },
+  {
+    path: 'inventory',
+    loadChildren: () => loadRemoteModule({
+      type: 'module',
+      remoteEntry: 'http://localhost:4202/remoteEntry.js',
+      exposedModule: './Module'
+    }).then(m => m.EntryModule)
+  },
+  {
+    path: 'reports',
+    loadChildren: () => loadRemoteModule({
+      type: 'module',
+      remoteEntry: 'http://localhost:4203/remoteEntry.js',
+      exposedModule: './Module'
+    }).then(m => m.EntryModule)
+  },
+  {
+    path: '**',
+    redirectTo: ''
+  }
+];
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 11: SHELL - CREATE HOME COMPONENT
+================================================================================
+
+File: shell-portal/src/app/features/home/home.component.ts
+
+------------------------------------------------------------------------
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
+import { AppRegistryService } from '../../core/services/app-registry.service';
+import { MfeConfig } from '../../core/models/app-config.model';
+
+@Component({
+  selector: 'app-home',
+  standalone: true,
+  imports: [CommonModule],
+  template: `
+    <div class="home-container">
+      <header class="home-header">
+        <h1>Application Portal</h1>
+        <p>Select an application to get started</p>
+      </header>
+
+      <div class="search-bar">
+        <input 
+          type="text" 
+          placeholder="Search applications..."
+          (input)="onSearch($event)"
+        >
+      </div>
+
+      <div class="apps-grid">
+        @for (app of filteredApps; track app.id) {
+          <div class="app-card" (click)="openApp(app)">
+            <div class="app-icon">{{ app.icon }}</div>
+            <div class="app-info">
+              <h3>{{ app.name }}</h3>
+              <p>{{ app.description }}</p>
+            </div>
+            <div class="app-badge">Module Federation</div>
+          </div>
+        }
+      </div>
+    </div>
+  `,
+  styles: [`
+    .home-container {
+      min-height: 100vh;
+      background: #ffffff;
+      padding: 2rem;
+    }
+    .home-header {
+      text-align: center;
+      color: #333333;
+      margin-bottom: 2rem;
+    }
+    .home-header h1 {
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
+      color: #00aeef;
+    }
+    .home-header p {
+      color: #666666;
+      font-size: 1.1rem;
+    }
+    .search-bar {
+      max-width: 500px;
+      margin: 0 auto 2rem;
+    }
+    .search-bar input {
+      width: 100%;
+      padding: 1rem 1.5rem;
+      border: 2px solid #e0e0e0;
+      border-radius: 50px;
+      font-size: 1rem;
+      background: #ffffff;
+      color: #333333;
+      outline: none;
+      transition: border-color 0.3s;
+    }
+    .search-bar input:focus {
+      border-color: #00aeef;
+    }
+    .search-bar input::placeholder {
+      color: #999999;
+    }
+    .apps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .app-card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 1.5rem;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      border: 1px solid #e0e0e0;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    }
+    .app-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: #00aeef;
+    }
+    .app-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 8px 24px rgba(0, 174, 239, 0.15);
+      border-color: #00aeef;
+    }
+    .app-icon {
+      font-size: 2.5rem;
+      margin-bottom: 1rem;
+    }
+    .app-info h3 {
+      margin: 0 0 0.5rem;
+      font-size: 1.25rem;
+      color: #222222;
+    }
+    .app-info p {
+      margin: 0;
+      color: #666666;
+      font-size: 0.9rem;
+    }
+    .app-badge {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      padding: 0.25rem 0.75rem;
+      background: #e8f5e9;
+      color: #2e7d32;
+      border-radius: 20px;
+      font-size: 0.7rem;
+      font-weight: 500;
+    }
+  `]
+})
+export class HomeComponent {
+  private registry = inject(AppRegistryService);
+  private router = inject(Router);
+
+  applications = this.registry.getApplications();
+  filteredApps = [...this.applications];
+
+  onSearch(event: Event): void {
+    const term = (event.target as HTMLInputElement).value.toLowerCase();
+    this.filteredApps = this.applications.filter(app =>
+      app.name.toLowerCase().includes(term) ||
+      app.description?.toLowerCase().includes(term)
+    );
+  }
+
+  openApp(app: MfeConfig): void {
+    this.registry.selectApp(app.id);
+    this.router.navigate(['/', app.routePath]);
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 12: SHELL - CREATE LAYOUT COMPONENT
+================================================================================
+
+File: shell-portal/src/app/layout/layout.component.ts
+
+------------------------------------------------------------------------
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { RouterOutlet, RouterLink, Router } from '@angular/router';
+import { AppRegistryService } from '../core/services/app-registry.service';
+
+@Component({
+  selector: 'app-layout',
+  standalone: true,
+  imports: [CommonModule, RouterOutlet, RouterLink],
+  template: `
+    <div class="layout-container">
+      <header class="portal-header" *ngIf="currentApp()">
+        <button class="home-button" (click)="goHome()">🏠</button>
+
+        <div class="current-app">
+          <span class="app-icon">{{ currentApp()?.icon }}</span>
+          <span class="app-name">{{ currentApp()?.name }}</span>
+        </div>
+
+        <nav class="app-nav">
+          @for (app of applications; track app.id) {
+            <a 
+              [routerLink]="['/', app.routePath]"
+              class="nav-link"
+              [class.active]="currentApp()?.id === app.id"
+              (click)="selectApp(app.id)"
+            >
+              {{ app.icon }} {{ app.name }}
+            </a>
+          }
+        </nav>
+
+        <div class="env-selector">
+          <label>Environment:</label>
+          <select 
+            [value]="currentEnvironment()" 
+            (change)="onEnvChange($event)"
+          >
+            <option value="Development">Development</option>
+            <option value="Staging">Staging</option>
+            <option value="Production">Production</option>
+          </select>
+        </div>
+      </header>
+
+      <div class="loading-bar" *ngIf="isLoading()">
+        <div class="loading-progress"></div>
+      </div>
+
+      <main class="main-content">
+        <router-outlet></router-outlet>
+      </main>
+    </div>
+  `,
+  styles: [`
+    .layout-container {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      background: #ffffff;
+    }
+    .portal-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem 1rem;
+      background: #00aeef;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    }
+    .home-button {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1.25rem;
+      transition: background 0.2s;
+    }
+    .home-button:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+    .current-app {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: #ffffff;
+      padding: 0.5rem 1rem;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+    }
+    .current-app .app-name {
+      font-weight: 500;
+    }
+    .app-nav {
+      display: flex;
+      gap: 0.5rem;
+      margin-left: auto;
+    }
+    .nav-link {
+      padding: 0.5rem 1rem;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      color: #ffffff;
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: all 0.2s;
+    }
+    .nav-link:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .nav-link.active {
+      background: rgba(255, 255, 255, 0.3);
+      font-weight: 500;
+    }
+    .env-selector {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .env-selector label {
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 0.85rem;
+    }
+    .env-selector select {
+      padding: 0.5rem 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.95);
+      color: #333333;
+      font-size: 0.9rem;
+      cursor: pointer;
+      outline: none;
+    }
+    .loading-bar {
+      height: 3px;
+      background: #e0e0e0;
+      overflow: hidden;
+    }
+    .loading-progress {
+      height: 100%;
+      width: 30%;
+      background: linear-gradient(90deg, #00aeef, #00d4ff);
+      animation: loading 1s ease-in-out infinite;
+    }
+    @keyframes loading {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(400%); }
+    }
+    .main-content {
+      flex: 1;
+      background: #f9f9f9;
+    }
+  `]
+})
+export class LayoutComponent {
+  private registry = inject(AppRegistryService);
+  private router = inject(Router);
+
+  applications = this.registry.getApplications();
+  currentApp = this.registry.currentApp;
+  currentEnvironment = this.registry.currentEnvironment;
+  isLoading = this.registry.isLoading;
+
+  selectApp(appId: string): void {
+    this.registry.selectApp(appId);
+  }
+
+  onEnvChange(event: Event): void {
+    const envName = (event.target as HTMLSelectElement).value;
+    this.registry.setEnvironment(envName);
+    
+    // Reload current app with new environment
+    const app = this.currentApp();
+    if (app) {
+      this.router.navigate(['/']).then(() => {
+        this.router.navigate(['/', app.routePath]);
+      });
+    }
+  }
+
+  goHome(): void {
+    this.registry.goHome();
+    this.router.navigate(['/']);
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 13: SHELL - UPDATE APP COMPONENT
+================================================================================
+
+File: shell-portal/src/app/app.component.ts
+
+------------------------------------------------------------------------
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { LayoutComponent } from './layout/layout.component';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [RouterOutlet, LayoutComponent],
+  template: `<app-layout></app-layout>`,
+  styles: [`
+    :host {
+      display: block;
+      height: 100vh;
+    }
+  `]
+})
+export class AppComponent {}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 14: SHELL - UPDATE GLOBAL STYLES
+================================================================================
+
+File: shell-portal/src/styles.scss
+
+------------------------------------------------------------------------
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #ffffff;
+  color: #333333;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f0f0f0;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #00aeef;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #0095cc;
+}
+
+a {
+  color: #00aeef;
+}
+
+a:hover {
+  color: #0095cc;
+}
+
+::selection {
+  background: #00aeef;
+  color: #ffffff;
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 15: SHARED LIBRARY (OPTIONAL)
+================================================================================
+
+Create a shared library for common code between shell and remotes:
+
+    ng generate library shared-lib
+
+File: projects/shared-lib/src/lib/services/auth.service.ts
+
+------------------------------------------------------------------------
+import { Injectable } from '@angular/core';
+import { BehaviorSubject, Observable } from 'rxjs';
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private userSubject = new BehaviorSubject<User | null>(null);
+  
+  getUser(): Observable<User | null> {
+    return this.userSubject.asObservable();
+  }
+
+  setUser(user: User): void {
+    this.userSubject.next(user);
+  }
+
+  logout(): void {
+    this.userSubject.next(null);
+  }
+
+  isAuthenticated(): boolean {
+    return this.userSubject.value !== null;
+  }
+}
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 16: RUN ALL APPLICATIONS
+================================================================================
+
+Open separate terminals for each application:
+
+Terminal 1 - Shell:
+-------------------
+    cd shell-portal
+    ng serve --port 4200
+
+Terminal 2 - CRM:
+-----------------
+    cd mfe-crm
+    ng serve --port 4201
+
+Terminal 3 - Inventory:
+-----------------------
+    cd mfe-inventory
+    ng serve --port 4202
+
+Terminal 4 - Reports:
+---------------------
+    cd mfe-reports
+    ng serve --port 4203
+
+
+Or use a script to run all:
+
+File: start-all.bat (Windows)
+------------------------------------------------------------------------
+start cmd /k "cd shell-portal && ng serve --port 4200"
+start cmd /k "cd mfe-crm && ng serve --port 4201"
+start cmd /k "cd mfe-inventory && ng serve --port 4202"
+start cmd /k "cd mfe-reports && ng serve --port 4203"
+------------------------------------------------------------------------
+
+
+File: start-all.sh (Linux/Mac)
+------------------------------------------------------------------------
+#!/bin/bash
+cd shell-portal && ng serve --port 4200 &
+cd mfe-crm && ng serve --port 4201 &
+cd mfe-inventory && ng serve --port 4202 &
+cd mfe-reports && ng serve --port 4203 &
+wait
+------------------------------------------------------------------------
+
+
+================================================================================
+STEP 17: BUILD FOR PRODUCTION
+================================================================================
+
+Build all applications:
+
+    cd shell-portal && ng build --configuration=production
+    cd mfe-crm && ng build --configuration=production
+    cd mfe-inventory && ng build --configuration=production
+    cd mfe-reports && ng build --configuration=production
+
+
+================================================================================
+STEP 18: DEPLOY TO IIS
+================================================================================
+
+Each application needs its own IIS site or virtual directory:
+
+Structure:
+----------
+C:\inetpub\wwwroot\
+├── portal\              (shell-portal build)
+│   ├── index.html
+│   ├── remoteEntry.js
+│   └── web.config
+├── crm\                 (mfe-crm build)
+│   ├── index.html
+│   ├── remoteEntry.js
+│   └── web.config
+├── inventory\           (mfe-inventory build)
+│   ├── index.html
+│   ├── remoteEntry.js
+│   └── web.config
+└── reports\             (mfe-reports build)
+    ├── index.html
+    ├── remoteEntry.js
+    └── web.config
+
+
+web.config for each app:
+------------------------------------------------------------------------
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <httpProtocol>
+      <customHeaders>
+        <add name="Access-Control-Allow-Origin" value="*" />
+        <add name="Access-Control-Allow-Methods" value="GET, OPTIONS" />
+        <add name="Access-Control-Allow-Headers" value="Content-Type" />
+      </customHeaders>
+    </httpProtocol>
+    <rewrite>
+      <rules>
+        <rule name="Angular Routes" stopProcessing="true">
+          <match url=".*" />
+          <conditions logicalGrouping="MatchAll">
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+          </conditions>
+          <action type="Rewrite" url="/index.html" />
+        </rule>
+      </rules>
+    </rewrite>
+    <staticContent>
+      <remove fileExtension=".js" />
+      <mimeMap fileExtension=".js" mimeType="application/javascript" />
+    </staticContent>
+  </system.webServer>
+</configuration>
+------------------------------------------------------------------------
+
+
+Update shell app-registry.service.ts with production URLs:
+------------------------------------------------------------------------
+environments: [
+  { name: 'Development', remoteEntry: 'http://localhost:4201/remoteEntry.js' },
+  { name: 'Staging', remoteEntry: 'https://staging.yourcompany.com/crm/remoteEntry.js' },
+  { name: 'Production', remoteEntry: 'https://yourcompany.com/crm/remoteEntry.js' }
+]
+------------------------------------------------------------------------
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Common Issues:
+
+1. "Container initialization failed"
+   - Ensure remoteEntry.js is accessible
+   - Check CORS headers
+   - Verify webpack.config.js names match
+
+2. "Shared module not found"
+   - Ensure Angular versions match across all apps
+   - Check shared configuration in webpack.config.js
+
+3. "Module not exposed"
+   - Verify exposedModule path matches webpack.config.js exposes
+
+4. Remote app not loading
+   - Check browser console for errors
+   - Verify remote app is running
+   - Check network tab for remoteEntry.js request
+
+
+Debug checklist:
+----------------
+[ ] All apps running on correct ports
+[ ] remoteEntry.js accessible in browser
+[ ] CORS headers configured
+[ ] Webpack config names match import names
+[ ] Angular versions compatible
+[ ] Shared dependencies configured correctly
+
+
+================================================================================
+COLOR SCHEME REFERENCE
+================================================================================
+
+Main Color:      #00aeef (Bright Blue/Cyan)
+Main Hover:      #0095cc (Darker Blue)
+Background:      #ffffff (White)
+Text Primary:    #333333 (Dark Gray)
+Text Secondary:  #666666 (Medium Gray)
+Border Color:    #e0e0e0 (Light Gray)
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+Components Created:
+
+Shell Portal:
++---------------------------+---------------------------------------------+
+| Component                 | Purpose                                     |
++---------------------------+---------------------------------------------+
+| AppRegistryService        | Manages MFE configuration and state         |
+| MfeLoaderService          | Dynamically loads remote modules            |
+| HomeComponent             | Landing page with app grid                  |
+| LayoutComponent           | Header, navigation, and router outlet       |
++---------------------------+---------------------------------------------+
+
+Remote Apps:
++---------------------------+---------------------------------------------+
+| Component                 | Purpose                                     |
++---------------------------+---------------------------------------------+
+| EntryComponent            | Root component exposed to shell             |
+| EntryModule               | Module exposed via Module Federation        |
+| Feature Components        | App-specific functionality                  |
++---------------------------+---------------------------------------------+
+
+
+Key Benefits:
+- Shared dependencies reduce bundle size
+- Native Angular routing integration
+- Direct component communication
+- Shared authentication state
+- Better developer experience
+- Independent deployment
+
+
+================================================================================
