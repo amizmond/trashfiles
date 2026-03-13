@@ -1,0 +1,27 @@
+Hi all,
+
+I'm happy to announce that DynamicExcel is ready for use across teams.
+
+It is a .NET 9 library that simplifies reading and writing Excel files, built for performance with large datasets and a clean fluent API.
+
+Key features:
+
+Read Excel files into strongly-typed models with automatic type conversion
+Write Excel files with column ordering, colors, and custom widths
+Built-in dropdown lists and data validation
+Conditional formatting (colors, bold, read-only) driven by data
+Multi-sheet workbooks
+Handles 400,000+ rows with auto-splitting
+Getting started:
+
+Full documentation with code examples is available here:
+👉 https://<group>.gitlab.io/dynamicexcel/
+
+To use the library, add a project reference:
+
+
+<ProjectReference Include="..\DynamicExcel\DynamicExcel.csproj" />
+If you have questions, find bugs, or need a feature — please open an issue in the GitLab repository.
+
+Best regards,
+[Your Name]
