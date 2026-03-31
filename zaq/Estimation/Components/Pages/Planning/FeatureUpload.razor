@@ -1,0 +1,330 @@
+@attribute [Route(RoutingPath.FeaturesUpload)]
+
+@using Estimation.Core
+@using Estimation.Core.Models
+@using Estimation.Excel
+@using Estimation.Excel.Models
+@using Microsoft.EntityFrameworkCore
+@using Serilog
+
+@inject IDbContextFactory<EstimationDbContext> DbFactory
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center mb-3">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.Features))" />
+            <MudText Typo="Typo.h6">Upload Features</MudText>
+        </div>
+
+        @if (_isLoading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+        }
+
+        @* Step 1: File Selection *@
+        @if (_step == UploadStep.SelectFile)
+        {
+            <MudText Typo="Typo.body1" Class="mb-3">
+                Select an Excel file (.xlsx) to upload features. You will be able to map columns and preview data before creating records.
+            </MudText>
+
+            <MudFileUpload T="IBrowserFile" Accept=".xlsx" MaximumFileCount="1" FilesChanged="OnFileSelected">
+                <ActivatorContent>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.UploadFile"
+                               Disabled="_isLoading">
+                        Select Excel File
+                    </MudButton>
+                </ActivatorContent>
+            </MudFileUpload>
+        }
+
+        @* Step 2: Data Preview *@
+        @if (_step == UploadStep.Preview)
+        {
+            <MudText Typo="Typo.subtitle1" Class="mb-2 font-weight-bold">
+                Preview - @_previewData.Count record(s) found
+            </MudText>
+
+            <MudDataGrid T="UploadFeature" Items="_previewData" Dense="true" Hover="true"
+                         Striped="true" Elevation="0">
+                <Columns>
+                    <PropertyColumn Property="x => x.JiraId" Title="Jira ID" />
+                    <PropertyColumn Property="x => x.Name" Title="Name" />
+                    <PropertyColumn Property="x => x.Summary" Title="Summary" />
+                    <PropertyColumn Property="x => x.Pi" Title="PI" />
+                    <PropertyColumn Property="x => x.BusinessOutcome" Title="Business Outcome" />
+                    <PropertyColumn Property="x => x.Ranking" Title="Ranking" />
+                    <PropertyColumn Property="x => x.DateExpected" Title="Date Expected" Format="yyyy-MM-dd" />
+                    <PropertyColumn Property="x => x.FeatureLead" Title="Feature Lead" />
+                    <PropertyColumn Property="x => x.UnfundedOption" Title="Unfunded Option" />
+                    <PropertyColumn Property="x => x.IsLinkedToTheJira" Title="Linked to Jira" />
+                    <PropertyColumn Property="x => x.Description" Title="Description" />
+                    <PropertyColumn Property="x => x.Comments" Title="Comments" />
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="UploadFeature" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+                </PagerContent>
+            </MudDataGrid>
+
+            <div class="d-flex justify-end gap-2 mt-4">
+                <MudButton Variant="Variant.Outlined" OnClick="Reset">Cancel</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.CloudUpload"
+                           OnClick="UploadData" Disabled="_isLoading">
+                    Upload @_previewData.Count Record(s)
+                </MudButton>
+            </div>
+        }
+
+        @* Step 3: Results *@
+        @if (_step == UploadStep.Done)
+        {
+            @if (_successCount > 0)
+            {
+                <MudAlert Severity="Severity.Success" Class="mb-3">
+                    Successfully created @_successCount record(s).
+                </MudAlert>
+            }
+
+            @if (_failedRecords.Count > 0)
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-3">
+                    @_failedRecords.Count record(s) failed to create.
+                </MudAlert>
+
+                <MudDataGrid T="FailedRecord" Items="_failedRecords" Dense="true" Hover="true"
+                             Striped="true" Elevation="0">
+                    <Columns>
+                        <PropertyColumn Property="x => x.RowNumber" Title="Row #" />
+                        <PropertyColumn Property="x => x.Name" Title="Name" />
+                        <PropertyColumn Property="x => x.JiraId" Title="Jira ID" />
+                        <PropertyColumn Property="x => x.Error" Title="Error" />
+                    </Columns>
+                </MudDataGrid>
+            }
+
+            <div class="d-flex justify-end gap-2 mt-4">
+                <MudButton Variant="Variant.Outlined"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.Features))">
+                    Go to Features
+                </MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Reset">
+                    Upload More
+                </MudButton>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    private enum UploadStep { SelectFile, Preview, Done }
+
+    private UploadStep _step = UploadStep.SelectFile;
+    private bool _isLoading;
+    private List<UploadFeature> _previewData = new();
+    private Dictionary<string, string> _mapping = new();
+    private MemoryStream? _fileStream;
+    private int _successCount;
+    private List<FailedRecord> _failedRecords = new();
+
+    private async Task OnFileSelected(IBrowserFile file)
+    {
+        if (file == null) return;
+
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            _fileStream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(_fileStream);
+            _fileStream.Position = 0;
+
+            var readService = new ExcelReadService<UploadFeature>();
+            var headers = readService.ReadHeaders(_fileStream);
+            var columnInfo = readService.GetColumnInfo();
+
+            _fileStream.Position = 0;
+
+            var parameters = new DialogParameters<FeatureUploadMappingDialog>
+            {
+                { x => x.ColumnInfo, columnInfo },
+                { x => x.ExcelHeaders, headers }
+            };
+            var options = new DialogOptions
+            {
+                MaxWidth = MaxWidth.Medium,
+                FullWidth = true,
+                BackdropClick = false
+            };
+
+            var dialog = await DialogService.ShowAsync<FeatureUploadMappingDialog>(
+                "Column Mapping", parameters, options);
+            var result = await dialog.Result;
+
+            if (result == null || result.Canceled)
+            {
+                _fileStream?.Dispose();
+                _fileStream = null;
+                return;
+            }
+
+            _mapping = (Dictionary<string, string>)result.Data!;
+
+            _fileStream.Position = 0;
+            _previewData = readService.ReadSheetWithMapping(_fileStream, _mapping).ToList();
+
+            if (_previewData.Count == 0)
+            {
+                Snackbar.Add("No data found in the Excel file.", Severity.Warning);
+                _fileStream?.Dispose();
+                _fileStream = null;
+                return;
+            }
+
+            _step = UploadStep.Preview;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to read Excel file");
+            Snackbar.Add($"Failed to read file: {ex.Message}", Severity.Error);
+            _fileStream?.Dispose();
+            _fileStream = null;
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task UploadData()
+    {
+        _isLoading = true;
+        _successCount = 0;
+        _failedRecords = new();
+        StateHasChanged();
+
+        try
+        {
+            // Load lookups
+            var boLookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var piLookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var unfundedLookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            {
+                await using var lookupDb = await DbFactory.CreateDbContextAsync();
+
+                foreach (var bo in await lookupDb.BusinessOutcomes.AsNoTracking().ToListAsync())
+                {
+                    if (!string.IsNullOrWhiteSpace(bo.Name))
+                        boLookup.TryAdd(bo.Name.Trim(), bo.Id);
+                    if (!string.IsNullOrWhiteSpace(bo.JiraId))
+                        boLookup.TryAdd(bo.JiraId.Trim(), bo.Id);
+                }
+
+                foreach (var pi in await lookupDb.Pis.AsNoTracking().ToListAsync())
+                {
+                    if (!string.IsNullOrWhiteSpace(pi.Name))
+                        piLookup.TryAdd(pi.Name.Trim(), pi.Id);
+                }
+
+                foreach (var uo in await lookupDb.UnfundedOptions.AsNoTracking().ToListAsync())
+                {
+                    if (!string.IsNullOrWhiteSpace(uo.Name))
+                        unfundedLookup.TryAdd(uo.Name.Trim(), uo.Id);
+                }
+            }
+
+            // Create records one by one
+            for (var i = 0; i < _previewData.Count; i++)
+            {
+                var row = _previewData[i];
+                try
+                {
+                    await using var db = await DbFactory.CreateDbContextAsync();
+
+                    var feature = new Feature
+                    {
+                        JiraId = row.JiraId?.Trim(),
+                        Name = row.Name?.Trim(),
+                        Summary = row.Summary?.Trim(),
+                        Description = row.Description?.Trim(),
+                        Comments = row.Comments?.Trim(),
+                        Ranking = row.Ranking,
+                        DateExpected = row.DateExpected,
+                        FeatureLead = row.FeatureLead?.Trim(),
+                        IsLinkedToTheJira = row.IsLinkedToTheJira,
+                    };
+
+                    if (!string.IsNullOrWhiteSpace(row.BusinessOutcome))
+                    {
+                        var boKey = row.BusinessOutcome.Trim();
+                        if (boLookup.TryGetValue(boKey, out var boId))
+                            feature.BusinessOutcomeId = boId;
+                        else
+                            throw new InvalidOperationException($"Business Outcome '{boKey}' not found.");
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(row.Pi))
+                    {
+                        var piKey = row.Pi.Trim();
+                        if (piLookup.TryGetValue(piKey, out var piId))
+                            feature.PiId = piId;
+                        else
+                            throw new InvalidOperationException($"PI '{piKey}' not found.");
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(row.UnfundedOption))
+                    {
+                        var uoKey = row.UnfundedOption.Trim();
+                        if (unfundedLookup.TryGetValue(uoKey, out var uoId))
+                            feature.UnfundedOptionId = uoId;
+                        else
+                            throw new InvalidOperationException($"Unfunded Option '{uoKey}' not found.");
+                    }
+
+                    db.Features.Add(feature);
+                    await db.SaveChangesAsync();
+                    _successCount++;
+                }
+                catch (Exception ex)
+                {
+                    _failedRecords.Add(new FailedRecord(i + 1, row.Name, row.JiraId, ex.Message));
+                }
+            }
+
+            _step = UploadStep.Done;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to upload features");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            _fileStream?.Dispose();
+            _fileStream = null;
+            StateHasChanged();
+        }
+    }
+
+    private void Reset()
+    {
+        _step = UploadStep.SelectFile;
+        _previewData = new();
+        _mapping = new();
+        _failedRecords = new();
+        _successCount = 0;
+        _fileStream?.Dispose();
+        _fileStream = null;
+    }
+
+    private record FailedRecord(int RowNumber, string? Name, string? JiraId, string Error);
+}
