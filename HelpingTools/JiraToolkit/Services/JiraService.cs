@@ -7,6 +7,13 @@ namespace JiraToolkit.Services;
 
 public class JiraService
 {
+    private readonly ILogger<JiraService> _logger;
+
+    public JiraService(ILogger<JiraService> logger)
+    {
+        _logger = logger;
+    }
+
     private static HttpClient CreateClient(JiraCredentials credentials)
     {
         var handler = new HttpClientHandler
@@ -95,8 +102,9 @@ public class JiraService
 
             return dict;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to fetch field names from Jira");
             return new Dictionary<string, string>();
         }
     }

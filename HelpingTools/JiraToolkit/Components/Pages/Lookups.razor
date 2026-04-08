@@ -4,6 +4,7 @@
 @inject JiraService JiraService
 @inject LocalStorageService LocalStorage
 @inject ISnackbar Snackbar
+@inject ILogger<Lookups> Logger
 @rendermode InteractiveServer
 
 <PageTitle>Jira Lookups</PageTitle>
@@ -46,6 +47,14 @@
 <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" Class="pa-4">
     <MudTabPanel Text="Projects" Icon="@Icons.Material.Filled.Folder" BadgeData="@_projects.Count"
                  BadgeColor="Color.Primary">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                       OnClick="LoadProjectsClick" Disabled="@_projectsLoading"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_projectsLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Projects
+            </MudButton>
+        </MudStack>
         @if (_projectsLoading)
         {
             <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
@@ -53,7 +62,7 @@
         else if (_projects.Count > 0)
         {
             <MudDataGrid Items="@_projects" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)" QuickFilter="@ProjectFilter">
+                         FixedHeader="true" Height="calc(100vh - 420px)" QuickFilter="@ProjectFilter">
                 <ToolBarContent>
                     <MudTextField @bind-Value="_projectSearch" Placeholder="Search projects..."
                                   Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
@@ -69,12 +78,20 @@
         }
         else
         {
-            <MudAlert Severity="Severity.Info">No projects loaded. Click "Load All" to fetch data.</MudAlert>
+            <MudAlert Severity="Severity.Info">No projects loaded. Click "Load Projects" or "Load All" to fetch data.</MudAlert>
         }
     </MudTabPanel>
 
     <MudTabPanel Text="Issue Types" Icon="@Icons.Material.Filled.Category" BadgeData="@_issueTypes.Count"
                  BadgeColor="Color.Secondary">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                       OnClick="LoadIssueTypesClick" Disabled="@_issueTypesLoading"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_issueTypesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Issue Types
+            </MudButton>
+        </MudStack>
         @if (_issueTypesLoading)
         {
             <MudProgressLinear Indeterminate="true" Color="Color.Secondary" />
@@ -82,7 +99,7 @@
         else if (_issueTypes.Count > 0)
         {
             <MudDataGrid Items="@_issueTypes" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)" QuickFilter="@IssueTypeFilter">
+                         FixedHeader="true" Height="calc(100vh - 420px)" QuickFilter="@IssueTypeFilter">
                 <ToolBarContent>
                     <MudTextField @bind-Value="_issueTypeSearch" Placeholder="Search issue types..."
                                   Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
@@ -104,12 +121,20 @@
         }
         else
         {
-            <MudAlert Severity="Severity.Info">No issue types loaded. Click "Load All" to fetch data.</MudAlert>
+            <MudAlert Severity="Severity.Info">No issue types loaded. Click "Load Issue Types" or "Load All" to fetch data.</MudAlert>
         }
     </MudTabPanel>
 
     <MudTabPanel Text="Labels" Icon="@Icons.Material.Filled.Label" BadgeData="@_labels.Count"
                  BadgeColor="Color.Tertiary">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudButton Variant="Variant.Outlined" Color="Color.Tertiary" Size="Size.Small"
+                       OnClick="LoadLabelsClick" Disabled="@_labelsLoading"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_labelsLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Labels
+            </MudButton>
+        </MudStack>
         @if (_labelsLoading)
         {
             <MudProgressLinear Indeterminate="true" Color="Color.Tertiary" />
@@ -117,7 +142,7 @@
         else if (_labels.Count > 0)
         {
             <MudDataGrid Items="@_labels" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)" QuickFilter="@LabelFilter">
+                         FixedHeader="true" Height="calc(100vh - 420px)" QuickFilter="@LabelFilter">
                 <ToolBarContent>
                     <MudTextField @bind-Value="_labelSearch" Placeholder="Search labels..."
                                   Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
@@ -131,12 +156,20 @@
         }
         else
         {
-            <MudAlert Severity="Severity.Info">No labels loaded. Click "Load All" to fetch data.</MudAlert>
+            <MudAlert Severity="Severity.Info">No labels loaded. Click "Load Labels" or "Load All" to fetch data.</MudAlert>
         }
     </MudTabPanel>
 
     <MudTabPanel Text="Parent Link" Icon="@Icons.Material.Filled.AccountTree" BadgeData="@_parentLinks.Count"
                  BadgeColor="Color.Info">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small"
+                       OnClick="LoadParentLinksClick" Disabled="@_parentLinksLoading"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_parentLinksLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Parent Links
+            </MudButton>
+        </MudStack>
         @if (_parentLinksLoading)
         {
             <MudProgressLinear Indeterminate="true" Color="Color.Info" />
@@ -144,7 +177,7 @@
         else if (_parentLinks.Count > 0)
         {
             <MudDataGrid Items="@_parentLinks" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)">
+                         FixedHeader="true" Height="calc(100vh - 420px)">
                 <Columns>
                     <PropertyColumn Property="x => x.FieldId" Title="Field Id" />
                     <PropertyColumn Property="x => x.Value" Title="Value" />
@@ -154,7 +187,7 @@
         else
         {
             <MudAlert Severity="Severity.Info">
-                No Parent Link data loaded. This field (customfield_19001) may not exist or have values on this server.
+                No Parent Link data loaded. Click "Load Parent Links" or "Load All" to fetch data.
             </MudAlert>
         }
     </MudTabPanel>
@@ -231,22 +264,64 @@
         Password = _password
     };
 
-    private async Task LoadAll()
+    private bool ValidateAndSaveCredentials()
     {
         if (string.IsNullOrWhiteSpace(_jiraUrl) || string.IsNullOrWhiteSpace(_username)
             || string.IsNullOrWhiteSpace(_password))
         {
             Snackbar.Add("Please fill in Jira URL, Username and Password", Severity.Warning);
-            return;
+            return false;
         }
+        return true;
+    }
 
-        _loading = true;
+    private async Task SaveCredentials()
+    {
         await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
         await LocalStorage.SetItemAsync("jiraUsername", _username);
+    }
+
+    private async Task LoadProjectsClick()
+    {
+        if (!ValidateAndSaveCredentials()) return;
+        await SaveCredentials();
+        _projectsLoading = true;
+        await LoadProjects(GetCredentials());
+    }
+
+    private async Task LoadIssueTypesClick()
+    {
+        if (!ValidateAndSaveCredentials()) return;
+        await SaveCredentials();
+        _issueTypesLoading = true;
+        await LoadIssueTypes(GetCredentials());
+    }
+
+    private async Task LoadLabelsClick()
+    {
+        if (!ValidateAndSaveCredentials()) return;
+        await SaveCredentials();
+        _labelsLoading = true;
+        await LoadLabels(GetCredentials());
+    }
+
+    private async Task LoadParentLinksClick()
+    {
+        if (!ValidateAndSaveCredentials()) return;
+        await SaveCredentials();
+        _parentLinksLoading = true;
+        await LoadParentLinks(GetCredentials());
+    }
+
+    private async Task LoadAll()
+    {
+        if (!ValidateAndSaveCredentials()) return;
+
+        _loading = true;
+        await SaveCredentials();
 
         var credentials = GetCredentials();
 
-        // Load all data in parallel
         _projectsLoading = _issueTypesLoading = _labelsLoading = _parentLinksLoading = true;
         StateHasChanged();
 
@@ -272,6 +347,7 @@
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load projects from Jira");
             Snackbar.Add($"Projects error: {ex.Message}", Severity.Error);
         }
         finally
@@ -290,6 +366,7 @@
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load issue types from Jira");
             Snackbar.Add($"Issue types error: {ex.Message}", Severity.Error);
         }
         finally
@@ -308,6 +385,7 @@
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load labels from Jira");
             Snackbar.Add($"Labels error: {ex.Message}", Severity.Error);
         }
         finally
@@ -329,6 +407,7 @@
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load parent links from Jira");
             Snackbar.Add($"Parent Link error: {ex.Message}", Severity.Error);
         }
         finally
