@@ -1,0 +1,178 @@
+@page "/"
+@using JiraToolkit.Models
+@using JiraToolkit.Services
+@inject JiraService JiraService
+@inject LocalStorageService LocalStorage
+@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+
+<PageTitle>Issue Explorer</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-4">Issue Explorer</MudText>
+
+<MudPaper Class="pa-4 mb-4" Elevation="1">
+    <MudGrid>
+        <MudItem xs="12" sm="4">
+            <MudTextField @bind-Value="_jiraUrl" Label="Jira URL" Placeholder="https://jira.example.com"
+                          Variant="Variant.Outlined" Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Link" />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudTextField @bind-Value="_username" Label="Username" Variant="Variant.Outlined"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Person" />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
+                          InputType="InputType.Password" Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Lock" />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudTextField @bind-Value="_issueKey" Label="Issue Key" Placeholder="PROJ-123"
+                          Variant="Variant.Outlined" Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.ConfirmationNumber" />
+        </MudItem>
+        <MudItem xs="12" sm="2" Class="d-flex align-end">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadIssue"
+                       Disabled="@_loading" FullWidth="true" StartIcon="@Icons.Material.Filled.Download">
+                @if (_loading)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    <span>Loading...</span>
+                }
+                else
+                {
+                    <span>Get Issue</span>
+                }
+            </MudButton>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+@if (_fields.Count > 0)
+{
+    <MudPaper Class="pa-4" Elevation="1">
+        <MudGrid Class="mb-3">
+            <MudItem xs="12" sm="4">
+                <MudTextField @bind-Value="_searchText" Label="Search" Placeholder="Search in fields..."
+                              Variant="Variant.Outlined" Immediate="true" DebounceInterval="300"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              Clearable="true" />
+            </MudItem>
+            <MudItem xs="12" sm="8" Class="d-flex align-center gap-4">
+                <MudSwitch @bind-Value="_showEmptyFields" Color="Color.Primary" Label="Show Empty Fields" />
+                <MudSwitch @bind-Value="_showCustomFields" Color="Color.Secondary" Label="Show Custom Fields" />
+                <MudText Typo="Typo.body2" Color="Color.Tertiary" Class="ml-auto">
+                    Showing @FilteredFields.Count() of @_fields.Count fields
+                </MudText>
+            </MudItem>
+        </MudGrid>
+
+        <MudDataGrid Items="@FilteredFields" Dense="true" Striped="true" Hover="true" Bordered="true"
+                     FixedHeader="true" Height="calc(100vh - 340px)">
+            <Columns>
+                <PropertyColumn Property="x => x.Field" Title="Field" />
+                <PropertyColumn Property="x => x.FieldId" Title="Field Id" />
+                <TemplateColumn Title="Value">
+                    <CellTemplate>
+                        <MudText Style="white-space: pre-wrap; word-break: break-all; max-width: 600px;">
+                            @TruncateValue(context.Item.Value)
+                        </MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    </MudPaper>
+}
+
+@code {
+    private string _jiraUrl = string.Empty;
+    private string _username = string.Empty;
+    private string _password = string.Empty;
+    private string _issueKey = string.Empty;
+    private string _searchText = string.Empty;
+    private bool _showEmptyFields = true;
+    private bool _showCustomFields = true;
+    private bool _loading;
+    private List<JiraFieldRow> _fields = new();
+
+    private IEnumerable<JiraFieldRow> FilteredFields => _fields.Where(f =>
+    {
+        if (!_showEmptyFields && f.IsEmpty) return false;
+        if (!_showCustomFields && f.IsCustomField) return false;
+        if (!string.IsNullOrWhiteSpace(_searchText))
+        {
+            var search = _searchText.Trim();
+            return f.Field.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || f.FieldId.Contains(search, StringComparison.OrdinalIgnoreCase)
+                || f.Value.Contains(search, StringComparison.OrdinalIgnoreCase);
+        }
+        return true;
+    });
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var savedUrl = await LocalStorage.GetItemAsync("jiraUrl");
+            if (!string.IsNullOrEmpty(savedUrl))
+            {
+                _jiraUrl = savedUrl;
+                StateHasChanged();
+            }
+
+            var savedUsername = await LocalStorage.GetItemAsync("jiraUsername");
+            if (!string.IsNullOrEmpty(savedUsername))
+            {
+                _username = savedUsername;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task LoadIssue()
+    {
+        if (string.IsNullOrWhiteSpace(_jiraUrl) || string.IsNullOrWhiteSpace(_issueKey)
+            || string.IsNullOrWhiteSpace(_username) || string.IsNullOrWhiteSpace(_password))
+        {
+            Snackbar.Add("Please fill in all fields", Severity.Warning);
+            return;
+        }
+
+        _loading = true;
+        _fields.Clear();
+
+        try
+        {
+            await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
+            await LocalStorage.SetItemAsync("jiraUsername", _username);
+
+            var credentials = new JiraCredentials
+            {
+                BaseUrl = _jiraUrl,
+                Username = _username,
+                Password = _password
+            };
+
+            _fields = await JiraService.GetIssueFieldsAsync(credentials, _issueKey.Trim());
+            Snackbar.Add($"Loaded {_fields.Count} fields for {_issueKey}", Severity.Success);
+        }
+        catch (HttpRequestException ex)
+        {
+            Snackbar.Add($"HTTP Error: {ex.Message}", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string TruncateValue(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        return value.Length > 500 ? value[..500] + "..." : value;
+    }
+}
