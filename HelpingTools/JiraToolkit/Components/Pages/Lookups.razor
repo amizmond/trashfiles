@@ -5,6 +5,7 @@
 @inject LocalStorageService LocalStorage
 @inject ISnackbar Snackbar
 @inject ILogger<Lookups> Logger
+@implements IDisposable
 @rendermode InteractiveServer
 
 <PageTitle>Jira Lookups</PageTitle>
@@ -128,6 +129,14 @@
     <MudTabPanel Text="Labels" Icon="@Icons.Material.Filled.Label" BadgeData="@_labels.Count"
                  BadgeColor="Color.Tertiary">
         <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudSelect @bind-Value="_labelsProjectFilter" Label="Filter by Project" Variant="Variant.Outlined"
+                       Margin="Margin.Dense" Style="max-width: 250px;" Clearable="true"
+                       Placeholder="All labels" Dense="true">
+                @foreach (var p in _projects)
+                {
+                    <MudSelectItem Value="@p.Key">@p.Key — @p.Name</MudSelectItem>
+                }
+            </MudSelect>
             <MudButton Variant="Variant.Outlined" Color="Color.Tertiary" Size="Size.Small"
                        OnClick="LoadLabelsClick" Disabled="@_labelsLoading"
                        StartIcon="@Icons.Material.Filled.Refresh">
@@ -163,6 +172,8 @@
     <MudTabPanel Text="Parent Link" Icon="@Icons.Material.Filled.AccountTree" BadgeData="@_parentLinks.Count"
                  BadgeColor="Color.Info">
         <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudTextField @bind-Value="_parentLinkFieldId" Label="Custom Field ID" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" Style="max-width: 250px;" />
             <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small"
                        OnClick="LoadParentLinksClick" Disabled="@_parentLinksLoading"
                        StartIcon="@Icons.Material.Filled.Refresh">
@@ -197,6 +208,7 @@
     private string _jiraUrl = string.Empty;
     private string _username = string.Empty;
     private string _password = string.Empty;
+    private string _parentLinkFieldId = "customfield_19001";
     private bool _loading;
 
     private bool _projectsLoading;
@@ -207,11 +219,20 @@
     private string _projectSearch = string.Empty;
     private string _issueTypeSearch = string.Empty;
     private string _labelSearch = string.Empty;
+    private string? _labelsProjectFilter;
 
     private List<JiraProject> _projects = new();
     private List<JiraIssueType> _issueTypes = new();
     private List<JiraLabel> _labels = new();
     private List<JiraFieldRow> _parentLinks = new();
+
+    private CancellationTokenSource _projectsCts = new();
+    private CancellationTokenSource _issueTypesCts = new();
+    private CancellationTokenSource _labelsCts = new();
+    private CancellationTokenSource _parentLinksCts = new();
+
+    private string _lastSavedUrl = string.Empty;
+    private string _lastSavedUsername = string.Empty;
 
     private Func<JiraProject, bool> ProjectFilter => p =>
     {
@@ -242,18 +263,23 @@
         if (firstRender)
         {
             var savedUrl = await LocalStorage.GetItemAsync("jiraUrl");
+            var savedUsername = await LocalStorage.GetItemAsync("jiraUsername");
+            var savedFieldId = await LocalStorage.GetItemAsync("parentLinkFieldId");
+
             if (!string.IsNullOrEmpty(savedUrl))
             {
                 _jiraUrl = savedUrl;
-                StateHasChanged();
+                _lastSavedUrl = savedUrl;
             }
-
-            var savedUsername = await LocalStorage.GetItemAsync("jiraUsername");
             if (!string.IsNullOrEmpty(savedUsername))
             {
                 _username = savedUsername;
-                StateHasChanged();
+                _lastSavedUsername = savedUsername;
             }
+            if (!string.IsNullOrEmpty(savedFieldId))
+                _parentLinkFieldId = savedFieldId;
+
+            StateHasChanged();
         }
     }
 
@@ -264,7 +290,7 @@
         Password = _password
     };
 
-    private bool ValidateAndSaveCredentials()
+    private bool ValidateCredentials()
     {
         if (string.IsNullOrWhiteSpace(_jiraUrl) || string.IsNullOrWhiteSpace(_username)
             || string.IsNullOrWhiteSpace(_password))
@@ -275,76 +301,99 @@
         return true;
     }
 
-    private async Task SaveCredentials()
+    private async Task SaveCredentialsIfChanged()
     {
-        await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
-        await LocalStorage.SetItemAsync("jiraUsername", _username);
+        if (_jiraUrl != _lastSavedUrl)
+        {
+            await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
+            _lastSavedUrl = _jiraUrl;
+        }
+        if (_username != _lastSavedUsername)
+        {
+            await LocalStorage.SetItemAsync("jiraUsername", _username);
+            _lastSavedUsername = _username;
+        }
+        await LocalStorage.SetItemAsync("parentLinkFieldId", _parentLinkFieldId);
+    }
+
+    private CancellationToken ResetCts(ref CancellationTokenSource cts)
+    {
+        cts.Cancel();
+        cts.Dispose();
+        cts = new CancellationTokenSource();
+        return cts.Token;
     }
 
     private async Task LoadProjectsClick()
     {
-        if (!ValidateAndSaveCredentials()) return;
-        await SaveCredentials();
+        if (!ValidateCredentials()) return;
+        await SaveCredentialsIfChanged();
         _projectsLoading = true;
-        await LoadProjects(GetCredentials());
+        var ct = ResetCts(ref _projectsCts);
+        await LoadProjects(GetCredentials(), ct);
     }
 
     private async Task LoadIssueTypesClick()
     {
-        if (!ValidateAndSaveCredentials()) return;
-        await SaveCredentials();
+        if (!ValidateCredentials()) return;
+        await SaveCredentialsIfChanged();
         _issueTypesLoading = true;
-        await LoadIssueTypes(GetCredentials());
+        var ct = ResetCts(ref _issueTypesCts);
+        await LoadIssueTypes(GetCredentials(), ct);
     }
 
     private async Task LoadLabelsClick()
     {
-        if (!ValidateAndSaveCredentials()) return;
-        await SaveCredentials();
+        if (!ValidateCredentials()) return;
+        await SaveCredentialsIfChanged();
         _labelsLoading = true;
-        await LoadLabels(GetCredentials());
+        var ct = ResetCts(ref _labelsCts);
+        await LoadLabels(GetCredentials(), ct);
     }
 
     private async Task LoadParentLinksClick()
     {
-        if (!ValidateAndSaveCredentials()) return;
-        await SaveCredentials();
+        if (!ValidateCredentials()) return;
+        await SaveCredentialsIfChanged();
         _parentLinksLoading = true;
-        await LoadParentLinks(GetCredentials());
+        var ct = ResetCts(ref _parentLinksCts);
+        await LoadParentLinks(GetCredentials(), ct);
     }
 
     private async Task LoadAll()
     {
-        if (!ValidateAndSaveCredentials()) return;
+        if (!ValidateCredentials()) return;
 
         _loading = true;
-        await SaveCredentials();
+        await SaveCredentialsIfChanged();
 
         var credentials = GetCredentials();
-
         _projectsLoading = _issueTypesLoading = _labelsLoading = _parentLinksLoading = true;
+
+        var ctProjects = ResetCts(ref _projectsCts);
+        var ctIssueTypes = ResetCts(ref _issueTypesCts);
+        var ctLabels = ResetCts(ref _labelsCts);
+        var ctParentLinks = ResetCts(ref _parentLinksCts);
+
         StateHasChanged();
 
-        var tasks = new List<Task>
-        {
-            LoadProjects(credentials),
-            LoadIssueTypes(credentials),
-            LoadLabels(credentials),
-            LoadParentLinks(credentials)
-        };
-
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(
+            LoadProjects(credentials, ctProjects),
+            LoadIssueTypes(credentials, ctIssueTypes),
+            LoadLabels(credentials, ctLabels),
+            LoadParentLinks(credentials, ctParentLinks));
 
         _loading = false;
     }
 
-    private async Task LoadProjects(JiraCredentials credentials)
+    private async Task LoadProjects(JiraCredentials credentials, CancellationToken ct)
     {
         try
         {
-            _projects = await JiraService.GetProjectsAsync(credentials);
+            _projects = await JiraService.GetProjectsAsync(credentials, ct);
             Snackbar.Add($"Loaded {_projects.Count} projects", Severity.Success);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Failed to load projects from Jira");
@@ -357,13 +406,14 @@
         }
     }
 
-    private async Task LoadIssueTypes(JiraCredentials credentials)
+    private async Task LoadIssueTypes(JiraCredentials credentials, CancellationToken ct)
     {
         try
         {
-            _issueTypes = await JiraService.GetIssueTypesAsync(credentials);
+            _issueTypes = await JiraService.GetIssueTypesAsync(credentials, ct);
             Snackbar.Add($"Loaded {_issueTypes.Count} issue types", Severity.Success);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Failed to load issue types from Jira");
@@ -376,13 +426,15 @@
         }
     }
 
-    private async Task LoadLabels(JiraCredentials credentials)
+    private async Task LoadLabels(JiraCredentials credentials, CancellationToken ct)
     {
         try
         {
-            _labels = await JiraService.GetLabelsAsync(credentials);
-            Snackbar.Add($"Loaded {_labels.Count} labels", Severity.Success);
+            _labels = await JiraService.GetLabelsAsync(credentials, _labelsProjectFilter, ct);
+            var scope = string.IsNullOrWhiteSpace(_labelsProjectFilter) ? "all" : _labelsProjectFilter;
+            Snackbar.Add($"Loaded {_labels.Count} labels ({scope})", Severity.Success);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Failed to load labels from Jira");
@@ -395,16 +447,17 @@
         }
     }
 
-    private async Task LoadParentLinks(JiraCredentials credentials)
+    private async Task LoadParentLinks(JiraCredentials credentials, CancellationToken ct)
     {
         try
         {
-            _parentLinks = await JiraService.GetCustomFieldOptionsAsync(credentials, "customfield_19001");
+            _parentLinks = await JiraService.GetCustomFieldOptionsAsync(credentials, _parentLinkFieldId, ct);
             if (_parentLinks.Count > 0)
                 Snackbar.Add($"Loaded {_parentLinks.Count} parent link values", Severity.Success);
             else
-                Snackbar.Add("No Parent Link data found (customfield_19001)", Severity.Info);
+                Snackbar.Add($"No data found for {_parentLinkFieldId}", Severity.Info);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Failed to load parent links from Jira");
@@ -415,5 +468,13 @@
             _parentLinksLoading = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    public void Dispose()
+    {
+        _projectsCts.Cancel(); _projectsCts.Dispose();
+        _issueTypesCts.Cancel(); _issueTypesCts.Dispose();
+        _labelsCts.Cancel(); _labelsCts.Dispose();
+        _parentLinksCts.Cancel(); _parentLinksCts.Dispose();
     }
 }
