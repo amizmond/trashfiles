@@ -507,14 +507,19 @@
         if (_userName is not null)
             _jiraConnected = JiraAuth.IsConfigured && await JiraAuth.IsAuthenticatedAsync(_userName);
 
-        // Load DB reference data
-        await Task.WhenAll(
+        // Load DB reference data + Jira labels (global, cached 1 day)
+        var dbTasks = new List<Task>
+        {
             BoService.GetAllAsync().ContinueWith(t => _allBo = t.Result),
             PiService.GetAllAsync().ContinueWith(t => _allPis = t.Result),
             TeamService.GetAllNamesAsync().ContinueWith(t => _allTeams = t.Result),
             TsService.GetAllAsync().ContinueWith(t => _allStacks = t.Result),
             UnfundedOptionService.GetAllAsync().ContinueWith(t => _unfundedOptions = t.Result),
-            CapitalProjectService.GetAllAsync().ContinueWith(t => _allCapitalProjects = t.Result));
+            CapitalProjectService.GetAllAsync().ContinueWith(t => _allCapitalProjects = t.Result),
+        };
+        if (_jiraConnected && _userName is not null)
+            dbTasks.Add(JiraMetadata.GetLabelsAsync(_userName).ContinueWith(t => _allJiraLabels = t.Result));
+        await Task.WhenAll(dbTasks);
 
         if (!_isNew)
         {
@@ -525,14 +530,10 @@
             // Initialize selected labels from DB
             _selectedLabelNames = _model.FeatureLabels.Select(fl => fl.Label.Name).ToArray();
 
-            // Load project-specific Jira data (issue types + labels)
+            // Load project-specific Jira issue types
             if (_jiraConnected && _userName is not null && !string.IsNullOrEmpty(_model.ProjectKey))
             {
-                var issueTypesTask = JiraMetadata.GetIssueTypesAsync(_userName, _model.ProjectKey);
-                var labelsTask = JiraMetadata.GetLabelsAsync(_userName, _model.ProjectKey);
-                await Task.WhenAll(issueTypesTask, labelsTask);
-                _allIssueTypes = await issueTypesTask;
-                _allJiraLabels = await labelsTask;
+                _allIssueTypes = await JiraMetadata.GetIssueTypesAsync(_userName, _model.ProjectKey);
             }
         }
         else
@@ -558,11 +559,7 @@
 
             try
             {
-                var issueTypesTask = JiraMetadata.GetIssueTypesAsync(_userName, value);
-                var labelsTask = JiraMetadata.GetLabelsAsync(_userName, value);
-                await Task.WhenAll(issueTypesTask, labelsTask);
-                _allIssueTypes = await issueTypesTask;
-                _allJiraLabels = await labelsTask;
+                _allIssueTypes = await JiraMetadata.GetIssueTypesAsync(_userName, value);
 
                 // Reset issue type to first available
                 if (_allIssueTypes.Any() && !_allIssueTypes.Any(it => it.Name == _selectedIssueType))
@@ -576,7 +573,6 @@
         else
         {
             _allIssueTypes = new();
-            _allJiraLabels = new();
         }
 
         StateHasChanged();

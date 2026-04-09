@@ -22,6 +22,6 @@ public interface IJiraMetadataService
 {
     Task<List<JiraProjectItem>> GetProjectsAsync(string userName);
     Task<List<JiraIssueTypeItem>> GetIssueTypesAsync(string userName, string projectKey);
-    Task<List<string>> GetLabelsAsync(string userName, string projectKey);
+    Task<List<string>> GetLabelsAsync(string userName);
     Task<List<JiraBusinessOutcomeItem>> GetBusinessOutcomesAsync(string userName, string projectKey);
 }

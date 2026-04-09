@@ -89,9 +89,9 @@ public class JiraMetadataService : IJiraMetadataService
         }
     }
 
-    public async Task<List<string>> GetLabelsAsync(string userName, string projectKey)
+    public async Task<List<string>> GetLabelsAsync(string userName)
     {
-        var cacheKey = $"jira_labels_{projectKey}";
+        const string cacheKey = "jira_labels";
         if (_cache.TryGetValue(cacheKey, out List<string>? cached) && cached is not null)
             return cached;
 
@@ -100,48 +100,38 @@ public class JiraMetadataService : IJiraMetadataService
 
         try
         {
-            var labelsSet = new HashSet<string>(StringComparer.Ordinal);
+            var allLabels = new List<string>();
             var startAt = 0;
-            const int pageSize = 100;
+            const int pageSize = 1000;
 
             while (true)
             {
-                var json = await PostSearchAsync(token.AccessToken,
-                    $"project={projectKey} AND labels is not EMPTY", new[] { "labels" }, pageSize, startAt);
+                var url = $"{BaseUrl}/rest/api/2/label?maxResults={pageSize}&startAt={startAt}";
+                var body = await GetJsonAsync("GET", url, token.AccessToken);
+                var json = JsonNode.Parse(body);
 
                 var total = json?["total"]?.GetValue<int>() ?? 0;
-                var issues = json?["issues"]?.AsArray();
+                var values = json?["values"]?.AsArray();
+                if (values is null) break;
 
-                if (issues is not null)
+                foreach (var v in values)
                 {
-                    foreach (var issue in issues)
-                    {
-                        var labelsArr = issue?["fields"]?["labels"]?.AsArray();
-                        if (labelsArr is null) continue;
-                        foreach (var label in labelsArr)
-                        {
-                            var val = label?.GetValue<string>();
-                            if (!string.IsNullOrEmpty(val))
-                                labelsSet.Add(val);
-                        }
-                    }
+                    var name = v?.GetValue<string>();
+                    if (!string.IsNullOrEmpty(name))
+                        allLabels.Add(name);
                 }
 
                 startAt += pageSize;
                 if (startAt >= total) break;
             }
 
-            var labels = labelsSet.OrderBy(l => l).ToList();
-
-            if (labels.Count == 0)
-                Log.Warning("JQL label query returned 0 labels for project {Project}", projectKey);
-
+            var labels = allLabels.Distinct().OrderBy(l => l).ToList();
             _cache.Set(cacheKey, labels, TimeSpan.FromDays(1));
             return labels;
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Failed to fetch Jira labels for {Project}", projectKey);
+            Log.Error(ex, "Failed to fetch Jira labels");
             return new();
         }
     }
