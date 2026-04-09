@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
@@ -97,21 +98,16 @@ public class JiraMetadataService : IJiraMetadataService
         var token = await _authService.GetStoredTokenAsync(userName);
         if (token is null) return new();
 
-        var jql = $"project={projectKey}";
-        var baseUrl = $"{BaseUrl}/rest/api/2/search";
-
         try
         {
             var labelsSet = new HashSet<string>(StringComparer.Ordinal);
             var startAt = 0;
             const int pageSize = 100;
-            var encodedJql = Uri.EscapeDataString(jql);
 
             while (true)
             {
-                var fullUrl = $"{baseUrl}?jql={encodedJql}&fields=labels&maxResults={pageSize}&startAt={startAt}";
-                var body = await GetJsonAsync("GET", baseUrl, token.AccessToken, fullUrl);
-                var json = JsonNode.Parse(body);
+                var json = await PostSearchAsync(token.AccessToken,
+                    $"project={projectKey}", new[] { "labels" }, pageSize, startAt);
 
                 var total = json?["total"]?.GetValue<int>() ?? 0;
                 var issues = json?["issues"]?.AsArray();
@@ -159,14 +155,11 @@ public class JiraMetadataService : IJiraMetadataService
         var token = await _authService.GetStoredTokenAsync(userName);
         if (token is null) return new();
 
-        var jql = Uri.EscapeDataString($"project={projectKey} AND issuetype=\"Business Outcome\"");
-        var baseUrl = $"{BaseUrl}/rest/api/2/search";
-        var fullUrl = $"{baseUrl}?jql={jql}&fields=summary&maxResults=1000";
-
         try
         {
-            var body = await GetJsonAsync("GET", baseUrl, token.AccessToken, fullUrl);
-            var json = JsonNode.Parse(body);
+            var json = await PostSearchAsync(token.AccessToken,
+                $"project={projectKey} AND issuetype=\"Business Outcome\"",
+                new[] { "summary" }, 1000, 0);
             var issues = json?["issues"]?.AsArray();
             if (issues is null) return new();
 
@@ -189,6 +182,43 @@ public class JiraMetadataService : IJiraMetadataService
     // ── Helpers ──
 
     private string BaseUrl => _settings.Url.TrimEnd('/');
+
+    /// <summary>
+    /// POST to /rest/api/2/search with JQL in the JSON body.
+    /// This avoids query-parameter OAuth signing issues.
+    /// </summary>
+    private async Task<JsonNode?> PostSearchAsync(
+        string accessToken, string jql, string[] fields, int maxResults, int startAt)
+    {
+        var url = $"{BaseUrl}/rest/api/2/search";
+
+        var requestBody = new JsonObject
+        {
+            ["jql"] = jql,
+            ["fields"] = new JsonArray(fields.Select(f => (JsonNode)JsonValue.Create(f)!).ToArray()),
+            ["maxResults"] = maxResults,
+            ["startAt"] = startAt,
+        };
+
+        using var httpClient = new HttpClient();
+        var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(requestBody.ToJsonString(), Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("Authorization",
+            _authService.BuildOAuthHeader("POST", url, accessToken));
+
+        var response = await httpClient.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Log.Warning("Jira POST search failed ({Status}): {Body}", response.StatusCode, body);
+            throw new Exception($"Jira search failed ({response.StatusCode})");
+        }
+
+        return JsonNode.Parse(body);
+    }
 
     /// <summary>
     /// Sends a GET request with OAuth header. Signs against <paramref name="signUrl"/>
