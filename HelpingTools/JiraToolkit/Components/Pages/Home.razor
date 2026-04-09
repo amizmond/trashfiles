@@ -3,6 +3,7 @@
 @inject JiraService JiraService
 @inject ISnackbar Snackbar
 @inject ILogger<Home> Logger
+@inject IJSRuntime JS
 @rendermode InteractiveServer
 
 <PageTitle>Issue Explorer</PageTitle>
@@ -16,7 +17,7 @@
 
 <MudPaper Class="pa-4 mb-4" Elevation="1">
     <MudGrid>
-        <MudItem xs="12" sm="4">
+        <MudItem xs="12" sm="3">
             <MudTextField @bind-Value="_issueKey" Label="Issue Key" Placeholder="PROJ-123"
                           Variant="Variant.Outlined" Adornment="Adornment.Start"
                           AdornmentIcon="@Icons.Material.Filled.ConfirmationNumber" />
@@ -33,6 +34,21 @@
                 else
                 {
                     <span>Get Issue</span>
+                }
+            </MudButton>
+        </MudItem>
+        <MudItem xs="12" sm="2" Class="d-flex align-end">
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" OnClick="DownloadRawJson"
+                       Disabled="@(_downloading || !Session.HasCredentials || string.IsNullOrWhiteSpace(_issueKey))"
+                       FullWidth="true" StartIcon="@Icons.Material.Filled.FileDownload">
+                @if (_downloading)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    <span>Downloading...</span>
+                }
+                else
+                {
+                    <span>Download JSON</span>
                 }
             </MudButton>
         </MudItem>
@@ -81,6 +97,7 @@
     private bool _showEmptyFields = true;
     private bool _showCustomFields = true;
     private bool _loading;
+    private bool _downloading;
     private List<JiraFieldRow> _fields = new();
 
     private IEnumerable<JiraFieldRow> FilteredFields => _fields.Where(f =>
@@ -126,6 +143,48 @@
         finally
         {
             _loading = false;
+        }
+    }
+
+    private async Task DownloadRawJson()
+    {
+        if (string.IsNullOrWhiteSpace(_issueKey)) return;
+
+        _downloading = true;
+        try
+        {
+            var json = await JiraService.GetIssueRawJsonAsync(Session.GetCredentials(), _issueKey.Trim());
+            var fileName = $"{_issueKey.Trim()}.txt";
+
+            await JS.InvokeVoidAsync("eval", $@"
+                (function() {{
+                    var blob = new Blob([{System.Text.Json.JsonSerializer.Serialize(json)}], {{ type: 'text/plain' }});
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = {System.Text.Json.JsonSerializer.Serialize(fileName)};
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }})();
+            ");
+
+            Snackbar.Add($"Downloaded raw JSON for {_issueKey}", Severity.Success);
+        }
+        catch (HttpRequestException ex)
+        {
+            Logger.LogError(ex, "Failed to download raw JSON for {IssueKey}", _issueKey);
+            Snackbar.Add($"HTTP Error: {ex.Message}", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to download raw JSON for {IssueKey}", _issueKey);
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _downloading = false;
         }
     }
 

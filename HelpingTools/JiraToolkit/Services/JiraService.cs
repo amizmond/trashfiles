@@ -65,6 +65,17 @@ public class JiraService
         throw new HttpRequestException(message, null, response.StatusCode);
     }
 
+    public async Task<string> GetIssueRawJsonAsync(JiraCredentials credentials, string issueKey, CancellationToken ct = default)
+    {
+        using var client = CreateClient(credentials);
+        var response = await client.GetAsync($"rest/api/2/issue/{issueKey}", ct);
+        await EnsureSuccessAsync(response, ct);
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    }
+
     public async Task<List<JiraFieldRow>> GetIssueFieldsAsync(JiraCredentials credentials, string issueKey, CancellationToken ct = default)
     {
         using var client = CreateClient(credentials);
