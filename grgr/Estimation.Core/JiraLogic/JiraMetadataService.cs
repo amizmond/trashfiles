@@ -107,7 +107,7 @@ public class JiraMetadataService : IJiraMetadataService
             while (true)
             {
                 var json = await PostSearchAsync(token.AccessToken,
-                    $"project={projectKey}", new[] { "labels" }, pageSize, startAt);
+                    $"project={projectKey} AND labels is not EMPTY", new[] { "labels" }, pageSize, startAt);
 
                 var total = json?["total"]?.GetValue<int>() ?? 0;
                 var issues = json?["issues"]?.AsArray();
