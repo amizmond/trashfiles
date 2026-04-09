@@ -61,6 +61,7 @@ public class Program
             builder.Services.AddScoped<ITechnologyStackService, TechnologyStackService>();
 
             builder.Services.Configure<JiraOAuthSettings>(builder.Configuration.GetSection("JiraInstance"));
+            builder.Services.AddHttpClient();
             builder.Services.AddScoped<IJiraAuthService, JiraAuthService>();
             builder.Services.AddScoped<IJiraIssueService, JiraIssueService>();
             builder.Services.AddScoped<IJiraMetadataService, JiraMetadataService>();
