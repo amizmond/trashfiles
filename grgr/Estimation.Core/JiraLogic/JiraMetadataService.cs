@@ -100,32 +100,38 @@ public class JiraMetadataService : IJiraMetadataService
 
         try
         {
-            var allLabels = new List<string>();
+            var labelsSet = new HashSet<string>(StringComparer.Ordinal);
             var startAt = 0;
-            const int pageSize = 1000;
+            const int pageSize = 100;
 
             while (true)
             {
-                var url = $"{BaseUrl}/rest/api/2/label?maxResults={pageSize}&startAt={startAt}";
-                var body = await GetJsonAsync("GET", url, token.AccessToken);
-                var json = JsonNode.Parse(body);
+                var json = await PostSearchAsync(token.AccessToken,
+                    "labels is not EMPTY", new[] { "labels" }, pageSize, startAt);
 
                 var total = json?["total"]?.GetValue<int>() ?? 0;
-                var values = json?["values"]?.AsArray();
-                if (values is null) break;
+                var issues = json?["issues"]?.AsArray();
 
-                foreach (var v in values)
+                if (issues is not null)
                 {
-                    var name = v?.GetValue<string>();
-                    if (!string.IsNullOrEmpty(name))
-                        allLabels.Add(name);
+                    foreach (var issue in issues)
+                    {
+                        var labelsArr = issue?["fields"]?["labels"]?.AsArray();
+                        if (labelsArr is null) continue;
+                        foreach (var label in labelsArr)
+                        {
+                            var val = label?.GetValue<string>();
+                            if (!string.IsNullOrEmpty(val))
+                                labelsSet.Add(val);
+                        }
+                    }
                 }
 
                 startAt += pageSize;
                 if (startAt >= total) break;
             }
 
-            var labels = allLabels.Distinct().OrderBy(l => l).ToList();
+            var labels = labelsSet.OrderBy(l => l).ToList();
             _cache.Set(cacheKey, labels, TimeSpan.FromDays(1));
             return labels;
         }
