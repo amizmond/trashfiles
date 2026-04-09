@@ -771,8 +771,17 @@
             _model.Summary = jiraIssue.Summary ?? _model.Summary;
             _model.Description = jiraIssue.Description ?? _model.Description;
 
+            if (!string.IsNullOrWhiteSpace(jiraIssue.FeatureName))
+                _model.Name = jiraIssue.FeatureName;
+
             if (!string.IsNullOrWhiteSpace(jiraIssue.IssueType))
                 _model.IssueType = jiraIssue.IssueType;
+
+            if (jiraIssue.Labels is { Count: > 0 })
+            {
+                _model.Labels = string.Join(",", jiraIssue.Labels);
+                SyncLabelsFromModel();
+            }
 
             // Extract project key from Jira key (e.g. "PROJ-123" -> "PROJ")
             var dashIndex = _model.JiraId.IndexOf('-');
@@ -783,7 +792,6 @@
                 {
                     _model.ProjectKey = projectKey;
                     await LoadLabelsAsync(projectKey);
-                    SyncLabelsFromModel();
                 }
             }
 
