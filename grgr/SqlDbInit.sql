@@ -256,8 +256,6 @@ CREATE TABLE [dbo].[CapitalProjects]
     CONSTRAINT [PK_CapitalProjects] PRIMARY KEY CLUSTERED ([Id] ASC)
 );
 
-CREATE NONCLUSTERED INDEX [IX_CapitalProjects_JiraKey] ON [dbo].[CapitalProjects] ([JiraKey]);
-
 -- ============================================================
 -- 10. StrategicObjectives
 -- ============================================================
@@ -406,11 +404,13 @@ CREATE TABLE [dbo].[UnfundedOptions]
 CREATE TABLE [dbo].[Features]
 (
     [Id]                INT            NOT NULL IDENTITY(1,1),
-    [ProjectKey]        NVARCHAR(10)   NOT NULL,
     [JiraId]            NVARCHAR(100)  NULL,
-    [Summary]           NVARCHAR(255)  NULL,
+    [ProjectKey]        NVARCHAR(10)   NULL,
+    [IssueType]         NVARCHAR(50)   NULL,
+    [Summary]           NVARCHAR(255)  NOT NULL,
     [Name]              NVARCHAR(200)  NULL,
     [Description]       NVARCHAR(MAX)  NULL,
+    [Labels]            NVARCHAR(2000) NULL,
     [Comments]          NVARCHAR(250)  NULL,
     [Ranking]           INT            NULL,
     [UnfundedOptionId]  INT            NULL,
@@ -434,8 +434,8 @@ CREATE TABLE [dbo].[Features]
 );
 
 -- ── Performance indexes on Features ──
-CREATE NONCLUSTERED INDEX [IX_Features_ProjectKey]        ON [dbo].[Features] ([ProjectKey]);
 CREATE NONCLUSTERED INDEX [IX_Features_JiraId]            ON [dbo].[Features] ([JiraId]);
+CREATE NONCLUSTERED INDEX [IX_Features_ProjectKey]        ON [dbo].[Features] ([ProjectKey]);
 CREATE NONCLUSTERED INDEX [IX_Features_Ranking]           ON [dbo].[Features] ([Ranking]);
 CREATE NONCLUSTERED INDEX [IX_Features_Name]              ON [dbo].[Features] ([Name]);
 CREATE NONCLUSTERED INDEX [IX_Features_BusinessOutcomeId] ON [dbo].[Features] ([BusinessOutcomeId]);
@@ -462,38 +462,7 @@ CREATE TABLE [dbo].[FeatureTeams]
 );
 
 -- ============================================================
--- 19. Labels
--- ============================================================
-CREATE TABLE [dbo].[Labels]
-(
-    [Id]   INT           NOT NULL IDENTITY(1,1),
-    [Name] NVARCHAR(255) NOT NULL,
-    CONSTRAINT [PK_Labels] PRIMARY KEY CLUSTERED ([Id] ASC)
-);
-
-CREATE UNIQUE NONCLUSTERED INDEX [IX_Labels_Name] ON [dbo].[Labels] ([Name]);
-
--- ============================================================
--- 20. FeatureLabels  (Feature <-> Label)
--- ============================================================
-CREATE TABLE [dbo].[FeatureLabels]
-(
-    [FeatureId] INT NOT NULL,
-    [LabelId]   INT NOT NULL,
-    CONSTRAINT [PK_FeatureLabels]
-        PRIMARY KEY CLUSTERED ([FeatureId] ASC, [LabelId] ASC),
-    CONSTRAINT [FK_FeatureLabels_Features]
-        FOREIGN KEY ([FeatureId])
-        REFERENCES [dbo].[Features] ([Id])
-        ON DELETE CASCADE,
-    CONSTRAINT [FK_FeatureLabels_Labels]
-        FOREIGN KEY ([LabelId])
-        REFERENCES [dbo].[Labels] ([Id])
-        ON DELETE CASCADE
-);
-
--- ============================================================
--- 21. TechnologyStacks
+-- 19. TechnologyStacks
 -- ============================================================
 CREATE TABLE [dbo].[TechnologyStacks]
 (

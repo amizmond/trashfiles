@@ -21,7 +21,7 @@
 @inject ISnackbar Snackbar
 @inject IJiraAuthService JiraAuth
 @inject IJiraIssueService JiraIssueService
-@inject IJiraMetadataService JiraMetadata
+@inject IJiraMetadataService JiraMetadataService
 @inject IDialogService DialogService
 @inject IWindowsAuthService WindowsAuth
 
@@ -61,16 +61,35 @@
                             <DataAnnotationsValidator />
                             <MudGrid Spacing="2">
 
-                                @* ── Jira integration checkbox at top ── *@
-                                @if (_isNew)
+                                @* ── Jira ID (read-only, populated after creation) ── *@
+                                <MudItem xs="12">
+                                    <div class="d-flex gap-2 align-end">
+                                        <MudTextField @bind-Value="_model.JiraId" Label="Jira ID"
+                                                        Variant="Variant.Outlined" Placeholder="Jira number"
+                                                        ReadOnly="_jiraIdReadOnly"
+                                                        Style="flex:1" />
+                                        @if (!_isNew && !string.IsNullOrWhiteSpace(_model.JiraId) && _jiraConnected)
+                                        {
+                                            <MudTooltip Text="Refresh from Jira">
+                                                <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                                                                Color="Color.Primary"
+                                                                Disabled="_loadingJira"
+                                                                OnClick="LoadJiraDataAsync" />
+                                            </MudTooltip>
+                                        }
+                                    </div>
+                                </MudItem>
+
+                                @* ── Jira integration controls at the top ── *@
+                                @if (_isNew && JiraAuth.IsConfigured)
                                 {
                                     <MudItem xs="12">
                                         <MudCheckBox @bind-Value="_autoCreateJira" T="bool"
-                                                     Label="Automatically create Jira issue"
+                                                     Label="Automatically create Jira"
                                                      Color="Color.Primary" />
                                     </MudItem>
                                 }
-                                @if (!_isNew && !string.IsNullOrEmpty(_model.JiraId))
+                                @if (!_isNew && !string.IsNullOrEmpty(_model.JiraId) && JiraAuth.IsConfigured)
                                 {
                                     <MudItem xs="12">
                                         <MudCheckBox @bind-Value="_updateInJira" T="bool"
@@ -79,79 +98,49 @@
                                     </MudItem>
                                 }
 
-                                @* ── JiraId (existing features only) ── *@
-                                @if (!_isNew)
-                                {
-                                    <MudItem xs="12">
-                                        <div class="d-flex gap-2 align-end">
-                                            <MudTextField @bind-Value="_model.JiraId" Label="Jira ID"
-                                                          Variant="Variant.Outlined" Placeholder="RRWA-63827"
-                                                          ReadOnly="_jiraIdReadOnly"
-                                                          Style="flex:1" />
-                                            @if (!string.IsNullOrWhiteSpace(_model.JiraId) && _jiraConnected)
-                                            {
-                                                <MudTooltip Text="Refresh from Jira">
-                                                    <MudIconButton Icon="@Icons.Material.Filled.Refresh"
-                                                                   Color="Color.Primary"
-                                                                   Disabled="_loadingJira"
-                                                                   OnClick="LoadJiraDataAsync" />
-                                                </MudTooltip>
-                                            }
-                                        </div>
-                                    </MudItem>
-                                }
-
-                                @* ── Project (always visible, mandatory) ── *@
+                                @* ── Project (from CapitalProject table) ── *@
                                 <MudItem xs="12">
                                     <MudSelect T="string"
-                                               Value="_model.ProjectKey"
-                                               ValueChanged="OnProjectKeyChanged"
+                                               Value="@(_model.ProjectKey ?? string.Empty)"
+                                               ValueChanged="@(async (string v) => await OnProjectKeyChanged(v))"
                                                Label="Project *"
                                                Variant="Variant.Outlined"
-                                               Required="true">
-                                        @foreach (var cp in _allCapitalProjects)
+                                               Required="true"
+                                               RequiredError="Project is required">
+                                        @foreach (var cp in _allCapitalProjects.Where(c => !string.IsNullOrEmpty(c.JiraKey)))
                                         {
-                                            <MudSelectItem T="string" Value="@cp.JiraKey">
-                                                @(!string.IsNullOrEmpty(cp.JiraKey) ? $"{cp.JiraKey} \u2013 " : "")@cp.Name
+                                            <MudSelectItem T="string" Value="@(cp.JiraKey!)">
+                                                @cp.JiraKey — @cp.Name
                                             </MudSelectItem>
                                         }
                                     </MudSelect>
                                 </MudItem>
 
-                                @* ── Issue Type (always visible, mandatory) ── *@
+                                @* ── Issue Type (hardcoded) ── *@
                                 <MudItem xs="12">
-                                    <MudSelect T="string" @bind-Value="_selectedIssueType"
+                                    <MudSelect T="string" @bind-Value="_model.IssueType"
                                                Label="Issue Type *" Variant="Variant.Outlined"
                                                Required="true"
-                                               Disabled="_loadingJiraMetadata">
-                                        @if (_allIssueTypes.Any())
-                                        {
-                                            @foreach (var it in _allIssueTypes)
-                                            {
-                                                <MudSelectItem T="string" Value="@it.Name">@it.Name</MudSelectItem>
-                                            }
-                                        }
-                                        else
-                                        {
-                                            <MudSelectItem T="string" Value="@JiraIssueTypes.Feature">Feature</MudSelectItem>
-                                            <MudSelectItem T="string" Value="@JiraIssueTypes.Story">Story</MudSelectItem>
-                                            <MudSelectItem T="string" Value="@JiraIssueTypes.Task">Task</MudSelectItem>
-                                        }
+                                               RequiredError="Issue Type is required">
+                                        <MudSelectItem T="string" Value="@JiraIssueTypes.Feature">Feature</MudSelectItem>
+                                        <MudSelectItem T="string" Value="@JiraIssueTypes.Story">Story</MudSelectItem>
+                                        <MudSelectItem T="string" Value="@JiraIssueTypes.Task">Task</MudSelectItem>
                                     </MudSelect>
                                 </MudItem>
 
-                                @* ── Feature Name (only when Issue Type = Feature) ── *@
-                                @if (string.Equals(_selectedIssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase))
+                                @* ── Feature Name (only when IssueType = Feature) ── *@
+                                @if (string.Equals(_model.IssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase))
                                 {
                                     <MudItem xs="12">
                                         <MudTextField @bind-Value="_model.Name" Label="Feature Name *"
                                                       Variant="Variant.Outlined"
                                                       Required="true"
-                                                      For="() => _model.Name" />
+                                                      RequiredError="Feature Name is required"
+                                                      MaxLength="200" />
                                     </MudItem>
                                 }
 
-                                @* ── Summary (mandatory) ── *@
+                                @* ── Summary ── *@
                                 <MudItem xs="12">
                                     <MudTextField @bind-Value="_model.Summary" Label="Summary *"
                                                   Variant="Variant.Outlined"
@@ -163,22 +152,17 @@
                                                   OnAdornmentClick="@(() => ShowJiraDiffDialog())" />
                                 </MudItem>
 
-                                @* ── Labels (multi-select) ── *@
+                                @* ── Labels (multi-select from Jira) ── *@
                                 <MudItem xs="12">
-                                    <MudSelect T="string"
+                                    <MudSelect T="string" Label="Labels" Variant="Variant.Outlined"
                                                MultiSelection="true"
-                                               SelectedValues="_selectedLabelNames"
+                                               SelectedValues="_selectedLabelsSet"
                                                SelectedValuesChanged="OnLabelsChanged"
-                                               Label="Labels"
-                                               Variant="Variant.Outlined"
-                                               Disabled="_loadingJiraMetadata"
-                                               Clearable
-                                               Adornment="@(_loadingJiraMetadata ? Adornment.End : Adornment.None)"
-                                               AdornmentIcon="@Icons.Material.Filled.HourglassTop"
-                                               AdornmentColor="Color.Primary">
-                                        @foreach (var label in _allJiraLabels)
+                                               Disabled="@(!_jiraConnected)"
+                                               Clearable>
+                                        @foreach (var label in _availableLabels)
                                         {
-                                            <MudSelectItem T="string" Value="@label">@label</MudSelectItem>
+                                            <MudSelectItem T="string" Value="@label.Name">@label.Name</MudSelectItem>
                                         }
                                     </MudSelect>
                                 </MudItem>
@@ -196,10 +180,7 @@
 
                                 @* ── Business Outcome (from DB) ── *@
                                 <MudItem xs="12">
-                                    <MudSelect T="int?" @bind-Value="_model.BusinessOutcomeId"
-                                               Label="Business Outcome"
-                                               Variant="Variant.Outlined"
-                                               Clearable>
+                                    <MudSelect T="int?" @bind-Value="_model.BusinessOutcomeId" Label="Business Outcome" Variant="Variant.Outlined" Clearable>
                                         @foreach (var bo in _allBo)
                                         {
                                             <MudSelectItem T="int?" Value="bo.Id">
@@ -257,7 +238,6 @@
                                     <MudTextField @bind-Value="_model.Comments" Label="Comments" Variant="Variant.Outlined" Lines="2" />
                                 </MudItem>
 
-                                @* ── Alerts ── *@
                                 @if (_jiraLoginRequired)
                                 {
                                     <MudItem xs="12">
@@ -273,8 +253,6 @@
                                         <MudAlert Severity="Severity.Error">@_error</MudAlert>
                                     </MudItem>
                                 }
-
-                                @* ── Save / Delete ── *@
                                 <MudItem xs="12">
                                     <div class="d-flex gap-2">
                                         <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
@@ -464,6 +442,7 @@
     private int? _selectedTsId;
     private Feature _model = new();
     private List<BusinessOutcome> _allBo = new();
+    private List<CapitalProject> _allCapitalProjects = new();
     private List<Pi> _allPis = new();
     private List<Team> _allTeams = new();
     private List<TechnologyStack> _allStacks = new();
@@ -480,7 +459,6 @@
     // ── Jira state ──
     private bool _autoCreateJira;
     private bool _updateInJira;
-    private string _selectedIssueType = JiraIssueTypes.Feature;
     private string? _userName;
     private bool _jiraConnected;
 
@@ -488,12 +466,22 @@
     private string? _jiraWarning;
     private Dictionary<string, JiraDiffInfo> _jiraDiffs = new();
 
-    // ── Jira metadata ──
-    private bool _loadingJiraMetadata;
-    private List<CapitalProject> _allCapitalProjects = new();
-    private List<JiraIssueTypeItem> _allIssueTypes = new();
-    private List<string> _allJiraLabels = new();
-    private IReadOnlyCollection<string> _selectedLabelNames = Array.Empty<string>();
+    // ── Labels ──
+    private List<JiraLabel> _availableLabels = new();
+    private HashSet<string> _selectedLabelsSet = new();
+
+    private void OnLabelsChanged(IEnumerable<string> values)
+    {
+        _selectedLabelsSet = values.ToHashSet();
+        _model.Labels = _selectedLabelsSet.Count > 0 ? string.Join(",", _selectedLabelsSet) : null;
+    }
+
+    private void SyncLabelsFromModel()
+    {
+        _selectedLabelsSet = string.IsNullOrEmpty(_model.Labels)
+            ? new HashSet<string>()
+            : _model.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet();
+    }
 
     private bool _jiraLoginRequired => (_autoCreateJira || _updateInJira) && !_jiraConnected;
     private bool _saveDisabled => _saving || _jiraLoginRequired || _loadingJira;
@@ -504,88 +492,61 @@
         _loading = true;
 
         _userName = await WindowsAuth.GetUserName();
-        if (_userName is not null)
-            _jiraConnected = JiraAuth.IsConfigured && await JiraAuth.IsAuthenticatedAsync(_userName);
+        if (_userName is not null && JiraAuth.IsConfigured)
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
 
-        // Load DB reference data + Jira labels (global, cached 1 day)
-        var dbTasks = new List<Task>
-        {
+        await Task.WhenAll(
             BoService.GetAllAsync().ContinueWith(t => _allBo = t.Result),
+            CapitalProjectService.GetAllAsync().ContinueWith(t => _allCapitalProjects = t.Result),
             PiService.GetAllAsync().ContinueWith(t => _allPis = t.Result),
             TeamService.GetAllNamesAsync().ContinueWith(t => _allTeams = t.Result),
             TsService.GetAllAsync().ContinueWith(t => _allStacks = t.Result),
-            UnfundedOptionService.GetAllAsync().ContinueWith(t => _unfundedOptions = t.Result),
-            CapitalProjectService.GetAllAsync().ContinueWith(t => _allCapitalProjects = t.Result),
-        };
-        if (_jiraConnected && _userName is not null)
-            dbTasks.Add(JiraMetadata.GetLabelsAsync(_userName).ContinueWith(t => _allJiraLabels = t.Result));
-        await Task.WhenAll(dbTasks);
+            UnfundedOptionService.GetAllAsync().ContinueWith(t => _unfundedOptions = t.Result));
 
         if (!_isNew)
         {
             var e = await FeatureService.GetByIdAsync(Id!.Value);
             if (e is null) { Nav.NavigateTo(RoutingPath.Features); return; }
             _model = e;
-
-            // Initialize selected labels from DB
-            _selectedLabelNames = _model.FeatureLabels.Select(fl => fl.Label.Name).ToArray();
-
-            // Load project-specific Jira issue types
-            if (_jiraConnected && _userName is not null && !string.IsNullOrEmpty(_model.ProjectKey))
-            {
-                _allIssueTypes = await JiraMetadata.GetIssueTypesAsync(_userName, _model.ProjectKey);
-            }
         }
         else
         {
-            _model = new Feature();
+            _model = new Feature { IssueType = JiraIssueTypes.Feature };
         }
 
         _autoCreateJira = false;
         _updateInJira = false;
+        SyncLabelsFromModel();
+
+        // Load labels if Jira is connected and project key is set
+        if (_jiraConnected && !string.IsNullOrWhiteSpace(_model.ProjectKey))
+            await LoadLabelsAsync(_model.ProjectKey);
+
         _loading = false;
     }
 
-    // ── Project selection ──
-
     private async Task OnProjectKeyChanged(string value)
     {
-        _model.ProjectKey = value ?? "";
+        _model.ProjectKey = value;
 
-        if (!string.IsNullOrEmpty(value) && _jiraConnected && _userName is not null)
-        {
-            _loadingJiraMetadata = true;
-            StateHasChanged();
-
-            try
-            {
-                _allIssueTypes = await JiraMetadata.GetIssueTypesAsync(_userName, value);
-
-                // Reset issue type to first available
-                if (_allIssueTypes.Any() && !_allIssueTypes.Any(it => it.Name == _selectedIssueType))
-                    _selectedIssueType = _allIssueTypes.First().Name;
-            }
-            finally
-            {
-                _loadingJiraMetadata = false;
-            }
-        }
+        if (_jiraConnected && !string.IsNullOrWhiteSpace(value))
+            await LoadLabelsAsync(value);
         else
-        {
-            _allIssueTypes = new();
-        }
-
-        StateHasChanged();
+            _availableLabels = new();
     }
 
-    // ── Labels ──
-
-    private void OnLabelsChanged(IEnumerable<string> values)
+    private async Task LoadLabelsAsync(string projectKey)
     {
-        _selectedLabelNames = values.ToArray();
+        try
+        {
+            _availableLabels = await JiraMetadataService.GetLabelsAsync(_userName!, projectKey);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load labels for project {ProjectKey}", projectKey);
+            _availableLabels = new();
+        }
     }
-
-    // ── Save ──
 
     private async Task SaveAsync()
     {
@@ -593,38 +554,43 @@
         _error = null;
         try
         {
-            // Validate mandatory ProjectKey
-            if (string.IsNullOrWhiteSpace(_model.ProjectKey))
-            {
-                _error = "Project is required.";
-                return;
-            }
-
-            // Validate Feature Name when Issue Type is Feature
-            if (string.Equals(_selectedIssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase)
-                && string.IsNullOrWhiteSpace(_model.Name))
-            {
-                _error = "Feature Name is required when Issue Type is Feature.";
-                return;
-            }
-
-            // Clear Feature Name when Issue Type is not Feature
-            if (!string.Equals(_selectedIssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase))
+            // Clear Feature Name when IssueType is not Feature
+            if (!string.Equals(_model.IssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase))
                 _model.Name = null;
+
+            // Resolve BO JiraId for Jira custom field
+            string? boJiraKey = null;
+            if (_model.BusinessOutcomeId.HasValue)
+            {
+                var selectedBo = _allBo.FirstOrDefault(bo => bo.Id == _model.BusinessOutcomeId);
+                boJiraKey = selectedBo?.JiraId;
+            }
+
+            var labelsList = string.IsNullOrEmpty(_model.Labels)
+                ? null
+                : _model.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
 
             if (_isNew)
             {
                 // Step 1: Create in Jira if requested
                 if (_autoCreateJira && string.IsNullOrEmpty(_model.JiraId))
                 {
+                    if (string.IsNullOrWhiteSpace(_model.ProjectKey))
+                    {
+                        _error = "Project is required for Jira creation.";
+                        return;
+                    }
+
                     var jiraKey = await JiraIssueService.CreateIssueAsync(_userName!, new JiraCreateIssueRequest
                     {
                         ProjectKey = _model.ProjectKey.Trim(),
-                        IssueType = _selectedIssueType,
-                        Summary = _model.Summary!,
+                        IssueType = _model.IssueType ?? JiraIssueTypes.Feature,
+                        Summary = _model.Summary,
                         Description = _model.Description,
-                        FeatureName = string.Equals(_selectedIssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase) ? _model.Name : null,
-                        Labels = _selectedLabelNames.Any() ? _selectedLabelNames.ToList() : null,
+                        FeatureName = string.Equals(_model.IssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase)
+                            ? _model.Name : null,
+                        Labels = labelsList,
+                        BusinessOutcomeKey = boJiraKey,
                     });
                     _model.JiraId = jiraKey;
                     _model.IsLinkedToTheJira = true;
@@ -632,11 +598,6 @@
 
                 // Step 2: Save to DB
                 var created = await FeatureService.CreateAsync(_model);
-
-                // Step 3: Save labels
-                if (_selectedLabelNames.Any())
-                    await FeatureService.SetFeatureLabelsAsync(created.Id, _selectedLabelNames.ToList());
-
                 Nav.NavigateTo($"{RoutingPath.Features}/{created.Id}", true);
             }
             else
@@ -646,26 +607,25 @@
                 {
                     await JiraIssueService.UpdateIssueAsync(_userName!, _model.JiraId, new JiraUpdateIssueRequest
                     {
-                        Summary = _model.Summary!,
+                        Summary = _model.Summary,
                         Description = _model.Description,
+                        FeatureName = string.Equals(_model.IssueType, JiraIssueTypes.Feature, StringComparison.OrdinalIgnoreCase)
+                            ? _model.Name : null,
+                        IssueType = _model.IssueType,
+                        Labels = labelsList,
+                        BusinessOutcomeKey = boJiraKey,
                     });
                     _model.IsLinkedToTheJira = true;
                 }
 
                 // Step 2: Save to DB
                 await FeatureService.UpdateAsync(_model);
-
-                // Step 3: Save labels
-                await FeatureService.SetFeatureLabelsAsync(_model.Id, _selectedLabelNames.ToList());
-
                 Snackbar.Add("Saved.", Severity.Success);
             }
         }
         catch (Exception ex) { _error = ex.Message; }
         finally { _saving = false; }
     }
-
-    // ── Delete ──
 
     private async Task ConfirmDeleteAsync()
     {
@@ -683,8 +643,6 @@
             await MessageService.Exception(ex);
         }
     }
-
-    // ── Teams ──
 
     private async Task AddTeamAsync()
     {
@@ -706,8 +664,6 @@
         await FeatureService.RemoveTeamAsync(_model.Id, teamId);
         _model.FeatureTeams = _model.FeatureTeams.Where(ft => ft.TeamId != teamId).ToList();
     }
-
-    // ── Technology Stacks ──
 
     private async Task AddTechnologyStackAsync()
     {
@@ -744,8 +700,6 @@
         await FeatureService.RemoveFeatureTechnologyStackAsync(featureTechnologyStackId);
         _model.FeatureTechnologyStacks = _model.FeatureTechnologyStacks.Where(fts => fts.Id != featureTechnologyStackId).ToList();
     }
-
-    // ── Jira diff ──
 
     private async Task LoadJiraDataAsync()
     {

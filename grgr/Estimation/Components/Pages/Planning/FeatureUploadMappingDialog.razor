@@ -1,0 +1,126 @@
+@using Estimation.Excel.Models
+@using MudBlazor
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Column Mapping</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Map Excel columns to feature fields. Required fields are marked with a star.
+        </MudText>
+
+        <MudTable Items="_mappings" Dense="true" Hover="true" Elevation="0" Striped="true">
+            <HeaderContent>
+                <MudTh>Field</MudTh>
+                <MudTh>Type</MudTh>
+                <MudTh Style="width:50px;">Required</MudTh>
+                <MudTh>Excel Column</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd>
+                    <MudText Style="@(context.IsRequired && string.IsNullOrEmpty(context.SelectedColumn) ? "color: var(--mud-palette-error); font-weight: bold;" : "")">
+                        @context.ExpectedColumnName
+                    </MudText>
+                </MudTd>
+                <MudTd>
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">@context.FriendlyType</MudText>
+                </MudTd>
+                <MudTd Style="text-align:center;">
+                    @if (context.IsRequired)
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.Star" Color="Color.Error" Size="Size.Small" />
+                    }
+                </MudTd>
+                <MudTd>
+                    <MudSelect T="string" @bind-Value="context.SelectedColumn"
+                               Dense="true" Variant="Variant.Outlined" Margin="Margin.Dense"
+                               Clearable="true" Placeholder="-- Not mapped --">
+                        @foreach (var header in ExcelHeaders)
+                        {
+                            <MudSelectItem T="string" Value="@header">@header</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
+
+        @if (!IsValid)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mt-3" Dense="true">
+                All required fields must be mapped to an Excel column.
+            </MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="!IsValid" OnClick="Confirm">
+            Confirm Mapping
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter]
+    public List<ExcelColumnInfo> ColumnInfo { get; set; } = new();
+
+    [Parameter]
+    public List<string> ExcelHeaders { get; set; } = new();
+
+    private List<MappingRow> _mappings = new();
+
+    private bool IsValid => _mappings.Where(m => m.IsRequired).All(m => !string.IsNullOrEmpty(m.SelectedColumn));
+
+    protected override void OnInitialized()
+    {
+        _mappings = ColumnInfo.Select(ci => new MappingRow
+        {
+            PropertyName = ci.PropertyName,
+            ExpectedColumnName = ci.ExpectedColumnName,
+            FriendlyType = GetFriendlyTypeName(ci.PropertyType),
+            IsRequired = ci.IsRequired,
+            SelectedColumn = ExcelHeaders.FirstOrDefault(h =>
+                h.Equals(ci.ExpectedColumnName, StringComparison.OrdinalIgnoreCase)) ?? ""
+        }).ToList();
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Confirm()
+    {
+        var mapping = _mappings
+            .Where(m => !string.IsNullOrEmpty(m.SelectedColumn))
+            .ToDictionary(m => m.PropertyName, m => m.SelectedColumn!);
+        MudDialog.Close(DialogResult.Ok(mapping));
+    }
+
+    private static string GetFriendlyTypeName(Type type)
+    {
+        var underlying = Nullable.GetUnderlyingType(type) ?? type;
+        var name = underlying switch
+        {
+            _ when underlying == typeof(string) => "Text",
+            _ when underlying == typeof(int) => "Number",
+            _ when underlying == typeof(long) => "Number",
+            _ when underlying == typeof(decimal) => "Decimal",
+            _ when underlying == typeof(double) => "Decimal",
+            _ when underlying == typeof(float) => "Decimal",
+            _ when underlying == typeof(bool) => "Yes/No",
+            _ when underlying == typeof(DateTime) => "Date",
+            _ => underlying.Name
+        };
+        return Nullable.GetUnderlyingType(type) != null ? $"{name} (optional)" : name;
+    }
+
+    private class MappingRow
+    {
+        public string PropertyName { get; set; } = "";
+        public string ExpectedColumnName { get; set; } = "";
+        public string FriendlyType { get; set; } = "";
+        public bool IsRequired { get; set; }
+        public string? SelectedColumn { get; set; }
+    }
+}

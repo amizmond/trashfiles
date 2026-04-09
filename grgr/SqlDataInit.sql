@@ -362,9 +362,9 @@ SET IDENTITY_INSERT [dbo].[PortfolioEpics] OFF;
 -- ============================================================
 SET IDENTITY_INSERT [dbo].[CapitalProjects] ON;
 
-INSERT INTO [dbo].[CapitalProjects] ([Id], [JiraKey], [Name], [Description]) VALUES
-(1001, 'RRWA',  'CAPEX-Platform',  'Platform modernization capital project'),
-(1002, 'DATAX', 'CAPEX-Analytics', 'Data analytics capital project');
+INSERT INTO [dbo].[CapitalProjects] ([Id], [Name], [Description], [JiraKey]) VALUES
+(1001, 'CAPEX-Platform',  'Platform modernization capital project', 'RRWA'),
+(1002, 'CAPEX-Analytics', 'Data analytics capital project',        'ANLT');
 
 SET IDENTITY_INSERT [dbo].[CapitalProjects] OFF;
 
@@ -430,43 +430,43 @@ SET IDENTITY_INSERT [dbo].[Pis] OFF;
 -- ============================================================
 SET IDENTITY_INSERT [dbo].[Features] ON;
 
-INSERT INTO [dbo].[Features] ([Id], [ProjectKey], [JiraId], [Name], [Description], [Comments], [Ranking], [PiId], [BusinessOutcomeId]) VALUES
+INSERT INTO [dbo].[Features] ([Id], [JiraId], [ProjectKey], [IssueType], [Summary], [Name], [Description], [Comments], [Ranking], [PiId], [BusinessOutcomeId]) VALUES
 -- ── PI-2026-Q2 (PI 1001) ──
-(1001, 'RRWA', 'FEAT-1001', 'Redesign Login Page',
+(1001, 'FEAT-1001', 'RRWA', 'Feature', 'Redesign the login page with Angular components', 'Redesign Login Page',
     'Redesign the login page with Angular components', 'High priority', 1, 1001, 1001),
-(1002, 'RRWA', 'FEAT-1002', 'API Gateway Refactor',
+(1002, 'FEAT-1002', 'RRWA', 'Feature', 'Refactor API gateway for streaming and DB performance', 'API Gateway Refactor',
     'Refactor API gateway for streaming and DB performance', NULL, 2, 1001, 1001),
-(1003, 'RRWA', 'FEAT-1003', 'Customer Dashboard',
+(1003, 'FEAT-1003', 'RRWA', 'Feature', 'Build interactive customer dashboard', 'Customer Dashboard',
     'Build interactive customer dashboard', 'Large front-end effort', 3, 1001, 1002),
-(1004, 'RRWA', 'FEAT-1004', 'Data Export Service',
+(1004, 'FEAT-1004', 'ANLT', 'Feature', 'Export service for analytics data', 'Data Export Service',
     'Export service for analytics data', NULL, 4, 1001, 1003),
-(1005, 'RRWA', 'FEAT-1005', 'Email Notifications',
+(1005, 'FEAT-1005', 'RRWA', 'Story', 'Implement email notification via streaming', NULL,
     'Implement email notification via streaming', 'No team assigned', 5, 1001, 1002),
-(1006, 'RRWA', 'FEAT-1006', 'Admin Panel',
+(1006, 'FEAT-1006', 'RRWA', 'Feature', 'Admin panel with front-end and DB work', 'Admin Panel',
     'Admin panel with front-end and DB work', NULL, 6, 1001, 1001),
-(1007, 'RRWA', 'FEAT-1007', 'Full Platform Rewrite',
+(1007, 'FEAT-1007', 'RRWA', 'Feature', 'Complete platform rewrite - very large effort', 'Full Platform Rewrite',
     'Complete platform rewrite - very large effort', 'Will exceed capacity', 7, 1001, 1001),
-(1008, 'RRWA', 'FEAT-1008', 'Documentation Update',
+(1008, 'FEAT-1008', 'RRWA', 'Task', 'Update product documentation', NULL,
     'Update product documentation', 'No dev effort', 8, 1001, 1002),
 
 -- ── PI-2026-Q3 (PI 1002) ──
-(1009, 'RRWA', 'FEAT-1009', 'Mobile API Layer',
+(1009, 'FEAT-1009', 'RRWA', 'Feature', 'Build REST API for mobile app', 'Mobile API Layer',
     'Build REST API for mobile app', NULL, 1, 1002, 1004),
-(1010, 'RRWA', 'FEAT-1010', 'Auth Service Migration',
+(1010, 'FEAT-1010', 'RRWA', 'Feature', 'Migrate authentication to OAuth2/OIDC', 'Auth Service Migration',
     'Migrate authentication to OAuth2/OIDC', 'Security initiative', 2, 1002, 1004),
-(1011, 'RRWA', 'FEAT-1011', 'Real-Time Notifications',
+(1011, 'FEAT-1011', 'RRWA', 'Story', 'WebSocket-based push notifications', NULL,
     'WebSocket-based push notifications', NULL, 3, 1002, 1002),
-(1012, 'RRWA', 'FEAT-1012', 'ML Recommendation Engine',
+(1012, 'FEAT-1012', 'ANLT', 'Feature', 'Product recommendation engine using ML', 'ML Recommendation Engine',
     'Product recommendation engine using ML', 'Data team lead', 4, 1002, 1003),
 
 -- ── PI-2026-Q4 (PI 1003) ──
-(1013, 'RRWA', 'FEAT-1013', 'Self-Service Portal v2',
+(1013, 'FEAT-1013', 'RRWA', 'Feature', 'Next-gen customer portal with Angular', 'Self-Service Portal v2',
     'Next-gen customer portal with Angular', NULL, 1, 1003, 1005),
-(1014, 'RRWA', 'FEAT-1014', 'Automated Testing Framework',
+(1014, 'FEAT-1014', 'RRWA', 'Task', 'CI/CD test automation infrastructure', NULL,
     'CI/CD test automation infrastructure', NULL, 2, 1003, 1004),
-(1015, 'RRWA', 'FEAT-1015', 'Data Lake Integration',
+(1015, 'FEAT-1015', 'ANLT', 'Feature', 'Integrate with enterprise data lake', 'Data Lake Integration',
     'Integrate with enterprise data lake', 'Cross-team effort', 3, 1003, 1003),
-(1016, 'RRWA', 'FEAT-1016', 'Performance Monitoring Dashboard',
+(1016, 'FEAT-1016', 'RRWA', 'Feature', 'APM dashboard for operations', 'Performance Monitoring Dashboard',
     'APM dashboard for operations', NULL, 4, 1003, 1001);
 
 SET IDENTITY_INSERT [dbo].[Features] OFF;
@@ -501,50 +501,6 @@ INSERT INTO [dbo].[FeatureTeams] ([FeatureId], [TeamId]) VALUES
 (1015, 1003),  -- Data Lake      -> Charlie
 (1016, 1001),  -- Monitoring     -> Alpha
 (1016, 1002);  -- Monitoring     -> Bravo
-
--- ============================================================
--- Labels
--- ============================================================
-SET IDENTITY_INSERT [dbo].[Labels] ON;
-
-INSERT INTO [dbo].[Labels] ([Id], [Name]) VALUES
-(1001, 'frontend'),
-(1002, 'backend'),
-(1003, 'security'),
-(1004, 'performance'),
-(1005, 'ux'),
-(1006, 'data'),
-(1007, 'infrastructure'),
-(1008, 'mobile');
-
-SET IDENTITY_INSERT [dbo].[Labels] OFF;
-
--- ============================================================
--- FeatureLabels (Feature <-> Label)
--- ============================================================
-INSERT INTO [dbo].[FeatureLabels] ([FeatureId], [LabelId]) VALUES
-(1001, 1001),  -- Login Page       -> frontend
-(1001, 1005),  -- Login Page       -> ux
-(1002, 1002),  -- API Gateway      -> backend
-(1002, 1004),  -- API Gateway      -> performance
-(1003, 1001),  -- Dashboard        -> frontend
-(1003, 1005),  -- Dashboard        -> ux
-(1004, 1006),  -- Data Export      -> data
-(1005, 1002),  -- Email Notif      -> backend
-(1006, 1001),  -- Admin Panel      -> frontend
-(1006, 1002),  -- Admin Panel      -> backend
-(1007, 1001),  -- Full Rewrite     -> frontend
-(1007, 1002),  -- Full Rewrite     -> backend
-(1007, 1007),  -- Full Rewrite     -> infrastructure
-(1009, 1008),  -- Mobile API       -> mobile
-(1009, 1002),  -- Mobile API       -> backend
-(1010, 1003),  -- Auth Migration   -> security
-(1012, 1006),  -- ML Engine        -> data
-(1013, 1001),  -- Portal v2        -> frontend
-(1013, 1008),  -- Portal v2        -> mobile
-(1014, 1007),  -- Test Framework   -> infrastructure
-(1015, 1006),  -- Data Lake        -> data
-(1016, 1004);  -- Monitoring       -> performance
 
 -- ============================================================
 -- FeatureTechnologyStacks (Feature -> TechnologyStack with EstimatedEffort)

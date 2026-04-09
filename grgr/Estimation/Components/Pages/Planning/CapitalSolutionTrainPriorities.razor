@@ -1,0 +1,307 @@
+@attribute [Route(RoutingPath.CapitalSolutionTrainPriorities)]
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+
+@inject IBusinessOutcomeService BoService
+@inject NavigationManager Nav
+@inject IConfiguration Configuration
+
+@implements IDisposable
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6" Class="mb-4">Capital Solution Train Priorities</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                            Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                       OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showCapitalProject" Label="ART Level" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showProgram" Label="Program" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showPortfolioEpic" Label="Portfolio Epic" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showBoJira" Label="Business Outcome Jira" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showBoName" Label="Business Outcome Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showBoRanking" Label="Business Outcome Ranking" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showBoArtName" Label="Business Outcome ArtName" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showFeatures" Label="Features" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudSelect T="int" Label="Ranking" MultiSelection
+                           @bind-SelectedValues="FilterRankings"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var r in _availableRankings)
+                    {
+                        <MudSelectItem T="int" Value="r">@r</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="ART Name" MultiSelection
+                           @bind-SelectedValues="FilterArtNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var a in _availableArtNames)
+                    {
+                        <MudSelectItem T="string" Value="@a">@a</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+        <MudDataGrid T="CstpRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" LoadingProgressColor="Color.Primary">
+            <Columns>
+                <PropertyColumn Property="r => r.CapitalProjectName" Title="ART Level" Sortable="true" Hidden="!_showCapitalProject" />
+                <PropertyColumn Property="r => r.ProgramName" Title="Program" Sortable="true" Hidden="!_showProgram" />
+                <PropertyColumn Property="r => r.PortfolioEpicName" Title="Portfolio Epic" Sortable="true" Hidden="!_showPortfolioEpic">
+                    <CellTemplate>
+                        @if (context.Item.PortfolioEpicId is not null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.PortfolioEpics}/{context.Item.PortfolioEpicId}"))">@context.Item.PortfolioEpicName</MudChip>
+                        }
+                    </CellTemplate>
+                </PropertyColumn>
+                <TemplateColumn Title="Business Outcome Jira" Sortable="false" CellStyle="width:150px;" Hidden="!_showBoJira">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.BoJiraId))
+                        {
+                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.BoJiraId)" target="_blank" style="text-decoration:none">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @context.Item.BoJiraId
+                                </MudChip>
+                            </a>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.BoName" Title="Business Outcome Name" Sortable="true" Hidden="!_showBoName">
+                    <CellTemplate>
+                        <MudLink Href="@($"{RoutingPath.BusinessOutcomes}/{context.Item.BoId}")" Class="font-weight-bold">@context.Item.BoName</MudLink>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="r => r.BoRanking" Title="Ranking" Sortable="true" CellStyle="width:100px;" Hidden="!_showBoRanking" />
+                <PropertyColumn Property="r => r.BoArtName" Title="ArtName" Sortable="true" CellStyle="width:100px;" Hidden="!_showBoArtName" />
+                <TemplateColumn Title="Features" Sortable="false" CellStyle="max-width:300px;" Hidden="!_showFeatures">
+                    <CellTemplate>
+                        @foreach (var f in context.Item.Features.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.Features}/{f.Id}"))">@f.Name</MudChip>
+                        }
+                        @if (context.Item.Features.Count > 3)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                +@(context.Item.Features.Count - 3)
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No records found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="CstpRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+@code {
+    private List<CstpRow> _rows = new();
+    private List<CstpRow> _filteredRows = new();
+    private bool _loading = true;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Column visibility (true = visible) ---
+    private bool _showCapitalProject;
+    private bool _showProgram;
+    private bool _showPortfolioEpic = true;
+    private bool _showBoJira = true;
+    private bool _showBoName = true;
+    private bool _showBoRanking = true;
+    private bool _showBoArtName = true;
+    private bool _showFeatures;
+
+    private List<int> _availableRankings = new();
+    private List<string> _availableArtNames = new();
+
+    // --- Filter properties with debounced recomputation ---
+
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<int> _filterRankingsBacking = Array.Empty<int>();
+    private HashSet<int> _filterRankingsSet = new();
+    private IReadOnlyCollection<int> FilterRankings
+    {
+        get => _filterRankingsBacking;
+        set { _filterRankingsBacking = value; _filterRankingsSet = new HashSet<int>(value); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterArtNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterArtNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterArtNames
+    {
+        get => _filterArtNamesBacking;
+        set { _filterArtNamesBacking = value; _filterArtNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterRankingsBacking = Array.Empty<int>();
+        _filterRankingsSet.Clear();
+        _filterArtNamesBacking = Array.Empty<string>();
+        _filterArtNamesSet.Clear();
+        RecomputeFilteredRows();
+    }
+
+    // --- Filter logic ---
+
+    private void RecomputeFilteredRows()
+    {
+        _filteredRows = _rows.Where(MatchesFilter).ToList();
+    }
+
+    private bool MatchesFilter(CstpRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!((r.BoName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.BoJiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.PortfolioEpicName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.BoArtName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+                return false;
+        }
+
+        if (_filterRankingsSet.Count > 0
+            && (r.BoRanking is null || !_filterRankingsSet.Contains(r.BoRanking.Value)))
+            return false;
+
+        if (_filterArtNamesSet.Count > 0
+            && (r.BoArtName is null || !_filterArtNamesSet.Contains(r.BoArtName)))
+            return false;
+
+        return true;
+    }
+
+    // --- Lifecycle ---
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var items = await BoService.GetAllWithHierarchyAsync();
+            _rows = items.Select(bo =>
+            {
+                var epic = bo.PortfolioEpic;
+                var programs = epic?.StrategicObjectivePortfolioEpics
+                    .Select(ppe => ppe.StrategicObjective).ToList() ?? new();
+                var capitalProjects = programs
+                    .SelectMany(pp => pp.CapitalProjectStrategicObjectives.Select(cpp => cpp.CapitalProject))
+                    .Distinct().ToList();
+
+                return new CstpRow(
+                    CapitalProjectName: capitalProjects.Any() ? string.Join(", ", capitalProjects.Select(cp => cp.Name)) : null,
+                    ProgramName: programs.Any() ? string.Join(", ", programs.Select(p => p.Name)) : null,
+                    PortfolioEpicId: epic?.Id,
+                    PortfolioEpicName: epic?.Name,
+                    BoId: bo.Id,
+                    BoJiraId: bo.JiraId,
+                    BoName: bo.Name,
+                    BoRanking: bo.Ranking,
+                    BoArtName: bo.ArtName,
+                    Features: bo.Features.ToList()
+                );
+            }).ToList();
+
+            _availableRankings = _rows
+                .Where(r => r.BoRanking is not null)
+                .Select(r => r.BoRanking!.Value)
+                .Distinct().OrderBy(r => r).ToList();
+            _availableArtNames = _rows
+                .Where(r => !string.IsNullOrWhiteSpace(r.BoArtName))
+                .Select(r => r.BoArtName!)
+                .Distinct().OrderBy(a => a).ToList();
+
+            RecomputeFilteredRows();
+        }
+        finally { _loading = false; }
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record CstpRow(
+        string? CapitalProjectName,
+        string? ProgramName,
+        int? PortfolioEpicId,
+        string? PortfolioEpicName,
+        int BoId,
+        string? BoJiraId,
+        string? BoName,
+        int? BoRanking,
+        string? BoArtName,
+        List<Feature> Features
+    );
+}

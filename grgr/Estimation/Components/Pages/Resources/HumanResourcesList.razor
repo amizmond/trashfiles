@@ -1,0 +1,452 @@
+@attribute [Route(RoutingPath.HumanResources)]
+
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@inject IHumanResourceService HrService
+@inject ISkillService SkillService
+@inject ITeamService TeamService
+@inject IStaticSettingsService StaticSettingsService
+@inject NavigationManager Navigation
+
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+
+<PageTitle>Resources</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">Resources</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_isLoading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <MudButton Variant="Variant.Text" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@(_allColumnsSelected ? Icons.Material.Filled.Deselect : Icons.Material.Filled.SelectAll)"
+                               OnClick="ToggleAllColumns" Class="mb-1">
+                        @(_allColumnsSelected ? "Unselect All" : "Select All")
+                    </MudButton>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showFullName" Label="Full Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActive" Label="Active" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTeam" Label="Team" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTeamRole" Label="TeamRole" Color="Color.Primary" Dense />
+                        @foreach (var skill in _allSkills)
+                        {
+                            <MudSwitch T="bool" Value="_visibleSkillIds.Contains(skill.Id)"
+                                       ValueChanged="@((bool v) => ToggleSkillColumn(skill.Id, v))"
+                                       Label="@skill.Name" Color="Color.Primary" Dense />
+                        }
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_isLoading"
+                       Style="margin-right: 10px"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.PersonAdd"
+                       Style="margin-right: 10px"
+                       OnClick="@(() => Navigation.NavigateTo(RoutingPath.HumanResourcesNew))">
+                New
+            </MudButton>
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="_searchTerm" Label="Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="400" Dense Variant="Variant.Outlined"
+                              OnDebounceIntervalElapsed="OnSearchChanged" />
+
+                <MudSelect T="string" Label="Skill" MultiSelection
+                           SelectedValues="_filterSkillNames"
+                           SelectedValuesChanged="v => { _filterSkillNames = v?.ToArray() ?? Array.Empty<string>(); _ = ApplyFilters(); }"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var skill in _allSkills)
+                    {
+                        <MudSelectItem T="string" Value="@skill.Name">@skill.Name</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="Active Status"
+                           Value="_filterActiveStatus"
+                           ValueChanged="v => { _filterActiveStatus = v; _ = ApplyFilters(); }"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    <MudSelectItem T="string" Value="@("Active")">Active</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Inactive")">Inactive</MudSelectItem>
+                </MudSelect>
+
+                <MudSelect T="string" Label="Team" MultiSelection
+                           SelectedValues="_filterTeamNames"
+                           SelectedValuesChanged="v => { _filterTeamNames = v?.ToArray() ?? Array.Empty<string>(); _ = ApplyFilters(); }"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var team in _availableTeams)
+                    {
+                        <MudSelectItem T="string" Value="@team">@team</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="TeamRole" MultiSelection
+                           SelectedValues="_filterTeamRoleNames"
+                           SelectedValuesChanged="v => { _filterTeamRoleNames = v?.ToArray() ?? Array.Empty<string>(); _ = ApplyFilters(); }"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var role in _availableTeamRoles)
+                    {
+                        <MudSelectItem T="string" Value="@role">@role</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+
+        <MudTable @ref="_table"
+                  T="HumanResourceListItem"
+                  ServerData="ServerReload"
+                  Hover
+                  Striped
+                  Dense
+                  Bordered="true"
+                  Loading="_isLoading"
+                  LoadingProgressColor="Color.Primary"
+                  SortLabel="Sort By"
+                  Class="rounded-0"
+                  HorizontalScrollbar
+                  Elevation="0">
+
+            <HeaderContent>
+                <MudTh Class="sticky-left-header" Style="min-width:250px" hidden="@(!_showFullName)">
+                    <MudTableSortLabel T="HumanResourceListItem" SortLabel="fullname">
+                        Full Name
+                    </MudTableSortLabel>
+                </MudTh>
+                <MudTh Class="sticky-left-header" Style="text-align:center" hidden="@(!_showActive)">Active</MudTh>
+                <MudTh Class="sticky-left-header" Style="text-align:center; min-width:150px" hidden="@(!_showTeam)">Team</MudTh>
+                <MudTh Class="sticky-left-header" Style="text-align:center; min-width:130px" hidden="@(!_showTeamRole)">Team Role</MudTh>
+
+                @foreach (var skill in _allSkills)
+                {
+                    <MudTh Style="text-align:center; min-width:130px" hidden="@(!_visibleSkillIds.Contains(skill.Id))">
+                        <MudTooltip Text="@skill.Description" Placement="Placement.Top">
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                @skill.Name
+                            </MudText>
+                        </MudTooltip>
+                    </MudTh>
+                }
+
+                <MudTh Class="sticky-right-header" Style="text-align:right" hidden="@(!_showActions)">Actions</MudTh>
+            </HeaderContent>
+
+            <RowTemplate>
+                <MudTd DataLabel="Full Name" Class="sticky-left" hidden="@(!_showFullName)">
+                    <div class="d-flex align-center gap-2">
+                        <MudAvatar Color="Color.Primary" Size="Size.Small">
+                            @context.FullName.First()
+                        </MudAvatar>
+                        <div>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                @context.FullName
+                            </MudText>
+                            @if (!string.IsNullOrEmpty(context.EmployeeNumber))
+                            {
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    #@context.EmployeeNumber · @context.EmployeeName
+                                </MudText>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    @context.EmployeeName
+                                </MudText>
+                            }
+                        </div>
+                    </div>
+                </MudTd>
+                <MudTd DataLabel="Active" Class="sticky-left" Style="text-align:center" hidden="@(!_showActive)">
+                    @if (context.IsActive)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Active</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">Inactive</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Team" Class="sticky-left" Style="text-align:center" hidden="@(!_showTeam)">
+                    @foreach (var t in context.Teams)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Class="mr-1"
+                                 OnClick="@(() => Navigation.NavigateTo($"{RoutingPath.Teams}/{t.TeamId}"))">
+                            @t.TeamName
+                        </MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="TeamRole" Class="sticky-left" Style="text-align:center" hidden="@(!_showTeamRole)">
+                    @{
+                        var roleName = context.Teams.FirstOrDefault()?.TeamRoleName;
+                    }
+                    @if (!string.IsNullOrEmpty(roleName))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">@roleName</MudChip>
+                    }
+                </MudTd>
+
+                @foreach (var skill in _allSkills)
+                {
+                    context.SkillMap.TryGetValue(skill.Id, out var assignment);
+                    <MudTd DataLabel="@skill.Name" Style="text-align:center" hidden="@(!_visibleSkillIds.Contains(skill.Id))">
+                        @if (assignment is not null)
+                        {
+                            @if (!string.IsNullOrEmpty(assignment.SkillLevelName))
+                            {
+                                <MudTooltip Text="@assignment.SkillLevelDescription"
+                                            Placement="Placement.Top">
+                                    <MudChip T="string"
+                                             Size="Size.Small"
+                                             Color="Color.Primary"
+                                             Variant="Variant.Filled">
+                                        @assignment.SkillLevelName
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                            else
+                            {
+                                <MudTooltip Text="Skill assigned, no level set"
+                                            Placement="Placement.Top">
+                                    <MudChip T="string"
+                                             Size="Size.Small"
+                                             Color="Color.Default"
+                                             Variant="Variant.Outlined">
+                                        Assigned
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                        }
+                    </MudTd>
+                }
+
+                <MudTd Class="sticky-right" Style="text-align:right; min-width:150px" id="actionButtons" hidden="@(!_showActions)">
+                    <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" Href="@($"{RoutingPath.HumanResources}/{context.Id}")" Target="_blank" />
+                    <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context)" />
+                </MudTd>
+            </RowTemplate>
+
+            <NoRecordsContent>
+                <MudText Typo="Typo.body1" Class="pa-6 mud-text-secondary">
+                    @(_searchTerm is { Length: > 0 }
+                                        ? "No results match your search."
+                                        : "No human resources found. Create one to get started.")
+                </MudText>
+            </NoRecordsContent>
+
+            <PagerContent>
+                <MudTablePager PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+
+        </MudTable>
+
+    </MudPaper>
+</div>
+
+
+@code {
+    private MudTable<HumanResourceListItem>? _table;
+    private List<Skill> _allSkills = new();
+    private bool _isLoading = true;
+    private string? _searchTerm;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Column visibility ---
+    private bool _showFullName = true;
+    private bool _showActive = true;
+    private bool _showTeam = true;
+    private bool _showTeamRole = true;
+    private bool _showActions = true;
+    private HashSet<int> _visibleSkillIds = new();
+
+    // --- Available filter values ---
+    private List<string> _availableTeams = new();
+    private List<string> _availableTeamRoles = new();
+
+    // --- Filter state ---
+    private IReadOnlyCollection<string> _filterSkillNames { get; set; } = Array.Empty<string>();
+    private string? _filterActiveStatus;
+    private IReadOnlyCollection<string> _filterTeamNames { get; set; } = Array.Empty<string>();
+    private IReadOnlyCollection<string> _filterTeamRoleNames { get; set; } = Array.Empty<string>();
+
+    private bool _allColumnsSelected =>
+        _showFullName && _showActive && _showTeam && _showTeamRole && _showActions
+        && _visibleSkillIds.Count == _allSkills.Count;
+
+    private void ToggleAllColumns()
+    {
+        var target = !_allColumnsSelected;
+        _showFullName = target;
+        _showActive = target;
+        _showTeam = target;
+        _showTeamRole = target;
+        _showActions = target;
+        if (target)
+            _visibleSkillIds = new HashSet<int>(_allSkills.Select(s => s.Id));
+        else
+            _visibleSkillIds.Clear();
+    }
+
+    private void ToggleSkillColumn(int skillId, bool visible)
+    {
+        if (visible) _visibleSkillIds.Add(skillId);
+        else _visibleSkillIds.Remove(skillId);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _allSkills = await SkillService.GetAllAsync();
+        _visibleSkillIds = new HashSet<int>(_allSkills.Select(s => s.Id));
+
+        var teams = await TeamService.GetAllNamesAsync();
+        _availableTeams = teams.Select(t => t.Name).OrderBy(n => n).ToList();
+
+        var teamRoles = await StaticSettingsService.GetAllTeamRolesAsync();
+        _availableTeamRoles = teamRoles.Select(r => r.Name).OrderBy(n => n).ToList();
+
+        _isLoading = false;
+    }
+
+    private async Task<TableData<HumanResourceListItem>> ServerReload(TableState state, CancellationToken ct)
+    {
+        var sortField = state.SortLabel;
+        var sortAsc = state.SortDirection != SortDirection.Descending;
+
+        // Build filter parameters
+        var skillNames = _filterSkillNames.ToList();
+        List<int>? skillIds = skillNames.Count > 0
+            ? _allSkills.Where(s => skillNames.Contains(s.Name, StringComparer.OrdinalIgnoreCase)).Select(s => s.Id).ToList()
+            : null;
+
+        bool? isActive = _filterActiveStatus switch
+        {
+            "Active" => true,
+            "Inactive" => false,
+            _ => null
+        };
+
+        var teamNames = _filterTeamNames.ToList();
+        var teamRoleNames = _filterTeamRoleNames.ToList();
+
+        var result = await HrService.GetPagedListAsync(
+            state.Page,
+            state.PageSize,
+            _searchTerm,
+            sortField,
+            sortAsc,
+            ct,
+            skillIds: skillIds,
+            isActive: isActive,
+            teamNames: teamNames.Count > 0 ? teamNames : null,
+            teamRoleNames: teamRoleNames.Count > 0 ? teamRoleNames : null);
+
+        return new TableData<HumanResourceListItem>
+        {
+            Items = result.Items,
+            TotalItems = result.TotalCount
+        };
+    }
+
+    private async Task OnSearchChanged(string? value)
+    {
+        _searchTerm = value;
+        if (_table is not null)
+            await _table.ReloadServerData();
+    }
+
+    private async Task ApplyFilters()
+    {
+        if (_table is not null)
+            await _table.ReloadServerData();
+    }
+
+    private async Task ClearFilters()
+    {
+        _searchTerm = null;
+        _filterSkillNames = Array.Empty<string>();
+        _filterActiveStatus = null;
+        _filterTeamNames = Array.Empty<string>();
+        _filterTeamRoleNames = Array.Empty<string>();
+        if (_table is not null)
+            await _table.ReloadServerData();
+    }
+
+    private async Task ConfirmDeleteAsync(HumanResourceListItem hr)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Permanently delete {hr.FullName}? This cannot be undone."))
+            {
+                await DeleteAsync(hr);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task DeleteAsync(HumanResourceListItem hr)
+    {
+        try
+        {
+            await HrService.DeleteAsync(hr.Id);
+            if (_table is not null)
+                await _table.ReloadServerData();
+            Snackbar.Add($"{hr.FullName} deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+}

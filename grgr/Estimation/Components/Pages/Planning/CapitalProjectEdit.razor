@@ -43,8 +43,6 @@
                         <EditForm Model="_model" OnValidSubmit="SaveAsync">
                             <DataAnnotationsValidator />
 
-                            <MudTextField @bind-Value="_model.JiraKey" Label="Jira Key" Variant="Variant.Outlined" MaxLength="10" Placeholder="e.g. RRWA" Class="mb-3" />
-
                             <MudTextField @bind-Value="_model.Name" Label="Name *" Variant="Variant.Outlined" For="() => _model.Name" Class="mb-3" />
 
                             <MudTextField @bind-Value="_model.Description" Label="Description" Variant="Variant.Outlined" Lines="3" Class="mb-4" />

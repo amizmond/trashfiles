@@ -31,7 +31,6 @@ public interface IFeatureService
     Task<FeatureTechnologyStack> AddFeatureTechnologyStackAsync(int featureId, int technologyStackId, int? estimatedEffort);
     Task SetFeatureTechnologyStackEffortAsync(int featureTechnologyStackId, int? estimatedEffort);
     Task RemoveFeatureTechnologyStackAsync(int featureTechnologyStackId);
-    Task SetFeatureLabelsAsync(int featureId, List<string> labelNames);
 }
 
 public class FeatureService : IFeatureService
@@ -179,7 +178,6 @@ public class FeatureService : IFeatureService
             .Include(f => f.BusinessOutcome)
             .Include(f => f.FeatureTeams).ThenInclude(ft => ft.Team)
             .Include(f => f.FeatureTechnologyStacks).ThenInclude(fts => fts.TechnologyStack)
-            .Include(f => f.FeatureLabels).ThenInclude(fl => fl.Label)
             .AsSplitQuery()
             .AsNoTracking().FirstOrDefaultAsync(f => f.Id == id);
     }
@@ -203,11 +201,13 @@ public class FeatureService : IFeatureService
             throw new KeyNotFoundException($"Feature {feature.Id} not found.");
         }
 
-        existing.ProjectKey = feature.ProjectKey;
         existing.JiraId = feature.JiraId;
+        existing.ProjectKey = feature.ProjectKey;
+        existing.IssueType = feature.IssueType;
         existing.Summary = feature.Summary;
         existing.Name = feature.Name;
         existing.Description = feature.Description;
+        existing.Labels = feature.Labels;
         existing.Comments = feature.Comments;
         existing.Ranking = feature.Ranking;
         existing.UnfundedOptionId = feature.UnfundedOptionId;
@@ -272,47 +272,5 @@ public class FeatureService : IFeatureService
         await using var db = await _ctx.CreateDbContextAsync();
         var e = await db.FeatureTechnologyStacks.FindAsync(featureTechnologyStackId);
         if (e is not null) { db.FeatureTechnologyStacks.Remove(e); await db.SaveChangesAsync(); }
-    }
-
-    public async Task SetFeatureLabelsAsync(int featureId, List<string> labelNames)
-    {
-        await using var db = await _ctx.CreateDbContextAsync();
-
-        // Ensure all label names exist in the Labels table
-        var existingLabels = await db.Labels
-            .Where(l => labelNames.Contains(l.Name))
-            .ToListAsync();
-
-        var existingNames = existingLabels.Select(l => l.Name).ToHashSet();
-        var newLabels = labelNames
-            .Where(n => !existingNames.Contains(n))
-            .Select(n => new Label { Name = n })
-            .ToList();
-
-        if (newLabels.Count > 0)
-        {
-            db.Labels.AddRange(newLabels);
-            await db.SaveChangesAsync();
-            existingLabels.AddRange(newLabels);
-        }
-
-        // Sync FeatureLabel junction records
-        var currentLinks = await db.FeatureLabels
-            .Where(fl => fl.FeatureId == featureId)
-            .ToListAsync();
-
-        var targetLabelIds = existingLabels.Select(l => l.Id).ToHashSet();
-        var currentLabelIds = currentLinks.Select(fl => fl.LabelId).ToHashSet();
-
-        // Remove labels no longer selected
-        var toRemove = currentLinks.Where(fl => !targetLabelIds.Contains(fl.LabelId)).ToList();
-        db.FeatureLabels.RemoveRange(toRemove);
-
-        // Add newly selected labels
-        var toAdd = targetLabelIds.Except(currentLabelIds)
-            .Select(labelId => new FeatureLabel { FeatureId = featureId, LabelId = labelId });
-        db.FeatureLabels.AddRange(toAdd);
-
-        await db.SaveChangesAsync();
     }
 }

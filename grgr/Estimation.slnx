@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Estimation.Core/Estimation.Core.csproj" />
+  <Project Path="Estimation.Excel/Estimation.Excel.csproj" Id="779a6160-f2cd-49eb-a5c4-307a3a9cf19f" />
+  <Project Path="Estimation/Estimation.csproj" />
+</Solution>

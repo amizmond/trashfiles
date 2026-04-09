@@ -1,0 +1,161 @@
+﻿@using MudBlazor
+<style> 
+    .mud-dialog .mud-dialog-title {
+        padding: 0;
+    }
+
+    .mud-dialog .mud-dialog-actions { 
+        flex: auto; 
+        display: flow; 
+        padding: 0;
+    } 
+
+    .axis-message-icon { 
+        margin: 0 10px; 
+    }
+
+    .modal-footer {
+        padding: 5px 15px;
+        color: var(--mud-palette-appbar-text);
+        background-color: var(--mud-palette-appbar-background);
+    }
+
+    .axis-modal-header {
+        padding: 10px 24px;
+    }
+
+    .axis-title-confirmation {
+        color: white;
+        background-color: rgb(255 152 0);
+    }
+
+    .axis-title-information {
+        color: var(--mud-palette-appbar-text);
+        background-color: var(--mud-palette-appbar-background);
+    }
+
+    .axis-title-warning {
+        color: white;
+        background-color: rgb(255 152 0);
+    }
+
+    .axis-title-error {
+        color: white;
+        background-color: #d32f2f;
+    }
+
+    .message-content {
+        min-width: 250px;
+    }
+
+    .axis-modal-footer-btn {
+        margin: 0 10px 0 10px;
+        min-width: 90px;
+    }
+
+    .mud-dialog .mud-dialog-content {
+        padding: 15px 24px;
+    }
+</style> 
+ 
+<MudDialog>
+    <TitleContent>
+        <div class="axis-modal-header @_headerClass">
+            <p class="modal-title">@Title</p>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="d-flex flex-row message-content">
+            @if (!string.IsNullOrEmpty(_iconName))
+            {
+                <MudIcon Icon="@_iconName" Color="@_iconColor" Size="Size.Large" Class="axis-message-icon"/>
+            }
+            <div class="justify-content-center align-items-center">
+                @MarkupString
+            </div>
+        </div>
+    </DialogContent>
+    <DialogActions >
+        <div class="modal-footer">
+            @if (!string.IsNullOrEmpty(CancelBtnText))
+            {
+                <MudButton Variant="Variant.Filled" Class="axis-modal-footer-btn" OnClick="OnCancelClick">@CancelBtnText</MudButton>
+            }
+            @if (!string.IsNullOrEmpty(OkBtnText))
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Success" Class="axis-modal-footer-btn" OnClick="OnOkClick">@OkBtnText</MudButton>
+            }
+        </div>
+    </DialogActions>
+</MudDialog> 
+ 
+@code { 
+    [CascadingParameter] 
+    private IMudDialogInstance MudDialog { get; set; } = null!; 
+ 
+    [Parameter] 
+    public MessageDialogStyle DialogType { get; set; } 
+ 
+    [Parameter] 
+    public string? Title { get; set; } 
+ 
+    [Parameter] 
+    public string Message { get; set; } = null!; 
+ 
+    [Parameter] 
+    public string? CancelBtnText { get; set; } 
+ 
+    [Parameter] 
+    public string? OkBtnText { get; set; }
+
+    private MarkupString MarkupString => (MarkupString)Message; 
+ 
+    private string _headerClass = null!; 
+ 
+    private Color _iconColor; 
+ 
+    private string _iconName = null!; 
+ 
+    private void OnOkClick()
+    { 
+        MudDialog.Close(DialogResult.Ok(true)); 
+    } 
+ 
+    private void OnCancelClick() 
+    { 
+        MudDialog.Cancel(); 
+    } 
+ 
+    protected override void OnInitialized() 
+    { 
+        InitDialogStyle(); 
+        base.OnInitialized(); 
+    } 
+ 
+    private void InitDialogStyle() 
+    { 
+        switch (DialogType) 
+        { 
+            case MessageDialogStyle.Confirmation: 
+                _iconName = Icons.Material.Filled.QuestionMark; 
+                _iconColor = Color.Warning; 
+                _headerClass = "axis-title-confirmation"; 
+                break; 
+            case MessageDialogStyle.Error: 
+                _iconName = Icons.Material.Filled.Error; 
+                _iconColor = Color.Error; 
+                _headerClass = "axis-title-error"; 
+                break; 
+            case MessageDialogStyle.Warning: 
+                _iconName = Icons.Material.Filled.Warning; 
+                _iconColor = Color.Warning; 
+                _headerClass = "axis-title-warning"; 
+                break; 
+            default: 
+                _iconName = Icons.Material.Filled.Info; 
+                _iconColor = Color.Info; 
+                _headerClass = "axis-title-information"; 
+                break; 
+        }
+    } 
+} 

@@ -313,22 +313,27 @@ public class Feature
 {
     public int Id { get; set; }
 
-    [Required]
-    [MaxLength(10)]
-    public string ProjectKey { get; set; } = string.Empty;
-
     [MaxLength(100)]
     public string? JiraId { get; set; }
 
+    [MaxLength(10)]
+    public string? ProjectKey { get; set; }
+
+    [MaxLength(50)]
+    public string? IssueType { get; set; }
+
     [Required]
     [MaxLength(255)]
-    public string? Summary { get; set; }
+    public string Summary { get; set; } = string.Empty;
 
     [MaxLength(200)]
     public string? Name { get; set; }
 
     [MaxLength(32767)]
     public string? Description { get; set; }
+
+    [MaxLength(2000)]
+    public string? Labels { get; set; }
 
     [MaxLength(250)]
     public string? Comments { get; set; }
@@ -352,8 +357,6 @@ public class Feature
     public virtual IList<FeatureTechnologyStack> FeatureTechnologyStacks { get; set; } = new List<FeatureTechnologyStack>();
 
     public virtual IList<FeatureTeam> FeatureTeams { get; set; } = new List<FeatureTeam>();
-
-    public virtual IList<FeatureLabel> FeatureLabels { get; set; } = new List<FeatureLabel>();
 }
 
 public class UnfundedOption
@@ -487,24 +490,4 @@ public class TeamMember
 
     public int HumanResourceId { get; set; }
     public virtual HumanResource HumanResource { get; set; } = null!;
-}
-
-public class Label
-{
-    public int Id { get; set; }
-
-    [Required]
-    [MaxLength(255)]
-    public string Name { get; set; } = null!;
-
-    public virtual IList<FeatureLabel> FeatureLabels { get; set; } = new List<FeatureLabel>();
-}
-
-public class FeatureLabel
-{
-    public int FeatureId { get; set; }
-    public virtual Feature Feature { get; set; } = null!;
-
-    public int LabelId { get; set; }
-    public virtual Label Label { get; set; } = null!;
 }

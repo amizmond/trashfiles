@@ -1,0 +1,106 @@
+@attribute [Route(RoutingPath.Pis)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@inject IPiService PiService
+@inject NavigationManager Navigation
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudToolBar>
+            <MudSpacer />
+            <MudTextField @bind-Value="_search" Placeholder="Search..." Immediate
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Clearable Class="mr-4" Style="min-width:240px" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Add"
+                       OnClick="@(() => Navigation.NavigateTo(RoutingPath.PisNew))">New PI</MudButton>
+        </MudToolBar>
+        <MudDivider />
+        <MudDataGrid T="Pi" Items="@_pis" QuickFilter="@_quickFilter"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" LoadingProgressColor="Color.Primary">
+            <Columns>
+                <PropertyColumn Property="p => p.Name" Title="Name" Sortable="true">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">@context.Item.Name</MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <TemplateColumn Title="Priority" Sortable="false">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.Priority))
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                @context.Item.Priority
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Start" Sortable="false">
+                    <CellTemplate>
+                        @context.Item.StartDate?.ToString("yyyy-MM-dd")
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="End" Sortable="false">
+                    <CellTemplate>
+                        @context.Item.EndDate?.ToString("yyyy-MM-dd")
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Features" Sortable="false">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small">@context.Item.Features.Count</MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false">
+                    <CellTemplate>
+                        <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => Navigation.NavigateTo($"{RoutingPath.Pis}/{context.Item.Id}"))" />
+                        <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No PIs found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="Pi" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+
+@code {
+    private List<Pi> _pis = new();
+    private bool _loading = true;
+    private string? _search;
+
+    private Func<Pi, bool> _quickFilter => p =>
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return true;
+        return p.Name.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || (p.Priority?.Contains(_search, StringComparison.OrdinalIgnoreCase) ?? false);
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _pis = await PiService.GetAllAsync(); }
+        finally { _loading = false; }
+    }
+
+    private async Task ConfirmDeleteAsync(Pi pi)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {pi.Name} ?"))
+            {
+                await PiService.DeleteAsync(pi.Id);
+                _pis.Remove(pi);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+}

@@ -1,0 +1,117 @@
+@attribute [Route(RoutingPath.Base)]
+@using Estimation.Core.Services
+@using Estimation.Components.Pages.Dashboard
+
+@inject IDashboardService DashboardService
+
+<PageTitle>Home</PageTitle>
+
+<div class="container-fluid mt-4 mb-5">
+@*     <HomeOverview /> *@
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mt-6" />
+    }
+    else if (_data is not null)
+    {
+        <div class="d-flex align-center mt-6 mb-3">
+            <MudText Typo="Typo.h5" Class="mr-4">Planing Statistics</MudText>
+            <MudSelect T="int?" Value="@_selectedCapitalProjectId" ValueChanged="OnCapitalProjectChanged"
+                       Label="ART Level" Variant="Variant.Outlined" Dense="true"
+                       Style="max-width: 300px;" Clearable="true">
+                @foreach (var cp in _capitalProjects)
+                {
+                    <MudSelectItem T="int?" Value="@cp.Id">@cp.Name</MudSelectItem>
+                }
+            </MudSelect>
+            @if (_refreshing)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="ml-3" />
+            }
+        </div>
+
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <PiTimelineCard Data="@_data.PiTimeline" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <FeaturesByPiChart Data="@_data.FeaturesByPi" />
+            </MudItem>
+
+@*             <MudItem xs="12" md="6">
+                <FeaturesByEpicChart Data="@_data.FeaturesByEpic" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <FeaturesByBusinessOutcomeChart Data="@_data.FeaturesByBusinessOutcome" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <FeaturesByUnfundedChart Data="@_data.FeaturesByUnfundedStatus" />
+            </MudItem> *@
+        </MudGrid>
+
+@*         <MudText Typo="Typo.h5" Class="mt-6 mb-3">HR Statistics</MudText>
+
+        <MudGrid>
+
+            <MudItem xs="12" md="6">
+                <TeamWorkloadChart Data="@_data.TeamWorkload" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <TeamSizeChart Data="@_data.TeamSizes" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <SkillCoverageChart Data="@_data.SkillCoverage" />
+            </MudItem>
+
+            <MudItem xs="12" md="6">
+                <ResourcesByLocationChart Data="@_data.ResourcesByLocation" />
+            </MudItem>
+        </MudGrid> *@
+    }
+</div>
+
+@code {
+    private bool _loading = true;
+    private bool _refreshing;
+    private DashboardData? _data;
+    private List<CapitalProjectOption> _capitalProjects = new();
+    private int? _selectedCapitalProjectId;
+    private CancellationTokenSource? _filterCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cpTask = DashboardService.GetCapitalProjectOptionsAsync();
+        var dataTask = DashboardService.GetDashboardDataAsync();
+        await Task.WhenAll(cpTask, dataTask);
+        _capitalProjects = cpTask.Result;
+        _data = dataTask.Result;
+        _loading = false;
+    }
+
+    private async Task OnCapitalProjectChanged(int? value)
+    {
+        _selectedCapitalProjectId = value;
+        _refreshing = true;
+
+        _filterCts?.Cancel();
+        _filterCts?.Dispose();
+        var cts = _filterCts = new CancellationTokenSource();
+
+        try
+        {
+            var data = await DashboardService.GetDashboardDataAsync(_selectedCapitalProjectId, cts.Token);
+            if (!cts.Token.IsCancellationRequested)
+            {
+                _data = data;
+                _refreshing = false;
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+}

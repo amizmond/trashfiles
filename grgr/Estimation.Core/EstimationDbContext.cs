@@ -38,8 +38,6 @@ public class EstimationDbContext : DbContext
     public DbSet<City> Cities => Set<City>();
     public DbSet<Country> Countries => Set<Country>();
     public DbSet<TeamRole> TeamRoles => Set<TeamRole>();
-    public DbSet<Label> Labels => Set<Label>();
-    public DbSet<FeatureLabel> FeatureLabels => Set<FeatureLabel>();
     public DbSet<JiraToken> JiraTokens => Set<JiraToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -147,8 +145,6 @@ public class EstimationDbContext : DbContext
             e.Property(cp => cp.JiraKey).HasMaxLength(10);
             e.Property(cp => cp.Name).IsRequired().HasMaxLength(100);
             e.Property(cp => cp.Description).HasMaxLength(500);
-
-            e.HasIndex(cp => cp.JiraKey);
         });
 
         modelBuilder.Entity<CapitalProjectStrategicObjective>(e =>
@@ -224,11 +220,13 @@ public class EstimationDbContext : DbContext
         modelBuilder.Entity<Feature>(e =>
         {
             e.HasKey(f => f.Id);
-            e.Property(f => f.ProjectKey).IsRequired().HasMaxLength(10);
             e.Property(f => f.JiraId).HasMaxLength(100);
-            e.Property(f => f.Summary).IsRequired(false).HasMaxLength(255);
+            e.Property(f => f.ProjectKey).HasMaxLength(10);
+            e.Property(f => f.IssueType).HasMaxLength(50);
+            e.Property(f => f.Summary).IsRequired().HasMaxLength(255);
             e.Property(f => f.Name).IsRequired(false).HasMaxLength(200);
             e.Property(f => f.Description).HasMaxLength(32767);
+            e.Property(f => f.Labels).HasMaxLength(2000);
             e.Property(f => f.Comments).HasMaxLength(250);
             e.HasOne(f => f.BusinessOutcome).WithMany(bo => bo.Features)
              .HasForeignKey(f => f.BusinessOutcomeId).OnDelete(DeleteBehavior.SetNull).IsRequired(false);
@@ -359,22 +357,6 @@ public class EstimationDbContext : DbContext
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).IsRequired().HasMaxLength(50);
             e.Property(x => x.Description).HasMaxLength(100);
-        });
-
-        modelBuilder.Entity<Label>(e =>
-        {
-            e.HasKey(l => l.Id);
-            e.Property(l => l.Name).IsRequired().HasMaxLength(255);
-            e.HasIndex(l => l.Name).IsUnique();
-        });
-
-        modelBuilder.Entity<FeatureLabel>(e =>
-        {
-            e.HasKey(fl => new { fl.FeatureId, fl.LabelId });
-            e.HasOne(fl => fl.Feature).WithMany(f => f.FeatureLabels)
-             .HasForeignKey(fl => fl.FeatureId).OnDelete(DeleteBehavior.Cascade);
-            e.HasOne(fl => fl.Label).WithMany(l => l.FeatureLabels)
-             .HasForeignKey(fl => fl.LabelId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<JiraToken>(e =>

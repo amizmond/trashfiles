@@ -1,0 +1,121 @@
+@attribute [Route(RoutingPath.Upload)]
+
+@using Estimation.Core.Services
+@using Serilog
+
+@inject IUploadLxlTeamDataService LxlService
+@inject IUploadMasterService MasterService
+@inject ISnackbar Snackbar
+
+<PageTitle>Upload</PageTitle>
+
+@if (_isLoading)
+{
+    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-4" />
+}
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6" Class="mb-4">Excel Upload</MudText>
+
+        <MudGrid>
+            <MudItem xs="12" sm="6">
+                <MudPaper Class="pa-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-3 font-weight-bold">LXL Team Data</MudText>
+                    <MudFileUpload T="IBrowserFile"
+                                   Accept=".xlsx,.xls"
+                                   MaximumFileCount="1"
+                                   FilesChanged="OnLxlFileSelected">
+                        <ActivatorContent>
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.UploadFile"
+                                       Disabled="_isLoading">
+                                Upload LXL team data
+                            </MudButton>
+                        </ActivatorContent>
+                    </MudFileUpload>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" sm="6">
+                <MudPaper Class="pa-4" Elevation="1">
+                    <MudText Typo="Typo.subtitle1" Class="mb-3 font-weight-bold">Master</MudText>
+                    <MudFileUpload T="IBrowserFile"
+                                   Accept=".xlsx,.xls"
+                                   MaximumFileCount="1"
+                                   FilesChanged="OnMasterFileSelected">
+                        <ActivatorContent>
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.UploadFile"
+                                       Disabled="_isLoading">
+                                Upload Master
+                            </MudButton>
+                        </ActivatorContent>
+                    </MudFileUpload>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+</div>
+
+@code {
+    private bool _isLoading;
+
+    private async Task OnLxlFileSelected(IBrowserFile file)
+    {
+        if (file == null) return;
+
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            await using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            await LxlService.UploadAsync(stream);
+            Snackbar.Add("LXL team data uploaded successfully.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to upload LXL team data");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnMasterFileSelected(IBrowserFile file)
+    {
+        if (file == null) return;
+
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            await using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            await MasterService.UploadAsync(stream);
+            Snackbar.Add("Master data uploaded successfully.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to upload Master data");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+}

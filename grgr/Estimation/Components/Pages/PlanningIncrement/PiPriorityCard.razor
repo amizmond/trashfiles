@@ -1,0 +1,262 @@
+@using Estimation.Core.Models
+
+<div class="pi-priority-card @CapacityBorderClass @PriorityLightClass"
+     data-feature-id="@Feature.Id"
+     draggable="true">
+
+    <div class="d-flex align-center gap-3" style="width:100%">
+
+        <MudIcon Icon="@Icons.Material.Filled.DragIndicator"
+                 Size="Size.Small"
+                 Class="mud-text-secondary" Style="cursor:grab" />
+
+        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined"
+                 Style="cursor:pointer" OnClick="StartEditingRanking">
+            @Feature.Ranking
+        </MudChip>
+
+        <MudPopover Open="_isEditingRanking" AnchorOrigin="Origin.BottomCenter" TransformOrigin="Origin.TopCenter"
+                    Class="pa-4" Style="min-width:200px">
+            <MudNumericField T="int?" @bind-Value="@_rankingValue"
+                             Label="Ranking" Variant="Variant.Outlined"
+                             AutoFocus="true"/>
+            <div class="d-flex justify-end gap-2 mt-2">
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="CancelEditing">Cancel</MudButton>
+                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveRanking">Save</MudButton>
+            </div>
+        </MudPopover>
+
+        <div class="flex-grow-1" style="min-width:0">
+            @if (ShowCapitalProject)
+            {
+                var capitalProjects = Feature.BusinessOutcome?.PortfolioEpic?.StrategicObjectivePortfolioEpics
+                    .SelectMany(ppe => ppe.StrategicObjective.CapitalProjectStrategicObjectives)
+                    .Select(cpp => cpp.CapitalProject.Name)
+                    .Where(n => !string.IsNullOrEmpty(n))
+                    .Distinct();
+                @if (capitalProjects?.Any() == true)
+                {
+                    <div class="d-flex align-center gap-2 mb-1">
+                        <span style="min-width:55px; display:inline-block">CP:</span>
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">@string.Join(", ", capitalProjects)</MudText>
+                    </div>
+                }
+            }
+            @if (ShowStrategicObjective)
+            {
+                var programs = Feature.BusinessOutcome?.PortfolioEpic?.StrategicObjectivePortfolioEpics
+                    .Select(ppe => ppe.StrategicObjective)
+                    .Where(pp => !string.IsNullOrEmpty(pp.JiraId));
+                @if (programs?.Any() == true)
+                {
+                    @foreach (var pp in programs)
+                    {
+                        <div class="d-flex align-center gap-2 mb-1">
+                            <span style="min-width:55px; display:inline-block">PP:</span>
+                            <a href="@(JiraTaskUrl + pp.JiraId)" target="_blank" style="text-decoration:none" @onclick:stopPropagation>
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @pp.JiraId
+                                </MudChip>
+                            </a>
+                            @if (!string.IsNullOrEmpty(pp.Name))
+                            {
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary">@pp.Name</MudText>
+                            }
+                        </div>
+                    }
+                }
+            }
+            @if (ShowPortfolioEpic)
+            {
+                var epic = Feature.BusinessOutcome?.PortfolioEpic;
+                @if (epic is not null)
+                {
+                    <div class="d-flex align-center gap-2 mb-1">
+                        <span style="min-width:55px; display:inline-block">PE:</span>
+                        @if (!string.IsNullOrEmpty(epic.JiraId))
+                        {
+                            <a href="@(JiraTaskUrl + epic.JiraId)" target="_blank" style="text-decoration:none" @onclick:stopPropagation>
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @epic.JiraId
+                                </MudChip>
+                            </a>
+                        }
+                        @if (!string.IsNullOrEmpty(epic.Name))
+                        {
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@epic.Name</MudText>
+                        }
+                    </div>
+                }
+            }
+            @if (ShowBusinessOutcome)
+            {
+                <div class="d-flex align-center gap-2 mb-1">
+                    <span style="min-width:55px; display:inline-block">BO:</span>
+                    @if (!string.IsNullOrEmpty(Feature.BusinessOutcome?.JiraId))
+                    {
+                        <a href="@(JiraTaskUrl + Feature.BusinessOutcome.JiraId)" target="_blank" style="text-decoration:none" @onclick:stopPropagation>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined" Style="cursor:pointer">
+                                @Feature.BusinessOutcome.JiraId
+                            </MudChip>
+                        </a>
+                    }
+                    @if (!string.IsNullOrEmpty(Feature.BusinessOutcome?.Name))
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">@Feature.BusinessOutcome.Name</MudText>
+                    }
+                </div>
+            }
+            <div class="d-flex align-center gap-2">
+                <span style="min-width:55px; display:inline-block">Feature:</span>
+                @if (!string.IsNullOrEmpty(Feature.JiraId))
+                {
+                    <a href="@(JiraTaskUrl + Feature.JiraId)" target="_blank" style="text-decoration:none" @onclick:stopPropagation>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">
+                            @Feature.JiraId
+                        </MudChip>
+                    </a>
+                }
+                <MudText Typo="Typo.body2">@Feature.Name</MudText>
+            </div>
+        </div>
+
+        <div class="d-flex flex-column gap-1 flex-shrink-0" style="text-align:right">
+            <div class="d-flex align-center gap-1 justify-end">
+                @foreach (var ft in Feature.FeatureTeams)
+                {
+                    <a href="@($"{RoutingPath.Teams}/{ft.Team.Id}")" target="_blank" style="text-decoration:none" @onclick:stopPropagation>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Style="cursor:pointer">
+                            @ft.Team.Name
+                        </MudChip>
+                    </a>
+                }
+            </div>
+            <div class="d-flex align-center gap-1 justify-end flex-wrap">
+                @foreach (var fts in Feature.FeatureTechnologyStacks)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                        @fts.TechnologyStack.Name: @(fts.EstimatedEffort ?? 0)
+                    </MudChip>
+                }
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">
+                    Total: @Feature.FeatureTechnologyStacks.Sum(fts => fts.EstimatedEffort ?? 0)
+                </MudChip>
+            </div>
+        </div>
+
+        <MudDivider Vertical FlexItem />
+
+        @if (CapacityCheckEnabled && CapacityResult is not null)
+        {
+            <MudIconButton Icon="@Icons.Material.Filled.Assessment"
+                           Variant="Variant.Outlined"
+                           Color="@(CapacityResult.IsFullyReserved ? Color.Success : CapacityResult.TotalReserved > 0 ? Color.Warning : Color.Error)"
+                           Size="Size.Small"
+                           OnClick="() => OnShowCapacityDetails.InvokeAsync(CapacityResult)" />
+        }
+
+        <MudIconButton Icon="@Icons.Material.Filled.MenuOpen"
+                       Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                       OnClick="() => OnShowDetails.InvokeAsync(Feature)" />
+
+        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                       Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                       OnClick="() => OnOpenInNewWindow.InvokeAsync(Feature.Id)" />
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Feature.Description))
+    {
+        <MudText Typo="Typo.caption" Class="mud-text-secondary" Style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; width:100%">
+            @Feature.Description
+        </MudText>
+    }
+</div>
+
+<style>
+    .pi-priority-card.capacity-ok {
+        border-bottom: 3px solid var(--mud-palette-success);
+    }
+
+    .pi-priority-card.capacity-partial {
+        border-bottom: 3px solid var(--mud-palette-warning);
+    }
+
+    .pi-priority-card.capacity-fail {
+        border-bottom: 3px solid var(--mud-palette-error);
+    }
+
+    .pi-priority-card.priority-ok {
+        border-left: 4px solid var(--mud-palette-success);
+    }
+
+    .pi-priority-card.priority-partial {
+        border-left: 4px solid var(--mud-palette-warning);
+    }
+
+    .pi-priority-card.priority-fail {
+        border-left: 4px solid var(--mud-palette-error);
+    }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public Feature Feature { get; set; } = null!;
+    [Parameter] public int EstimatedTotal { get; set; }
+    [Parameter] public string? JiraTaskUrl { get; set; }
+    [Parameter] public FeatureCapacityResult? CapacityResult { get; set; }
+    [Parameter] public bool CapacityCheckEnabled { get; set; }
+    [Parameter] public bool ShowCapitalProject { get; set; }
+    [Parameter] public bool ShowStrategicObjective { get; set; }
+    [Parameter] public bool ShowPortfolioEpic { get; set; }
+    [Parameter] public bool ShowBusinessOutcome { get; set; } = true;
+    [Parameter] public EventCallback<Feature> OnShowDetails { get; set; }
+    [Parameter] public EventCallback<int> OnOpenInNewWindow { get; set; }
+    [Parameter] public EventCallback<(Feature Feature, int? OldRanking, int? NewRanking)> OnRankingChanged { get; set; }
+    [Parameter] public EventCallback<FeatureCapacityResult> OnShowCapacityDetails { get; set; }
+
+    private bool _isEditingRanking;
+    private int? _rankingValue;
+
+    private string CapacityBorderClass
+    {
+        get
+        {
+            if (!CapacityCheckEnabled || CapacityResult is null) return "";
+            if (CapacityResult.IsFullyReserved) return "capacity-ok";
+            if (CapacityResult.TotalReserved > 0) return "capacity-partial";
+            return "capacity-fail";
+        }
+    }
+
+    private string PriorityLightClass
+    {
+        get
+        {
+            if (!CapacityCheckEnabled || CapacityResult is null) return "";
+            if (CapacityResult.IsFullyReserved) return "priority-ok";
+            if (CapacityResult.TotalReserved > 0) return "priority-partial";
+            return "priority-fail";
+        }
+    }
+
+    private void StartEditingRanking()
+    {
+        _rankingValue = Feature.Ranking;
+        _isEditingRanking = true;
+    }
+
+    private void CancelEditing()
+    {
+        _isEditingRanking = false;
+    }
+
+    private async Task SaveRanking()
+    {
+        _isEditingRanking = false;
+        if (_rankingValue != Feature.Ranking)
+        {
+            var oldRanking = Feature.Ranking;
+            Feature.Ranking = _rankingValue;
+            await OnRankingChanged.InvokeAsync((Feature, oldRanking, _rankingValue));
+        }
+    }
+}

@@ -1,0 +1,42 @@
+@using Estimation.Core.Services
+
+<MudPaper Class="pa-4 rounded-lg" Elevation="2">
+    <MudText Typo="Typo.h6" Class="mb-3">Features by Funding Status</MudText>
+    @if (Data is { Count: > 0 })
+    {
+        <div class="d-flex justify-center">
+            <MudChart T="double" ChartType="ChartType.Donut"
+                      ChartSeries="@_series"
+                      ChartLabels="@_labels"
+                      Width="300px" Height="300px" />
+        </div>
+        <MudStack Row Justify="Justify.Center" Class="mt-2 flex-wrap">
+            @foreach (var item in Data)
+            {
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Text">@item.Label: @((int)item.Value)</MudChip>
+            }
+        </MudStack>
+    }
+    else
+    {
+        <MudText Typo="Typo.body2" Color="Color.Default">No data available</MudText>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public List<ChartItem> Data { get; set; } = new();
+
+    private string[] _labels = [];
+    private List<ChartSeries<double>> _series = new();
+
+    protected override void OnParametersSet()
+    {
+        if (Data is not { Count: > 0 }) return;
+
+        _labels = Data.Select(d => d.Label).ToArray();
+        _series = new List<ChartSeries<double>>
+        {
+            new() { Data = Data.Select(d => d.Value).ToArray() }   
+        };
+    }
+}

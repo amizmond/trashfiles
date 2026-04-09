@@ -1,0 +1,275 @@
+@attribute [Route(RoutingPath.Teams)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@inject ITeamService TeamService
+@inject NavigationManager Navigation
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+
+@implements IDisposable
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">Teams</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showMembers" Label="Members" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTechStacks" Label="Technology Stacks" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       Style="margin-right: 10px"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.GroupAdd"
+                       Style="margin-right: 10px"
+                       OnClick="@(() => Navigation.NavigateTo(RoutingPath.TeamsNew))">
+                New
+            </MudButton>
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudSelect T="string" Label="Technology Stacks" MultiSelection
+                           @bind-SelectedValues="FilterTechStackNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var ts in _availableTechStacks)
+                    {
+                        <MudSelectItem T="string" Value="@ts">@ts</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+
+        <MudDataGrid T="TeamRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" Bordered="true" LoadingProgressColor="Color.Primary">
+            <Columns>
+                <PropertyColumn Property="r => r.Name" Title="Name" Sortable="true" Hidden="!_showName">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">@context.Item.Name</MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <TemplateColumn Title="Members" Sortable="false" CellStyle="text-align:right; width:150px;" Hidden="!_showMembers">
+                    <CellTemplate>
+                        <MudAvatarGroup Max="4" Spacing="3">
+                            @foreach (var m in context.Item.Members.Take(4))
+                            {
+                                <MudTooltip Text="@m">
+                                    <MudAvatar Color="Color.Secondary" Size="Size.Small">
+                                        @m.First()
+                                    </MudAvatar>
+                                </MudTooltip>
+                            }
+                        </MudAvatarGroup>
+                        @if (context.Item.Members.Count > 4)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary ml-1">
+                                +@(context.Item.Members.Count - 4) more
+                            </MudText>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Technology Stacks" Sortable="false" CellStyle="text-align:right;" Hidden="!_showTechStacks">
+                    <CellTemplate>
+                        @if (context.Item.TechStacks.Count > 0)
+                        {
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var ts in context.Item.TechStacks)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary"
+                                             Variant="Variant.Filled">
+                                        @ts
+                                    </MudChip>
+                                }
+                            </div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
+                    <CellTemplate>
+                        <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" Href="@($"{RoutingPath.Teams}/{context.Item.Id}")" Target="_blank" />
+                        <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No teams found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="TeamRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+@code {
+    private List<TeamRow> _rows = new();
+    private List<TeamRow> _filteredRows = new();
+    private bool _loading = true;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Column visibility ---
+    private bool _showName = true;
+    private bool _showMembers = true;
+    private bool _showTechStacks = true;
+    private bool _showActions = true;
+
+    // --- Available filter values ---
+    private List<string> _availableTechStacks = new();
+
+    // --- Filter properties with debounced recomputation ---
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterTechStackNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterTechStackNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterTechStackNames
+    {
+        get => _filterTechStackNamesBacking;
+        set { _filterTechStackNamesBacking = value; _filterTechStackNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterTechStackNamesBacking = Array.Empty<string>();
+        _filterTechStackNamesSet.Clear();
+        RecomputeFilteredRows();
+    }
+
+    private void RecomputeFilteredRows()
+    {
+        _filteredRows = _rows.Where(MatchesFilter).ToList();
+    }
+
+    private bool MatchesFilter(TeamRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!r.Name.Contains(s, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        if (_filterTechStackNamesSet.Count > 0
+            && !r.TechStacks.Any(ts => _filterTechStackNamesSet.Contains(ts)))
+            return false;
+
+        return true;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var teams = await TeamService.GetAllAsync();
+            _rows = teams.Select(t => new TeamRow(
+                Id: t.Id,
+                Name: t.Name,
+                Members: t.TeamMembers.Select(m => m.HumanResource.FullName).ToList(),
+                TechStacks: t.TeamTechnologyStacks.Select(tts => tts.TechnologyStack.Name).ToList()
+            )).ToList();
+
+            _availableTechStacks = _rows
+                .SelectMany(r => r.TechStacks)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            RecomputeFilteredRows();
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task ConfirmDeleteAsync(TeamRow row)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {row.Name} ?"))
+            {
+                await TeamService.DeleteAsync(row.Id);
+                _rows.RemoveAll(r => r.Id == row.Id);
+                RecomputeFilteredRows();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record TeamRow(
+        int Id,
+        string Name,
+        List<string> Members,
+        List<string> TechStacks
+    );
+}

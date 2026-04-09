@@ -15,6 +15,10 @@ public class JiraUpdateIssueRequest
 {
     public string Summary { get; set; } = string.Empty;
     public string? Description { get; set; }
+    public string? FeatureName { get; set; }
+    public string? IssueType { get; set; }
+    public List<string>? Labels { get; set; }
+    public string? BusinessOutcomeKey { get; set; }
 }
 
 public class JiraIssueResponse

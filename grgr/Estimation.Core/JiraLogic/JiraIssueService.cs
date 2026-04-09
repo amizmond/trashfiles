@@ -89,6 +89,20 @@ public class JiraIssueService : IJiraIssueService
         if (request.Description is not null)
             fields["description"] = request.Description;
 
+        if (!string.IsNullOrEmpty(request.FeatureName) && !string.IsNullOrEmpty(_settings.FeatureNameCustomFieldId))
+            fields[_settings.FeatureNameCustomFieldId] = request.FeatureName;
+
+        if (request.Labels is not null)
+        {
+            var labelsArray = new JsonArray();
+            foreach (var label in request.Labels)
+                labelsArray.Add(JsonValue.Create(label));
+            fields["labels"] = labelsArray;
+        }
+
+        if (!string.IsNullOrEmpty(request.BusinessOutcomeKey) && !string.IsNullOrEmpty(_settings.BusinessOutcomeCustomFieldId))
+            fields[_settings.BusinessOutcomeCustomFieldId] = request.BusinessOutcomeKey;
+
         var body = new JsonObject { ["fields"] = fields };
         var json = body.ToJsonString();
 

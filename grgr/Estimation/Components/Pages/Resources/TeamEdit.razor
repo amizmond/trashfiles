@@ -1,0 +1,537 @@
+@attribute [Route(RoutingPath.TeamsNew)]
+@attribute [Route(RoutingPath.TeamsEdit)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Estimation.Services
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.JSInterop
+@using Serilog
+
+@inject ITeamService TeamService
+@inject IHumanResourceService HrService
+@inject ISkillService SkillService
+@inject ITechnologyStackService TsService
+@inject ITeamMemberUploadService UploadService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+
+<PageTitle>@(_isNew ? "New Team" : _model.Name)</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Navigation.NavigateTo(RoutingPath.Teams))" />
+            <MudText Typo="Typo.h6">@(_isNew ? "New Team" : _model.Name)</MudText>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_saving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+            <div style="@(_saving ? "pointer-events:none;opacity:0.6" : "")">
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="5">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">Details</MudText>
+                        <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                            <DataAnnotationsValidator />
+                            <MudTextField @bind-Value="_model.Name" Label="Name *"
+                                          Variant="Variant.Outlined" For="() => _model.Name" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.FullName" Label="Full Name"
+                                          Variant="Variant.Outlined" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.OptionalTeamTag" Label="Optional Team Tag"
+                                          Variant="Variant.Outlined" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.Description" Label="Description"
+                                          Variant="Variant.Outlined" Lines="3" Class="mb-4" />
+                            @if (!string.IsNullOrEmpty(_error))
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mb-3">@_error</MudAlert>
+                            }
+                            <div class="d-flex gap-2">
+                                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                                           Color="Color.Primary" Disabled="_saving"
+                                           StartIcon="@Icons.Material.Filled.Save">
+                                    @(_isNew ? "Create" : "Save")
+                                </MudButton>
+                                @if (!_isNew)
+                                {
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                               OnClick="ConfirmDeleteAsync" Class="ml-auto"
+                                               StartIcon="@Icons.Material.Filled.Delete">Delete</MudButton>
+                                }
+                            </div>
+                        </EditForm>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="7">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg" Style="height:100%">
+                        <MudText Typo="Typo.h6" Class="mb-4">Skills Summary</MudText>
+                        @if (_isNew)
+                        {
+                            <MudText Class="mud-text-secondary" Typo="Typo.body2">
+                                Save the team first to see skills summary.
+                            </MudText>
+                        }
+                        else if (!_model.TeamMembers.Any())
+                        {
+                            <MudText Class="mud-text-secondary" Typo="Typo.body2">
+                                No members yet. Add members to see skills summary.
+                            </MudText>
+                        }
+                        else
+                        {
+                            <div class="d-flex flex-wrap gap-3">
+                                @foreach (var summary in GetSkillsSummary())
+                                {
+                                    <MudPaper Elevation="0" Class="pa-3 rounded-lg" Style="border: 1px solid var(--mud-palette-lines-default); min-width:140px">
+                                        <MudText Typo="Typo.body2" Class="font-weight-bold">@summary.SkillName</MudText>
+                                        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                            @summary.MemberCount member@(summary.MemberCount != 1 ? "s" : "")
+                                        </MudText>
+                                        @if (summary.Levels.Any())
+                                        {
+                                            <div class="d-flex flex-wrap gap-1 mt-1">
+                                                @foreach (var level in summary.Levels)
+                                                {
+                                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary"
+                                                             Variant="Variant.Filled">
+                                                        @level.Name: @level.Count
+                                                    </MudChip>
+                                                }
+                                            </div>
+                                        }
+                                    </MudPaper>
+                                }
+                            </div>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+
+            @if (!_isNew)
+            {
+                <MudPaper Elevation="2" Class="rounded-lg mt-4">
+                    <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:48px; margin-bottom:15px;">
+                        <MudText Typo="Typo.h6" Style="white-space:nowrap">Technology Stacks</MudText>
+                        <MudSpacer />
+                        <MudSelect T="int?"
+                                   @bind-Value="_selectedTsId"
+                                   Label="Select technology stack"
+                                   Variant="Variant.Text"
+                                   Dense="true"
+                                   Style="min-width:180px">
+                            @foreach (var ts in _availableStacks)
+                            {
+                                <MudSelectItem T="int?" Value="ts.Id">@ts.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                        <MudButton Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.Add"
+                                   OnClick="AddTechnologyStackAsync"
+                                   Disabled="_selectedTsId is null">
+                            Add
+                        </MudButton>
+                    </MudToolBar>
+                    <MudDivider />
+                    @if (!_model.TeamTechnologyStacks.Any())
+                    {
+                        <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                            No technology stacks assigned yet.
+                        </MudText>
+                    }
+                    else
+                    {
+                        <div class="d-flex flex-wrap gap-2 pa-3">
+                            @foreach (var tts in _model.TeamTechnologyStacks)
+                            {
+                                <MudChip T="string" Size="Size.Medium" Color="Color.Primary"
+                                         Variant="Variant.Filled"
+                                         OnClose="() => RemoveTechnologyStackAsync(tts.TechnologyStackId)">
+                                    @tts.TechnologyStack.Name
+                                </MudChip>
+                            }
+                        </div>
+                    }
+                </MudPaper>
+            }
+
+            @if (!_isNew)
+            {
+                <MudPaper Elevation="2" Class="rounded-lg mt-4">
+                    <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                        <MudText Typo="Typo.h6" Style="white-space:nowrap">Members</MudText>
+                        <MudSpacer />
+                        <MudAutocomplete T="HumanResource"
+                                         @bind-Value="_selectedHr"
+                                         Label="Search member"
+                                         SearchFunc="SearchHrAsync"
+                                         ToStringFunc="@(hr => hr?.FullName ?? "")"
+                                         Variant="Variant.Outlined"
+                                         Dense="true"
+                                         Style="min-width:200px;"
+                                         MinCharacters="2"
+                                         DebounceInterval="300"
+                                         ResetValueOnEmptyText="true" />
+                        <MudButton Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.PersonAdd"
+                                   OnClick="AddMemberAsync"
+                                   Disabled="_selectedHr is null">
+                            Add
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Primary"
+                                   Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.Download"
+                                   OnClick="DownloadTemplateAsync"
+                                   Disabled="_saving">
+                            Download Template
+                        </MudButton>
+                        <MudFileUpload T="IBrowserFile"
+                                       Accept=".xlsx"
+                                       MaximumFileCount="1"
+                                       FilesChanged="OnUploadFileSelected">
+                            <ActivatorContent>
+                                <MudButton Variant="Variant.Outlined"
+                                           Color="Color.Secondary"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.UploadFile"
+                                           Disabled="_saving">
+                                    Upload
+                                </MudButton>
+                            </ActivatorContent>
+                        </MudFileUpload>
+                    </MudToolBar>
+                    <MudDivider />
+
+                    @if (!_model.TeamMembers.Any())
+                    {
+                        <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                            No members yet.
+                        </MudText>
+                    }
+                    else
+                    {
+                        <MudTable T="TeamMember"
+                                  Items="_model.TeamMembers"
+                                  Hover
+                                  Striped
+                                  Dense
+                                  Bordered="true"
+                                  Class="rounded-0"
+                                  HorizontalScrollbar
+                                  Elevation="0">
+
+                            <HeaderContent>
+                                <MudTh Class="sticky-left-header" Style="min-width:250px">Full Name</MudTh>
+                                <MudTh Class="sticky-left-header" Style="min-width:130px; left:250px">Role</MudTh>
+                                @foreach (var skill in _allSkills)
+                                {
+                                    <MudTh Style="text-align:center; min-width:130px">
+                                        <MudTooltip Text="@skill.Description" Placement="Placement.Top">
+                                            <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                                @skill.Name
+                                            </MudText>
+                                        </MudTooltip>
+                                    </MudTh>
+                                }
+                                <MudTh Class="sticky-right-header" Style="text-align:right; min-width:120px">Actions</MudTh>
+                            </HeaderContent>
+
+                            <RowTemplate>
+                                <MudTd DataLabel="Full Name" Class="sticky-left">
+                                    <div class="d-flex align-center gap-2">
+                                        <MudAvatar Color="Color.Primary" Size="Size.Small">
+                                            @context.HumanResource.FullName.First()
+                                        </MudAvatar>
+                                        <div>
+                                            <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                                @context.HumanResource.FullName
+                                            </MudText>
+                                            @if (!string.IsNullOrEmpty(context.HumanResource.EmployeeNumber))
+                                            {
+                                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                                    #@context.HumanResource.EmployeeNumber · @context.HumanResource.EmployeeName
+                                                </MudText>
+                                            }
+                                            else
+                                            {
+                                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                                    @context.HumanResource.EmployeeName
+                                                </MudText>
+                                            }
+                                        </div>
+                                    </div>
+                                </MudTd>
+
+                                <MudTd DataLabel="Role" Class="sticky-left" Style="left:250px">
+                                    <MudText Typo="Typo.body2">
+                                        @(context.HumanResource.TeamRole?.Name)
+                                    </MudText>
+                                </MudTd>
+
+                                @foreach (var skill in _allSkills)
+                                {
+                                    var assignment = context.HumanResource.HumanResourceSkills
+                                        ?.FirstOrDefault(hrs => hrs.SkillId == skill.Id);
+                                    <MudTd DataLabel="@skill.Name" Style="text-align:center">
+                                        @if (assignment is not null)
+                                        {
+                                            @if (assignment.SkillLevel is not null)
+                                            {
+                                                <MudTooltip Text="@assignment.SkillLevel.Description"
+                                                            Placement="Placement.Top">
+                                                    <MudChip T="string"
+                                                             Size="Size.Small"
+                                                             Color="Color.Primary"
+                                                             Variant="Variant.Filled">
+                                                        @assignment.SkillLevel.Name
+                                                    </MudChip>
+                                                </MudTooltip>
+                                            }
+                                            else
+                                            {
+                                                <MudTooltip Text="Skill assigned, no level set"
+                                                            Placement="Placement.Top">
+                                                    <MudChip T="string"
+                                                             Size="Size.Small"
+                                                             Color="Color.Default"
+                                                             Variant="Variant.Outlined">
+                                                        Assigned
+                                                    </MudChip>
+                                                </MudTooltip>
+                                            }
+                                        }
+                                    </MudTd>
+                                }
+
+                                <MudTd Class="sticky-right" Style="text-align:right; min-width:150px">
+                                    <MudFab Class="m-1" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit"
+                                            Size="Size.Small" Href="@($"{RoutingPath.HumanResources}/{context.HumanResourceId}")"
+                                            Target="_blank" />
+                                    <MudFab Class="m-1" StartIcon="@Icons.Material.Filled.PersonRemove"
+                                            IconColor="Color.Error" Size="Size.Small"
+                                            OnClick="() => RemoveMemberAsync(context.HumanResourceId)" />
+                                </MudTd>
+                            </RowTemplate>
+
+                            <NoRecordsContent>
+                                <MudText Typo="Typo.body1" Class="pa-6 mud-text-secondary">
+                                    No members yet.
+                                </MudText>
+                            </NoRecordsContent>
+
+                        </MudTable>
+                    }
+                </MudPaper>
+            }
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    private HumanResource? _selectedHr;
+    private int? _selectedTsId;
+    private Team _model = new();
+    private List<Skill> _allSkills = new();
+    private List<TechnologyStack> _allStacks = new();
+    private bool _loading = true;
+    private bool _saving;
+    private string? _error;
+    private bool _isNew => Id is null or 0;
+    private IEnumerable<TechnologyStack> _availableStacks => _allStacks.Where(ts => _model.TeamTechnologyStacks.All(tts => tts.TechnologyStackId != ts.Id));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        if (!_isNew)
+        {
+            var skillsTask = SkillService.GetAllAsync();
+            var teamTask = TeamService.GetByIdAsync(Id!.Value);
+            var stacksTask = TsService.GetAllAsync();
+            await Task.WhenAll(skillsTask, teamTask, stacksTask);
+
+            var existing = teamTask.Result;
+            if (existing is null) { Navigation.NavigateTo(RoutingPath.Teams); return; }
+            _model = existing;
+            _allSkills = skillsTask.Result;
+            _allStacks = stacksTask.Result;
+        }
+        else
+        {
+            _model = new Team();
+        }
+        _loading = false;
+    }
+
+    private List<SkillSummaryItem> GetSkillsSummary()
+    {
+        var allAssignments = _model.TeamMembers
+            .SelectMany(tm => tm.HumanResource.HumanResourceSkills ?? Enumerable.Empty<HumanResourceSkill>())
+            .ToList();
+
+        return _allSkills
+            .Select(skill =>
+            {
+                var assignments = allAssignments.Where(a => a.SkillId == skill.Id).ToList();
+                if (!assignments.Any()) return null;
+                var levels = assignments
+                    .Where(a => a.SkillLevel is not null)
+                    .GroupBy(a => a.SkillLevel!.Name)
+                    .Select(g => new SkillLevelCount(g.Key!, g.Count()))
+                    .OrderBy(l => l.Name)
+                    .ToList();
+                return new SkillSummaryItem(skill.Name, assignments.Count, levels);
+            })
+            .Where(s => s is not null)
+            .ToList()!;
+    }
+
+    private async Task<IEnumerable<HumanResource>> SearchHrAsync(string? value, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 2)
+            return Enumerable.Empty<HumanResource>();
+
+        var results = await HrService.SearchAsync(value, 20);
+        var existingIds = _model.TeamMembers.Select(tm => tm.HumanResourceId).ToHashSet();
+        return results.Where(hr => !existingIds.Contains(hr.Id));
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true; _error = null;
+        try
+        {
+            if (_isNew) { var c = await TeamService.CreateAsync(_model); Navigation.NavigateTo($"{RoutingPath.Teams}/{c.Id}", true); }
+            else { await TeamService.UpdateAsync(_model); _model = (await TeamService.GetByIdAsync(_model.Id))!; Snackbar.Add("Saved.", Severity.Success); }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _saving = false; }
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {_model.Name} ?"))
+            {
+                await TeamService.DeleteAsync(_model.Id);
+                Navigation.NavigateTo(RoutingPath.Teams);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task AddMemberAsync()
+    {
+        if (_selectedHr is null) return;
+        await TeamService.AddMemberAsync(_model.Id, _selectedHr.Id);
+        _model = (await TeamService.GetByIdAsync(_model.Id))!;
+        _selectedHr = null;
+    }
+
+    private async Task RemoveMemberAsync(int hrId)
+    {
+        await TeamService.RemoveMemberAsync(_model.Id, hrId);
+        _model.TeamMembers = _model.TeamMembers
+            .Where(tm => tm.HumanResourceId != hrId).ToList();
+    }
+
+    private async Task AddTechnologyStackAsync()
+    {
+        if (_selectedTsId is null) return;
+        await TeamService.AddTechnologyStackAsync(_model.Id, _selectedTsId.Value);
+        var stack = _allStacks.FirstOrDefault(ts => ts.Id == _selectedTsId);
+        if (stack is null) return;
+        _model.TeamTechnologyStacks.Add(new TeamTechnologyStack
+        {
+            TeamId = _model.Id,
+            TechnologyStackId = _selectedTsId.Value,
+            TechnologyStack = stack
+        });
+        _selectedTsId = null;
+    }
+
+    private async Task RemoveTechnologyStackAsync(int tsId)
+    {
+        await TeamService.RemoveTechnologyStackAsync(_model.Id, tsId);
+        _model.TeamTechnologyStacks = _model.TeamTechnologyStacks.Where(tts => tts.TechnologyStackId != tsId).ToList();
+    }
+
+    private async Task DownloadTemplateAsync()
+    {
+        try
+        {
+            _saving = true;
+            StateHasChanged();
+
+            var bytes = await UploadService.GenerateTemplateAsync();
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='TeamMembersTemplate.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to download template");
+            Snackbar.Add($"Download failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnUploadFileSelected(IBrowserFile file)
+    {
+        if (file == null) return;
+
+        try
+        {
+            _saving = true;
+            StateHasChanged();
+
+            await using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            var rows = await UploadService.ParseFileAsync(stream, _model.Id);
+            // Store parsed data in session-level static so preview page can access it
+            TeamMemberUploadPreviewState.PendingUpload = rows;
+            TeamMemberUploadPreviewState.TeamId = _model.Id;
+            TeamMemberUploadPreviewState.TeamName = _model.Name;
+            Navigation.NavigateTo($"{RoutingPath.Teams}/{_model.Id}/upload-preview");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to parse uploaded file");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+            StateHasChanged();
+        }
+    }
+
+    private record SkillSummaryItem(string SkillName, int MemberCount, List<SkillLevelCount> Levels);
+    private record SkillLevelCount(string Name, int Count);
+}

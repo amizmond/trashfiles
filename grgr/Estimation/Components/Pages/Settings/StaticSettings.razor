@@ -1,0 +1,983 @@
+@attribute [Route(RoutingPath.StaticSettings)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+
+@inject IStaticSettingsService SettingsService
+@inject IUnfundedOptionService UnfundedOptionService
+@inject ITechnologyStackService TechnologyStackService
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+
+<PageTitle>Static Settings</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6" Class="mb-4">Static Settings</MudText>
+
+        <MudTabs Elevation="0" Rounded ApplyEffectsToContainer ActivePanelIndexChanged="OnActiveTabChanged">
+                <MudTabPanel Text="Categories">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Employee Categories</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddCategory">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="EmployeeCategory" Items="_employeeCategories" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(0))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingCategoryId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingCategoryId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingCategoryId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveCategoryAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingCategoryId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteCategoryAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No categories defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="EmployeeCategory" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Types">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Employee Types</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddType">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="EmployeeType" Items="_employeeTypes" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(1))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingTypeId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingTypeId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingTypeId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveTypeAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingTypeId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteTypeAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No types defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="EmployeeType" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Roles">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Employee Roles</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddRole">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="EmployeeRole" Items="_employeeRoles" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(2))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingRoleId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingRoleId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingRoleId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveRoleAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingRoleId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteRoleAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No roles defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="EmployeeRole" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Vendors">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Employee Vendors</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddVendor">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="EmployeeVendor" Items="_employeeVendors" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(3))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingVendorId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingVendorId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingVendorId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveVendorAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingVendorId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteVendorAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No vendors defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="EmployeeVendor" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Grades">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Corporate Grades</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddGrade">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="CorporateGrade" Items="_corporateGrades" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(4))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingGradeId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingGradeId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingGradeId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveGradeAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingGradeId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteGradeAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No grades defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="CorporateGrade" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Cities">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Cities</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddCity">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="City" Items="_cities" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(5))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingCityId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingCityId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingCityId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveCityAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingCityId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteCityAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No cities defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="City" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Countries">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Countries</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddCountry">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="Country" Items="_countries" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(6))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingCountryId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingCountryId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingCountryId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveCountryAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingCountryId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteCountryAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No countries defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="Country" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+                <MudTabPanel Text="Unfunded Options">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Unfunded Options</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddUnfundedOption">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="UnfundedOption" Items="_unfundedOptions" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(7))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingUnfundedOptionId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingUnfundedOptionId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Order" CellStyle="width:100px">
+                                    <CellTemplate>
+                                        @if (_editingUnfundedOptionId == context.Item.Id)
+                                        {
+                                            <MudNumericField @bind-Value="context.Item.Order" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Order
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingUnfundedOptionId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveUnfundedOptionAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingUnfundedOptionId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteUnfundedOptionAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No unfunded options defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="UnfundedOption" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+
+                <MudTabPanel Text="Technology Stacks">
+                    <MudPaper Class="pa-4" Elevation="0">
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Technology Stacks</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Add" OnClick="AddTechnologyStack">
+                                Add
+                            </MudButton>
+                        </div>
+                        <MudDataGrid T="TechnologyStack" Items="_technologyStacks" Hover="true" Dense="true" Striped="true" Elevation="0" Loading="@(!_loadedTabs.Contains(8))" LoadingProgressColor="Color.Primary">
+                            <Columns>
+                                <TemplateColumn Title="Name">
+                                    <CellTemplate>
+                                        @if (_editingTechnologyStackId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Name
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Description">
+                                    <CellTemplate>
+                                        @if (_editingTechnologyStackId == context.Item.Id)
+                                        {
+                                            <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                        }
+                                        else
+                                        {
+                                            @context.Item.Description
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (_editingTechnologyStackId == context.Item.Id)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveTechnologyStackAsync(context.Item)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelEdit" />
+                                        }
+                                        else
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingTechnologyStackId = context.Item.Id" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteTechnologyStackAsync(context.Item)" />
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No technology stacks defined.</MudText></NoRecordsContent>
+                            <PagerContent><MudDataGridPager T="TechnologyStack" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudTabPanel>
+
+            </MudTabs>
+    </MudPaper>
+</div>
+
+@code {
+    private List<EmployeeCategory> _employeeCategories = new();
+    private List<EmployeeType> _employeeTypes = new();
+    private List<EmployeeRole> _employeeRoles = new();
+    private List<EmployeeVendor> _employeeVendors = new();
+    private List<CorporateGrade> _corporateGrades = new();
+    private List<City> _cities = new();
+    private List<Country> _countries = new();
+    private List<UnfundedOption> _unfundedOptions = new();
+    private List<TechnologyStack> _technologyStacks = new();
+
+    private readonly HashSet<int> _loadedTabs = new();
+
+    private int? _editingCategoryId;
+    private int? _editingTypeId;
+    private int? _editingRoleId;
+    private int? _editingVendorId;
+    private int? _editingGradeId;
+    private int? _editingCityId;
+    private int? _editingCountryId;
+    private int? _editingUnfundedOptionId;
+    private int? _editingTechnologyStackId;
+
+    private int _tempId = -1;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTabAsync(0);
+    }
+
+    private async Task OnActiveTabChanged(int index)
+    {
+        if (!_loadedTabs.Contains(index))
+        {
+            await LoadTabAsync(index);
+        }
+    }
+
+    private async Task LoadTabAsync(int index)
+    {
+        try
+        {
+            switch (index)
+            {
+                case 0: _employeeCategories = await SettingsService.GetAllEmployeeCategoriesAsync(); break;
+                case 1: _employeeTypes = await SettingsService.GetAllEmployeeTypesAsync(); break;
+                case 2: _employeeRoles = await SettingsService.GetAllEmployeeRolesAsync(); break;
+                case 3: _employeeVendors = await SettingsService.GetAllEmployeeVendorsAsync(); break;
+                case 4: _corporateGrades = await SettingsService.GetAllCorporateGradesAsync(); break;
+                case 5: _cities = await SettingsService.GetAllCitiesAsync(); break;
+                case 6: _countries = await SettingsService.GetAllCountriesAsync(); break;
+                case 7: _unfundedOptions = await UnfundedOptionService.GetAllAsync(); break;
+                case 8: _technologyStacks = await TechnologyStackService.GetAllAsync(); break;
+            }
+        }
+        finally
+        {
+            _loadedTabs.Add(index);
+        }
+    }
+
+    private void CancelEdit()
+    {
+        _editingCategoryId = null;
+        _editingTypeId = null;
+        _editingRoleId = null;
+        _editingVendorId = null;
+        _editingGradeId = null;
+        _editingCityId = null;
+        _editingCountryId = null;
+        _editingUnfundedOptionId = null;
+        _editingTechnologyStackId = null;
+        _employeeCategories.RemoveAll(x => x.Id < 0);
+        _employeeTypes.RemoveAll(x => x.Id < 0);
+        _employeeRoles.RemoveAll(x => x.Id < 0);
+        _employeeVendors.RemoveAll(x => x.Id < 0);
+        _corporateGrades.RemoveAll(x => x.Id < 0);
+        _cities.RemoveAll(x => x.Id < 0);
+        _countries.RemoveAll(x => x.Id < 0);
+        _unfundedOptions.RemoveAll(x => x.Id < 0);
+        _technologyStacks.RemoveAll(x => x.Id < 0);
+    }
+
+    private void AddCategory()
+    {
+        var item = new EmployeeCategory { Id = _tempId--, Name = "" };
+        _employeeCategories.Add(item);
+        _editingCategoryId = item.Id;
+    }
+
+    private async Task SaveCategoryAsync(EmployeeCategory item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateEmployeeCategoryAsync(item);
+                _employeeCategories.Remove(item);
+                _employeeCategories.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateEmployeeCategoryAsync(item);
+            }
+            _editingCategoryId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteCategoryAsync(EmployeeCategory item)
+    {
+        if (!await MessageService.Confirm($"Delete category '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteEmployeeCategoryAsync(item.Id);
+            _employeeCategories.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddType()
+    {
+        var item = new EmployeeType { Id = _tempId--, Name = "" };
+        _employeeTypes.Add(item);
+        _editingTypeId = item.Id;
+    }
+
+    private async Task SaveTypeAsync(EmployeeType item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateEmployeeTypeAsync(item);
+                _employeeTypes.Remove(item);
+                _employeeTypes.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateEmployeeTypeAsync(item);
+            }
+            _editingTypeId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteTypeAsync(EmployeeType item)
+    {
+        if (!await MessageService.Confirm($"Delete type '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteEmployeeTypeAsync(item.Id);
+            _employeeTypes.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddRole()
+    {
+        var item = new EmployeeRole { Id = _tempId--, Name = "" };
+        _employeeRoles.Add(item);
+        _editingRoleId = item.Id;
+    }
+
+    private async Task SaveRoleAsync(EmployeeRole item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateEmployeeRoleAsync(item);
+                _employeeRoles.Remove(item);
+                _employeeRoles.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateEmployeeRoleAsync(item);
+            }
+            _editingRoleId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteRoleAsync(EmployeeRole item)
+    {
+        if (!await MessageService.Confirm($"Delete role '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteEmployeeRoleAsync(item.Id);
+            _employeeRoles.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddVendor()
+    {
+        var item = new EmployeeVendor { Id = _tempId--, Name = "" };
+        _employeeVendors.Add(item);
+        _editingVendorId = item.Id;
+    }
+
+    private async Task SaveVendorAsync(EmployeeVendor item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateEmployeeVendorAsync(item);
+                _employeeVendors.Remove(item);
+                _employeeVendors.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateEmployeeVendorAsync(item);
+            }
+            _editingVendorId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteVendorAsync(EmployeeVendor item)
+    {
+        if (!await MessageService.Confirm($"Delete vendor '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteEmployeeVendorAsync(item.Id);
+            _employeeVendors.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddGrade()
+    {
+        var item = new CorporateGrade { Id = _tempId--, Name = "" };
+        _corporateGrades.Add(item);
+        _editingGradeId = item.Id;
+    }
+
+    private async Task SaveGradeAsync(CorporateGrade item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateCorporateGradeAsync(item);
+                _corporateGrades.Remove(item);
+                _corporateGrades.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateCorporateGradeAsync(item);
+            }
+            _editingGradeId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteGradeAsync(CorporateGrade item)
+    {
+        if (!await MessageService.Confirm($"Delete grade '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteCorporateGradeAsync(item.Id);
+            _corporateGrades.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddCity()
+    {
+        var item = new City { Id = _tempId--, Name = "" };
+        _cities.Add(item);
+        _editingCityId = item.Id;
+    }
+
+    private async Task SaveCityAsync(City item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateCityAsync(item);
+                _cities.Remove(item);
+                _cities.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateCityAsync(item);
+            }
+            _editingCityId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteCityAsync(City item)
+    {
+        if (!await MessageService.Confirm($"Delete city '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteCityAsync(item.Id);
+            _cities.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddCountry()
+    {
+        var item = new Country { Id = _tempId--, Name = "" };
+        _countries.Add(item);
+        _editingCountryId = item.Id;
+    }
+
+    private async Task SaveCountryAsync(Country item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await SettingsService.CreateCountryAsync(item);
+                _countries.Remove(item);
+                _countries.Add(created);
+            }
+            else
+            {
+                await SettingsService.UpdateCountryAsync(item);
+            }
+            _editingCountryId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteCountryAsync(Country item)
+    {
+        if (!await MessageService.Confirm($"Delete country '{item.Name}' ?")) return;
+        try
+        {
+            await SettingsService.DeleteCountryAsync(item.Id);
+            _countries.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddUnfundedOption()
+    {
+        var item = new UnfundedOption { Id = _tempId--, Name = "" };
+        _unfundedOptions.Add(item);
+        _editingUnfundedOptionId = item.Id;
+    }
+
+    private async Task SaveUnfundedOptionAsync(UnfundedOption item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await UnfundedOptionService.CreateAsync(item);
+                _unfundedOptions.Remove(item);
+                _unfundedOptions.Add(created);
+            }
+            else
+            {
+                await UnfundedOptionService.UpdateAsync(item);
+            }
+            _editingUnfundedOptionId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteUnfundedOptionAsync(UnfundedOption item)
+    {
+        if (!await MessageService.Confirm($"Delete unfunded option '{item.Name}' ?")) return;
+        try
+        {
+            await UnfundedOptionService.DeleteAsync(item.Id);
+            _unfundedOptions.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private void AddTechnologyStack()
+    {
+        var item = new TechnologyStack { Id = _tempId--, Name = "" };
+        _technologyStacks.Add(item);
+        _editingTechnologyStackId = item.Id;
+    }
+
+    private async Task SaveTechnologyStackAsync(TechnologyStack item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await TechnologyStackService.CreateAsync(item);
+                _technologyStacks.Remove(item);
+                _technologyStacks.Add(created);
+            }
+            else
+            {
+                await TechnologyStackService.UpdateAsync(item);
+            }
+            _editingTechnologyStackId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteTechnologyStackAsync(TechnologyStack item)
+    {
+        if (!await MessageService.Confirm($"Delete technology stack '{item.Name}' ?")) return;
+        try
+        {
+            await TechnologyStackService.DeleteAsync(item.Id);
+            _technologyStacks.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+}

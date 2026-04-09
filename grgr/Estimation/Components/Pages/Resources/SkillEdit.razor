@@ -1,0 +1,294 @@
+﻿@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@attribute [Route(RoutingPath.SkillsNew)]
+@attribute [Route(RoutingPath.SkillsEdit)]
+
+@inject ISkillService SkillService
+@inject NavigationManager Navigation
+@inject IModalDialogService MessageService
+
+<PageTitle>@(_isNew ? "New Skill" : "Edit Skill")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="GoBack" />
+            <MudText Typo="Typo.h6">@(_isNew ? "New Skill" : $"Edit Skill — {_model.Name}")</MudText>
+        </div>
+
+        @if (_isLoading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_isSaving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+            <div style="@(_isSaving ? "pointer-events:none;opacity:0.6" : "")">
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">Skill Details</MudText>
+                        <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                            <DataAnnotationsValidator />
+
+                            <MudTextField @bind-Value="_model.Name" Label="Name *"
+                                          Variant="Variant.Outlined" For="() => _model.Name"
+                                          Placeholder="e.g. Angular" Class="mb-3" />
+
+                            <MudTextField @bind-Value="_model.Description" Label="Description"
+                                          Variant="Variant.Outlined" For="() => _model.Description"
+                                          Lines="3" Placeholder="Brief description of the skill" Class="mb-4" />
+
+                            @if (!string.IsNullOrEmpty(_errorMessage))
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mb-3">@_errorMessage</MudAlert>
+                            }
+
+                            <div class="d-flex gap-2">
+                                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                                           Color="Color.Primary" Disabled="_isSaving"
+                                           StartIcon="@Icons.Material.Filled.Save">
+                                    @(_isNew ? "Create" : "Save Changes")
+                                </MudButton>
+
+                                @if (!_isNew)
+                                {
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                               OnClick="ConfirmDeleteSkill" Class="ml-auto"
+                                               StartIcon="@Icons.Material.Filled.Delete">
+                                        Delete Skill
+                                    </MudButton>
+                                }
+                            </div>
+                        </EditForm>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="rounded-lg" Style="height:100%">
+                        <MudToolBar Dense>
+                            <MudText Typo="Typo.h6">Skill Levels</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                       Size="Size.Small" StartIcon="@Icons.Material.Filled.Add"
+                                       OnClick="AddLevel">
+                                Add Level
+                            </MudButton>
+                        </MudToolBar>
+                        <MudTable 
+                            Items="_model.Levels"
+                            Hover
+                            Dense
+                            Bordered
+                            Striped
+                            Elevation="0"
+                        >
+                            <HeaderContent>
+                                <MudTh>Name</MudTh>
+                                <MudTh>Value</MudTh>
+                                <MudTh>Description</MudTh>
+                                <MudTh Style="width:100px"></MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                @if (_editingLevel == context)
+                                {
+                                    <MudTd DataLabel="Name">
+                                        <MudTextField @bind-Value="_editingLevel.Name" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="Level name" MaxLength="50" />
+                                    </MudTd>
+                                    <MudTd DataLabel="Value">
+                                        <MudNumericField T="int?" @bind-Value="_editingLevel.Value" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="Value" />
+                                    </MudTd>
+                                    <MudTd DataLabel="Description">
+                                        <MudTextField @bind-Value="_editingLevel.Description" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="Description" MaxLength="150" />
+                                    </MudTd>
+                                    <MudTd>
+                                        <div class="d-flex gap-1">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success" OnClick="CommitLevel" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="CancelLevelEdit" />
+                                        </div>
+                                    </MudTd>
+                                }
+                                else
+                                {
+                                    <MudTd DataLabel="Name">@context.Name</MudTd>
+                                    <MudTd DataLabel="Value">@context.Value</MudTd>
+                                    <MudTd DataLabel="Description">@context.Description</MudTd>
+                                    <MudTd>
+                                        <div class="d-flex gap-1">
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary" OnClick="() => StartEditLevel(context)" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="() => RemoveLevel(context)" />
+                                        </div>
+                                    </MudTd>
+                                }
+                            </RowTemplate>
+                            <NoRecordsContent>
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary">No levels defined yet.</MudText>
+                            </NoRecordsContent>
+                        </MudTable>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+
+@code {
+    [Parameter] public int? Id { get; set; }
+
+    private Skill _model = new();
+    private SkillLevel? _editingLevel;
+    private SkillLevel? _editingLevelBackup;
+
+    private bool _isLoading = true;
+    private bool _isSaving;
+    private bool _isNew => Id is null or 0;
+    private string? _errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            if (!_isNew)
+            {
+                var existing = await SkillService.GetByIdAsync(Id!.Value);
+                if (existing is null)
+                {
+                    Navigation.NavigateTo(RoutingPath.Skills);
+                    return;
+                }
+                _model = existing;
+            }
+            else
+            {
+                _model = new Skill { Created = DateTime.Now };
+            }
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _isSaving = true;
+        _errorMessage = null;
+
+        try
+        {
+            if (_isNew)
+            {
+                var created = await SkillService.CreateAsync(_model);
+                Navigation.NavigateTo($"{RoutingPath.Skills}/{created.Id}", replace: true);
+            }
+            else
+            {
+                _model = await SkillService.UpdateAsync(_model);
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Save failed: {ex.Message}";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private async Task ConfirmDeleteSkill()
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {_model.Name} ?"))
+            {
+                await DeleteSkillAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task DeleteSkillAsync()
+    {
+        _isSaving = true;
+        try
+        {
+            await SkillService.DeleteAsync(_model.Id);
+            Navigation.NavigateTo(RoutingPath.Skills);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Delete failed: {ex.Message}";
+        }
+        finally
+        {
+            _isSaving = false;
+        }
+    }
+
+    private void AddLevel()
+    {
+        var level = new SkillLevel();
+        _model.Levels.Add(level);
+        StartEditLevel(level);
+    }
+
+    private void StartEditLevel(SkillLevel level)
+    {
+        _editingLevelBackup = new SkillLevel
+        {
+            Id = level.Id,
+            Name = level.Name,
+            Value = level.Value,
+            Description = level.Description
+        };
+        _editingLevel = level;
+    }
+
+    private async Task CommitLevel()
+    {
+        _editingLevel = null;
+        _editingLevelBackup = null;
+        await SaveAsync();
+    }
+
+    private void CancelLevelEdit()
+    {
+        if (_editingLevel is null) return;
+
+        if (_editingLevelBackup!.Id == 0 && _editingLevel.Id == 0)
+        {
+            _model.Levels.Remove(_editingLevel);
+        }
+        else
+        {
+            _editingLevel.Name = _editingLevelBackup.Name;
+            _editingLevel.Value = _editingLevelBackup.Value;
+            _editingLevel.Description = _editingLevelBackup.Description;
+        }
+
+        _editingLevel = null;
+        _editingLevelBackup = null;
+    }
+
+    private async Task RemoveLevel(SkillLevel level)
+    {
+        if (_editingLevel == level) CancelLevelEdit();
+        _model.Levels.Remove(level);
+        await SaveAsync();
+    }
+
+    private void GoBack() => Navigation.NavigateTo(RoutingPath.Skills);
+}

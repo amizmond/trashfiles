@@ -31,7 +31,6 @@
                         <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
                     </div>
                     <div class="d-flex flex-column gap-1">
-                        <MudSwitch T="bool" @bind-Value="_showJiraKey" Label="Jira Key" Color="Color.Primary" Dense />
                         <MudSwitch T="bool" @bind-Value="_showName" Label="Name" Color="Color.Primary" Dense />
                         <MudSwitch T="bool" @bind-Value="_showDescription" Label="Description" Color="Color.Primary" Dense />
                         <MudSwitch T="bool" @bind-Value="_showPrograms" Label="Programs" Color="Color.Primary" Dense />
@@ -107,7 +106,6 @@
                      Hover="true" Striped="true" Dense="true" Elevation="0"
                      Loading="_loading" LoadingProgressColor="Color.Primary">
             <Columns>
-                <PropertyColumn Property="r => r.JiraKey" Title="Jira Key" Sortable="true" Hidden="!_showJiraKey" />
                 <PropertyColumn Property="r => r.Name" Title="Name" Sortable="true" Hidden="!_showName">
                     <CellTemplate>
                         <MudText Class="font-weight-bold">@context.Item.Name</MudText>
@@ -169,7 +167,6 @@
     private bool _columnsPopoverOpen;
 
     // --- Column visibility (true = visible) ---
-    private bool _showJiraKey = true;
     private bool _showName = true;
     private bool _showDescription = true;
     private bool _showPrograms = true;
@@ -263,7 +260,6 @@
             var items = await ProjectService.GetAllAsync();
             _rows = items.Select(cp => new CpRow(
                 Id: cp.Id,
-                JiraKey: cp.JiraKey,
                 Name: cp.Name,
                 Description: cp.Description,
                 Programs: cp.CapitalProjectStrategicObjectives
@@ -315,7 +311,6 @@
 
     private record CpRow(
         int Id,
-        string? JiraKey,
         string Name,
         string? Description,
         List<NameRef> Programs,

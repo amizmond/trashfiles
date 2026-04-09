@@ -1,0 +1,160 @@
+@using Estimation.Core.Services
+
+@inject ICapitalProjectService CapitalProjectService
+@inject IStrategicObjectiveService ProjectProgramService
+@inject IPortfolioEpicService PortfolioEpicService
+@inject IBusinessOutcomeService BusinessOutcomeService
+@inject IFeatureService FeatureService
+@inject IPiService PiService
+@inject ITeamService TeamService
+@inject IHumanResourceService HumanResourceService
+@inject ISkillService SkillService
+@inject NavigationManager Nav
+
+@if (_loading)
+{
+    <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+}
+else
+{
+    <MudGrid>
+        <MudItem xs="12" md="6">
+            <MudText Typo="Typo.h6" Class="mb-3">Planning</MudText>
+            <MudPaper Class="pa-6 rounded-lg" Elevation="2">
+                <div style="gap: 16px;" class="d-flex justify-content-center">
+                    <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.CapitalProjects))">
+                            ART Level (@_capitalProjectCount)
+                        </MudButton>
+
+                        <MudIcon Icon="@Icons.Material.Filled.ArrowDownward" Color="Color.Default" />
+
+                        <MudButton Variant="Variant.Filled" Color="Color.Secondary" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.StrategicObjectives))">
+                            Strategic Objectives (@_projectProgramCount)
+                        </MudButton>
+
+                        <MudIcon Icon="@Icons.Material.Filled.ArrowDownward" Color="Color.Default" />
+
+                        <MudButton Variant="Variant.Filled" Color="Color.Tertiary" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.PortfolioEpics))">
+                            Portfolio Epics (@_portfolioEpicCount)
+                        </MudButton>
+
+                        <MudIcon Icon="@Icons.Material.Filled.ArrowDownward" Color="Color.Default" />
+
+                        <MudButton Variant="Variant.Filled" Color="Color.Info" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.BusinessOutcomes))">
+                            Business Outcomes (@_businessOutcomeCount)
+                        </MudButton>
+
+                        <MudIcon Icon="@Icons.Material.Filled.ArrowDownward" Color="Color.Default" />
+
+                        <MudButton Variant="Variant.Filled" Color="Color.Warning" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.Features))">
+                            Features (@_featureCount)
+                        </MudButton>
+                    </div>
+
+                    <div class="d-flex align-items-end">
+                        <div class="d-flex align-items-center">
+                            <div class="mr-2">
+                                <MudIcon Icon="@Icons.Material.Filled.ArrowBack" Color="Color.Default" />
+                            </div>
+
+                            <MudButton Variant="Variant.Filled" Color="Color.Success" Size="Size.Large"
+                                       Style="min-width: 220px; text-transform: none;"
+                                       OnClick="@(() => Nav.NavigateTo(RoutingPath.Pis))">
+                                Planning Increments (@_piCount)
+                            </MudButton>
+                        </div>
+                    </div>
+
+                </div>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="6">
+            <MudText Typo="Typo.h6" Class="mb-3">Resources</MudText>
+            <MudPaper Class="pa-6 rounded-lg" Elevation="2">
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+
+                    <div style="display: flex; justify-content: center;">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.Teams))">
+                            Teams (@_teamCount)
+                        </MudButton>
+                    </div>
+
+                    <MudIcon Icon="@Icons.Material.Filled.ArrowDownward" Color="Color.Default" />
+
+                    <div style="display: flex; justify-content: center;">
+                        <MudButton Variant="Variant.Filled" Color="Color.Secondary" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.HumanResources))">
+                            Resources (@_humanResourceCount)
+                        </MudButton>
+                    </div>
+
+                    <MudIcon Icon="@Icons.Material.Filled.ArrowDownward" Color="Color.Default" />
+
+                    <div style="display: flex; justify-content: center;">
+                        <MudButton Variant="Variant.Filled" Color="Color.Tertiary" Size="Size.Large"
+                                   Style="min-width: 220px; text-transform: none;"
+                                   OnClick="@(() => Nav.NavigateTo(RoutingPath.Skills))">
+                            Skills (@_skillCount)
+                        </MudButton>
+                    </div>
+
+                </div>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+}
+
+@code {
+    private bool _loading = true;
+    private int _capitalProjectCount;
+    private int _projectProgramCount;
+    private int _portfolioEpicCount;
+    private int _businessOutcomeCount;
+    private int _featureCount;
+    private int _piCount;
+    private int _teamCount;
+    private int _humanResourceCount;
+    private int _skillCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cpTask = CapitalProjectService.GetAllAsync();
+        var ppTask = ProjectProgramService.GetAllAsync();
+        var peTask = PortfolioEpicService.GetAllAsync();
+        var boTask = BusinessOutcomeService.GetAllAsync();
+        var fTask = FeatureService.GetAllAsync();
+        var piTask = PiService.GetAllAsync();
+        var tTask = TeamService.GetAllAsync();
+        var hrTask = HumanResourceService.GetPagedAsync(1, 1, null, null, true);
+        var sTask = SkillService.GetAllAsync();
+
+        await Task.WhenAll(cpTask, ppTask, peTask, boTask, fTask, piTask, tTask, hrTask, sTask);
+
+        _capitalProjectCount = cpTask.Result.Count;
+        _projectProgramCount = ppTask.Result.Count;
+        _portfolioEpicCount = peTask.Result.Count;
+        _businessOutcomeCount = boTask.Result.Count;
+        _featureCount = fTask.Result.Count;
+        _piCount = piTask.Result.Count;
+        _teamCount = tTask.Result.Count;
+        _humanResourceCount = hrTask.Result.TotalCount;
+        _skillCount = sTask.Result.Count;
+
+        _loading = false;
+    }
+}
