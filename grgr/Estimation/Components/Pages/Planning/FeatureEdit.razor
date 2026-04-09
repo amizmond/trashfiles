@@ -122,7 +122,8 @@
                                 <MudItem xs="12">
                                     <MudSelect T="string" @bind-Value="_selectedIssueType"
                                                Label="Issue Type *" Variant="Variant.Outlined"
-                                               Required="true">
+                                               Required="true"
+                                               Disabled="_loadingJiraMetadata">
                                         @if (_allIssueTypes.Any())
                                         {
                                             @foreach (var it in _allIssueTypes)
@@ -170,7 +171,11 @@
                                                SelectedValuesChanged="OnLabelsChanged"
                                                Label="Labels"
                                                Variant="Variant.Outlined"
-                                               Clearable>
+                                               Disabled="_loadingJiraMetadata"
+                                               Clearable
+                                               Adornment="@(_loadingJiraMetadata ? Adornment.End : Adornment.None)"
+                                               AdornmentIcon="@Icons.Material.Filled.HourglassTop"
+                                               AdornmentColor="Color.Primary">
                                         @foreach (var label in _allJiraLabels)
                                         {
                                             <MudSelectItem T="string" Value="@label">@label</MudSelectItem>
@@ -484,6 +489,7 @@
     private Dictionary<string, JiraDiffInfo> _jiraDiffs = new();
 
     // ── Jira metadata ──
+    private bool _loadingJiraMetadata;
     private List<CapitalProject> _allCapitalProjects = new();
     private List<JiraIssueTypeItem> _allIssueTypes = new();
     private List<string> _allJiraLabels = new();
@@ -498,8 +504,8 @@
         _loading = true;
 
         _userName = await WindowsAuth.GetUserName();
-        if (_userName is not null && JiraAuth.IsConfigured)
-            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        if (_userName is not null)
+            _jiraConnected = JiraAuth.IsConfigured && await JiraAuth.IsAuthenticatedAsync(_userName);
 
         // Load DB reference data
         await Task.WhenAll(
@@ -522,9 +528,11 @@
             // Load project-specific Jira data (issue types + labels)
             if (_jiraConnected && _userName is not null && !string.IsNullOrEmpty(_model.ProjectKey))
             {
-                await Task.WhenAll(
-                    JiraMetadata.GetIssueTypesAsync(_userName, _model.ProjectKey).ContinueWith(t => _allIssueTypes = t.Result),
-                    JiraMetadata.GetLabelsAsync(_userName, _model.ProjectKey).ContinueWith(t => _allJiraLabels = t.Result));
+                var issueTypesTask = JiraMetadata.GetIssueTypesAsync(_userName, _model.ProjectKey);
+                var labelsTask = JiraMetadata.GetLabelsAsync(_userName, _model.ProjectKey);
+                await Task.WhenAll(issueTypesTask, labelsTask);
+                _allIssueTypes = await issueTypesTask;
+                _allJiraLabels = await labelsTask;
             }
         }
         else
@@ -545,13 +553,25 @@
 
         if (!string.IsNullOrEmpty(value) && _jiraConnected && _userName is not null)
         {
-            await Task.WhenAll(
-                JiraMetadata.GetIssueTypesAsync(_userName, value).ContinueWith(t => _allIssueTypes = t.Result),
-                JiraMetadata.GetLabelsAsync(_userName, value).ContinueWith(t => _allJiraLabels = t.Result));
+            _loadingJiraMetadata = true;
+            StateHasChanged();
 
-            // Reset issue type to first available
-            if (_allIssueTypes.Any() && !_allIssueTypes.Any(it => it.Name == _selectedIssueType))
-                _selectedIssueType = _allIssueTypes.First().Name;
+            try
+            {
+                var issueTypesTask = JiraMetadata.GetIssueTypesAsync(_userName, value);
+                var labelsTask = JiraMetadata.GetLabelsAsync(_userName, value);
+                await Task.WhenAll(issueTypesTask, labelsTask);
+                _allIssueTypes = await issueTypesTask;
+                _allJiraLabels = await labelsTask;
+
+                // Reset issue type to first available
+                if (_allIssueTypes.Any() && !_allIssueTypes.Any(it => it.Name == _selectedIssueType))
+                    _selectedIssueType = _allIssueTypes.First().Name;
+            }
+            finally
+            {
+                _loadingJiraMetadata = false;
+            }
         }
         else
         {
