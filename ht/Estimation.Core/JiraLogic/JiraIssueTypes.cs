@@ -7,4 +7,5 @@ public static class JiraIssueTypes
     public const string Task = "Task";
     public const string StrategicObjective = "Strategic Objective";
     public const string PortfolioEpic = "Portfolio Epic";
+    public const string BusinessOutcome = "Business Outcome";
 }
