@@ -172,4 +172,70 @@ public class JiraIssueService : IJiraIssueService
             Labels = labels,
         };
     }
+
+    public async Task<List<JiraIssueResponse>> SearchIssuesAsync(string userName, string jql)
+    {
+        var token = await _authService.GetStoredTokenAsync(userName)
+                    ?? throw new InvalidOperationException("Not authenticated to Jira. Please log in first.");
+
+        var results = new List<JiraIssueResponse>();
+        var startAt = 0;
+        const int pageSize = 50;
+        var baseUrl = $"{_settings.Url.TrimEnd('/')}/rest/api/2/search";
+        var encodedJql = Uri.EscapeDataString(jql);
+
+        while (true)
+        {
+            var url = $"{baseUrl}?jql={encodedJql}&fields=summary,description,status,issuetype,labels,{_settings.FeatureNameCustomFieldId}&maxResults={pageSize}&startAt={startAt}";
+
+            using var httpClient = new HttpClient();
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("Authorization",
+                _authService.BuildOAuthHeader("GET", url, token.AccessToken));
+
+            var response = await httpClient.SendAsync(request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                throw new Exception($"Jira search failed ({response.StatusCode}): {body}");
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+            var json = JsonNode.Parse(responseBody);
+            var total = json?["total"]?.GetValue<int>() ?? 0;
+
+            if (json?["issues"] is JsonArray issues)
+            {
+                foreach (var issue in issues)
+                {
+                    var featureName = issue?["fields"]?[_settings.FeatureNameCustomFieldId]?.GetValue<string>();
+
+                    var labels = issue?["fields"]?["labels"]?.AsArray()
+                        .Select(l => l?.GetValue<string>())
+                        .Where(l => !string.IsNullOrEmpty(l))
+                        .Cast<string>()
+                        .ToList();
+
+                    results.Add(new JiraIssueResponse
+                    {
+                        Key = issue?["key"]?.GetValue<string>() ?? "",
+                        Summary = issue?["fields"]?["summary"]?.GetValue<string>(),
+                        Description = issue?["fields"]?["description"]?.GetValue<string>(),
+                        Status = issue?["fields"]?["status"]?["name"]?.GetValue<string>(),
+                        IssueType = issue?["fields"]?["issuetype"]?["name"]?.GetValue<string>(),
+                        FeatureName = featureName,
+                        Labels = labels,
+                    });
+                }
+            }
+
+            startAt += pageSize;
+            if (startAt >= total)
+                break;
+        }
+
+        Log.Information("Jira search returned {Count} issues for JQL: {Jql}", results.Count, jql);
+        return results;
+    }
 }

@@ -1,0 +1,898 @@
+@attribute [Route(RoutingPath.FeaturesUpload)]
+
+@using Estimation.Core
+@using Estimation.Core.Models
+@using Estimation.Core.JiraLogic
+@using Estimation.Excel
+@using Estimation.Excel.Models
+@using Estimation.Services
+@using Microsoft.EntityFrameworkCore
+@using Serilog
+
+@inject IDbContextFactory<EstimationDbContext> DbFactory
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+@inject IJiraAuthService JiraAuth
+@inject IJiraIssueService JiraIssueService
+@inject IWindowsAuthService WindowsAuth
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center mb-3">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.Features))" />
+            <MudText Typo="Typo.h6">Upload Features</MudText>
+        </div>
+
+        @if (_isLoading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-4" />
+        }
+
+        @* Step 1: File Selection *@
+        @if (_step == UploadStep.SelectFile)
+        {
+            <MudText Typo="Typo.body1" Class="mb-3">
+                Select an Excel file (.xlsx) to upload features.
+            </MudText>
+
+            <MudFileUpload T="IBrowserFile" Accept=".xlsx" MaximumFileCount="1" FilesChanged="OnFileSelected">
+                <ActivatorContent>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.UploadFile"
+                               Disabled="_isLoading">
+                        Select Excel File
+                    </MudButton>
+                </ActivatorContent>
+            </MudFileUpload>
+        }
+
+        @* Step 2: Data Preview *@
+        @if (_step == UploadStep.Preview)
+        {
+            <MudText Typo="Typo.subtitle1" Class="mb-2 font-weight-bold">
+                Preview - @_rows.Count record(s) found
+            </MudText>
+
+            @* ── Settings Panel ── *@
+            <MudPaper Elevation="0" Class="pa-3 mb-3 rounded-lg" Style="border:1px solid var(--mud-palette-lines-default)">
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" sm="4">
+                        <MudCheckBox T="bool" Value="_connectToJira" ValueChanged="OnConnectToJiraChanged"
+                                     Label="Connect to Jira" Dense="true"
+                                     Disabled="!JiraAuth.IsConfigured || _isValidating" />
+                    </MudItem>
+                    <MudItem xs="12" sm="4">
+                        <MudCheckBox T="bool" Value="_replaceByEmpty" ValueChanged="OnReplaceByEmptyChanged"
+                                     Label="Replace by empty" Dense="true"
+                                     Disabled="_isValidating" />
+                    </MudItem>
+                </MudGrid>
+
+                @if (_connectToJira)
+                {
+                    <MudPaper Elevation="0" Class="pa-3 mt-3 rounded-lg" Style="border:1px solid var(--mud-palette-lines-default)">
+                        <MudText Typo="Typo.subtitle2" Class="mb-3">Jira Issue Settings</MudText>
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="6">
+                                <MudTextField @bind-Value="_projectKey" Label="Project Key *"
+                                              Variant="Variant.Outlined" />
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudSelect T="string" @bind-Value="_selectedIssueType"
+                                           Label="Issue Type *" Variant="Variant.Outlined">
+                                    <MudSelectItem T="string" Value="@JiraIssueTypes.Feature">Feature</MudSelectItem>
+                                    <MudSelectItem T="string" Value="@JiraIssueTypes.Story">Story</MudSelectItem>
+                                    <MudSelectItem T="string" Value="@JiraIssueTypes.Task">Task</MudSelectItem>
+                                </MudSelect>
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+                }
+
+                @if (_jiraLoginRequired)
+                {
+                    <MudAlert Severity="Severity.Warning" Class="mt-3" Dense="true">
+                        You are not logged in to Jira. Please log in via the Jira icon in the top bar before uploading.
+                    </MudAlert>
+                }
+            </MudPaper>
+
+            @* ── Validation status ── *@
+            @if (_isValidating)
+            {
+                <div class="d-flex align-center gap-2 mb-3">
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                    <MudText Typo="Typo.body2">@(_statusMessage ?? "Validating...")</MudText>
+                </div>
+            }
+
+            @if (!_isValidating && InvalidRowCount > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-3" Dense="true">
+                    @InvalidRowCount row(s) have issues. Only valid records will be uploaded.
+                </MudAlert>
+            }
+
+            @* ── Data Grid ── *@
+            <MudDataGrid T="FeatureUploadRow" Items="_rows" Dense="true" Hover="true"
+                         Striped="true" Elevation="0"
+                         EditMode="DataGridEditMode.Cell" ReadOnly="false"
+                         CommittedItemChanges="OnCellCommitted">
+                <Columns>
+                    <TemplateColumn Title="Action" Editable="false" Sortable="false" CellStyle="width:160px;">
+                        <CellTemplate>
+                            @if (!string.IsNullOrEmpty(context.Item.Action))
+                            {
+                                <MudChip T="string" Size="Size.Small"
+                                         Color="@GetActionColor(context.Item.Action)">
+                                    @context.Item.Action
+                                </MudChip>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.JiraId" Title="Jira ID" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.JiraId)))" />
+                    <PropertyColumn Property="x => x.Name" Title="Name" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.Name)))" />
+                    <PropertyColumn Property="x => x.Summary" Title="Summary" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.Summary)))" />
+                    <PropertyColumn Property="x => x.Pi" Title="PI" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.Pi)))" />
+                    <PropertyColumn Property="x => x.BusinessOutcome" Title="Business Outcome" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.BusinessOutcome)))" />
+                    <PropertyColumn Property="x => x.Ranking" Title="Ranking" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.Ranking)))" />
+                    <TemplateColumn Title="Date Expected" Editable="true">
+                        <CellTemplate>
+                            <div style="@GetCellStyle(context.Item, nameof(FeatureUploadRow.DateExpected))"
+                                 title="@GetCellTooltip(context.Item, nameof(FeatureUploadRow.DateExpected))">
+                                @context.Item.DateExpected?.ToString("yyyy-MM-dd")
+                            </div>
+                        </CellTemplate>
+                        <EditTemplate>
+                            <MudDatePicker @bind-Date="context.Item.DateExpected"
+                                           Variant="Variant.Outlined" Margin="Margin.Dense" />
+                        </EditTemplate>
+                    </TemplateColumn>
+                    <PropertyColumn Property="x => x.UnfundedOption" Title="Unfunded Option" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.UnfundedOption)))" />
+                    <PropertyColumn Property="x => x.Description" Title="Description" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.Description)))" />
+                    <PropertyColumn Property="x => x.Comments" Title="Comments" Required="false"
+                                    CellStyleFunc="@(x => GetCellStyle(x, nameof(FeatureUploadRow.Comments)))" />
+                    <TemplateColumn Title="" Editable="false" Sortable="false" CellStyle="width:50px;">
+                        <CellTemplate>
+                            @if (context.Item.JiraDiffs.Count > 0)
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.CompareArrows"
+                                               Size="Size.Small" Color="Color.Warning"
+                                               OnClick="() => ShowJiraDiffDialog(context.Item)" />
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Error" Editable="false" Sortable="false">
+                        <CellTemplate>
+                            @if (!string.IsNullOrEmpty(context.Item.Error))
+                            {
+                                <div style="color: var(--mud-palette-error); cursor: pointer;"
+                                     title="Double-click for details"
+                                     @ondblclick="() => ShowErrorDetail(context.Item)">
+                                    @context.Item.Error
+                                </div>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="FeatureUploadRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+                </PagerContent>
+            </MudDataGrid>
+
+            <div class="d-flex justify-end gap-2 mt-4">
+                <MudButton Variant="Variant.Outlined" OnClick="Reset">Cancel</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.CloudUpload"
+                           OnClick="UploadData" Disabled="_uploadDisabled">
+                    Upload @ValidRowCount Record(s)
+                </MudButton>
+            </div>
+        }
+
+        @* Step 3: Results *@
+        @if (_step == UploadStep.Done)
+        {
+            @if (_successCount > 0)
+            {
+                <MudAlert Severity="Severity.Success" Class="mb-3">
+                    Successfully processed @_successCount record(s).
+                </MudAlert>
+            }
+
+            <div class="d-flex justify-end gap-2 mt-4">
+                <MudButton Variant="Variant.Outlined"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.Features))">
+                    Go to Features
+                </MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Reset">
+                    Upload More
+                </MudButton>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    // ── Types ──
+
+    private enum UploadStep { SelectFile, Preview, Done }
+
+    private class FeatureUploadRow
+    {
+        public string? JiraId { get; set; }
+        public string? Name { get; set; }
+        public string? Summary { get; set; }
+        public string? Pi { get; set; }
+        public string? BusinessOutcome { get; set; }
+        public int? Ranking { get; set; }
+        public DateTime? DateExpected { get; set; }
+        public string? UnfundedOption { get; set; }
+        public string? Description { get; set; }
+        public string? Comments { get; set; }
+
+        // State
+        public string Action { get; set; } = "";
+        public string? Error { get; set; }
+        public string? DetailedError { get; set; }
+        public Feature? ExistingDbFeature { get; set; }
+        public Dictionary<string, string> ValidationErrors { get; set; } = new();
+        public Dictionary<string, JiraDiffInfo> JiraDiffs { get; set; } = new();
+
+        public bool IsValid => Error == null && ValidationErrors.Count == 0;
+
+        public static FeatureUploadRow From(UploadFeature uf) => new()
+        {
+            JiraId = uf.JiraId, Name = uf.Name, Summary = uf.Summary,
+            Pi = uf.Pi, BusinessOutcome = uf.BusinessOutcome, Ranking = uf.Ranking,
+            DateExpected = uf.DateExpected,
+            UnfundedOption = uf.UnfundedOption, Description = uf.Description,
+            Comments = uf.Comments,
+        };
+    }
+
+    private record JiraDiffInfo(string PropertyName, string? JiraValue, string? ExcelValue);
+
+    private class UploadLookups
+    {
+        public Dictionary<string, int> Bo { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> Pi { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> Unfunded { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    // ── State ──
+
+    private UploadStep _step = UploadStep.SelectFile;
+    private bool _isLoading;
+    private bool _isValidating;
+    private string? _statusMessage;
+    private List<FeatureUploadRow> _rows = new();
+    private Dictionary<string, string> _mapping = new();
+    private MemoryStream? _fileStream;
+    private int _successCount;
+    private UploadLookups _lookups = new();
+
+    // Settings
+    private bool _connectToJira;
+    private string _projectKey = "RRWA";
+    private string _selectedIssueType = JiraIssueTypes.Feature;
+    private bool _replaceByEmpty;
+
+    // Jira auth
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _needsRevalidation;
+
+    private bool _jiraLoginRequired => _connectToJira && !_jiraConnected;
+    private bool _uploadDisabled => _isLoading || _isValidating || _jiraLoginRequired || ValidRowCount == 0;
+    private int ValidRowCount => _rows.Count(r => r.IsValid);
+    private int InvalidRowCount => _rows.Count(r => !r.IsValid);
+
+    // ── Lifecycle ──
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userName = await WindowsAuth.GetUserName();
+        if (_userName != null && JiraAuth.IsConfigured)
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (_needsRevalidation)
+        {
+            _needsRevalidation = false;
+            foreach (var row in _rows)
+            {
+                row.ValidationErrors.Clear();
+                ValidateRowFields(row);
+            }
+            StateHasChanged();
+        }
+    }
+
+    // ── File Loading ──
+
+    private async Task OnFileSelected(IBrowserFile file)
+    {
+        if (file == null) return;
+
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            _fileStream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(_fileStream);
+            _fileStream.Position = 0;
+
+            var readService = new ExcelReadService<UploadFeature>();
+            var headers = readService.ReadHeaders(_fileStream);
+            var columnInfo = readService.GetColumnInfo();
+            _fileStream.Position = 0;
+
+            var allMapped = columnInfo.All(ci =>
+                headers.Any(h => h.Equals(ci.ExpectedColumnName, StringComparison.OrdinalIgnoreCase)));
+
+            if (allMapped)
+            {
+                _mapping = columnInfo.ToDictionary(
+                    ci => ci.PropertyName,
+                    ci => headers.First(h => h.Equals(ci.ExpectedColumnName, StringComparison.OrdinalIgnoreCase)));
+                Snackbar.Add("All columns matched automatically.", Severity.Info);
+            }
+            else
+            {
+                var parameters = new DialogParameters<FeatureUploadMappingDialog>
+                {
+                    { x => x.ColumnInfo, columnInfo },
+                    { x => x.ExcelHeaders, headers }
+                };
+                var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, BackdropClick = false };
+                var dialog = await DialogService.ShowAsync<FeatureUploadMappingDialog>("Column Mapping", parameters, options);
+                var result = await dialog.Result;
+
+                if (result == null || result.Canceled)
+                {
+                    _fileStream?.Dispose();
+                    _fileStream = null;
+                    return;
+                }
+
+                _mapping = (Dictionary<string, string>)result.Data!;
+            }
+
+            _fileStream.Position = 0;
+            var uploadFeatures = readService.ReadSheetWithMapping(_fileStream, _mapping).ToList();
+
+            if (uploadFeatures.Count == 0)
+            {
+                Snackbar.Add("No data found in the Excel file.", Severity.Warning);
+                _fileStream?.Dispose();
+                _fileStream = null;
+                return;
+            }
+
+            _rows = uploadFeatures.Select(FeatureUploadRow.From).ToList();
+            _step = UploadStep.Preview;
+            _isLoading = false;
+            StateHasChanged();
+
+            await ResolveActionsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to read Excel file");
+            Snackbar.Add($"Failed to read file: {ex.Message}", Severity.Error);
+            _fileStream?.Dispose();
+            _fileStream = null;
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    // ── Settings Change Handlers ──
+
+    private async Task OnConnectToJiraChanged(bool value)
+    {
+        _connectToJira = value;
+        if (value)
+        {
+            _userName = await WindowsAuth.GetUserName();
+            if (_userName != null && JiraAuth.IsConfigured)
+                _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+            else
+                _jiraConnected = false;
+        }
+
+        if (_step == UploadStep.Preview)
+            await ResolveActionsAsync();
+    }
+
+    private async Task OnReplaceByEmptyChanged(bool value)
+    {
+        _replaceByEmpty = value;
+        if (_step == UploadStep.Preview)
+        {
+            foreach (var row in _rows)
+            {
+                row.ValidationErrors.Clear();
+                ValidateRowFields(row);
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // ── Action Resolution (async) ──
+
+    private async Task ResolveActionsAsync()
+    {
+        _isValidating = true;
+        _statusMessage = "Loading lookups...";
+        StateHasChanged();
+
+        try
+        {
+            _lookups = await LoadLookups();
+
+            // Load existing DB features by JiraId
+            var jiraIds = _rows
+                .Where(r => !string.IsNullOrWhiteSpace(r.JiraId))
+                .Select(r => r.JiraId!.Trim()).Distinct().ToList();
+
+            var existingFeatures = new Dictionary<string, Feature>(StringComparer.OrdinalIgnoreCase);
+            if (jiraIds.Count > 0)
+            {
+                await using var db = await DbFactory.CreateDbContextAsync();
+                var features = await db.Features.AsNoTracking()
+                    .Where(f => f.JiraId != null && jiraIds.Contains(f.JiraId))
+                    .ToListAsync();
+                foreach (var f in features)
+                    if (!string.IsNullOrWhiteSpace(f.JiraId))
+                        existingFeatures.TryAdd(f.JiraId.Trim(), f);
+            }
+
+            _statusMessage = "Resolving actions...";
+            StateHasChanged();
+
+            for (int i = 0; i < _rows.Count; i++)
+            {
+                var row = _rows[i];
+                row.ValidationErrors.Clear();
+                row.JiraDiffs.Clear();
+                row.Error = null;
+                row.DetailedError = null;
+                row.ExistingDbFeature = null;
+
+                // Resolve action
+                if (!string.IsNullOrWhiteSpace(row.JiraId))
+                {
+                    var key = row.JiraId.Trim();
+                    existingFeatures.TryGetValue(key, out var dbFeature);
+                    row.ExistingDbFeature = dbFeature;
+
+                    if (_connectToJira)
+                    {
+                        if (_jiraConnected)
+                        {
+                            _statusMessage = $"Checking Jira ({i + 1}/{_rows.Count})...";
+                            StateHasChanged();
+                            await Task.Yield();
+
+                            JiraIssueResponse? jiraIssue = null;
+                            try
+                            {
+                                jiraIssue = await JiraIssueService.GetIssueAsync(_userName!, key);
+                            }
+                            catch (Exception ex)
+                            {
+                                row.Error = "Jira check failed";
+                                row.DetailedError = ex.Message;
+                            }
+
+                            if (row.Error == null)
+                            {
+                                bool inDb = dbFeature != null;
+                                bool inJira = jiraIssue != null;
+
+                                if (inDb && inJira)
+                                {
+                                    row.Action = "Update Jira & DB";
+                                    CompareWithJira(row, jiraIssue!);
+                                }
+                                else if (!inDb && inJira)
+                                {
+                                    row.Action = "Create DB, Update Jira";
+                                    CompareWithJira(row, jiraIssue!);
+                                }
+                                else if (inDb && !inJira)
+                                {
+                                    row.Action = "Create Jira, Update DB";
+                                }
+                                else
+                                {
+                                    row.Error = "Not found in Jira or DB";
+                                    row.DetailedError = $"Issue '{key}' does not exist in Jira server or local database.";
+                                }
+                            }
+                        }
+                        else
+                        {
+                            row.Action = dbFeature != null ? "Update" : "Create";
+                        }
+                    }
+                    else
+                    {
+                        row.Action = dbFeature != null ? "Update" : "Create";
+                    }
+                }
+                else
+                {
+                    row.Action = _connectToJira ? "Create Jira & DB" : "Create";
+                }
+
+                // Validate fields
+                ValidateRowFields(row);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to resolve actions");
+            Snackbar.Add($"Validation failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isValidating = false;
+            _statusMessage = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task<UploadLookups> LoadLookups()
+    {
+        var lookups = new UploadLookups();
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        foreach (var bo in await db.BusinessOutcomes.AsNoTracking().ToListAsync())
+        {
+            if (!string.IsNullOrWhiteSpace(bo.Summary)) lookups.Bo.TryAdd(bo.Summary.Trim(), bo.Id);
+            if (!string.IsNullOrWhiteSpace(bo.JiraId)) lookups.Bo.TryAdd(bo.JiraId.Trim(), bo.Id);
+        }
+        foreach (var pi in await db.Pis.AsNoTracking().ToListAsync())
+        {
+            if (!string.IsNullOrWhiteSpace(pi.Name)) lookups.Pi.TryAdd(pi.Name.Trim(), pi.Id);
+        }
+        foreach (var uo in await db.UnfundedOptions.AsNoTracking().ToListAsync())
+        {
+            if (!string.IsNullOrWhiteSpace(uo.Name)) lookups.Unfunded.TryAdd(uo.Name.Trim(), uo.Id);
+        }
+        return lookups;
+    }
+
+    private void CompareWithJira(FeatureUploadRow row, JiraIssueResponse jira)
+    {
+        if (!string.Equals(row.Summary?.Trim(), jira.Summary?.Trim(), StringComparison.Ordinal))
+            row.JiraDiffs[nameof(row.Summary)] = new JiraDiffInfo("Summary", jira.Summary, row.Summary);
+
+        if (!string.Equals(row.Description?.Trim(), jira.Description?.Trim(), StringComparison.Ordinal))
+            row.JiraDiffs[nameof(row.Description)] = new JiraDiffInfo("Description", jira.Description, row.Description);
+    }
+
+    // ── Field Validation ──
+
+    private void ValidateRowFields(FeatureUploadRow row)
+    {
+        if (row.Error != null) return; // row-level error already set
+
+        bool isNewInDb = row.ExistingDbFeature == null;
+        bool needsJiraOp = _connectToJira && (row.Action.Contains("Create Jira") || row.Action.Contains("Update Jira"));
+        bool nameRequired = isNewInDb || _replaceByEmpty;
+        bool summaryRequired = isNewInDb || _replaceByEmpty || needsJiraOp;
+
+        // Required
+        if (nameRequired && string.IsNullOrWhiteSpace(row.Name))
+            row.ValidationErrors[nameof(row.Name)] = "Name is required";
+        else if (row.Name?.Length > 200)
+            row.ValidationErrors[nameof(row.Name)] = $"Max length 200 (current: {row.Name.Length})";
+
+        if (summaryRequired && string.IsNullOrWhiteSpace(row.Summary))
+            row.ValidationErrors[nameof(row.Summary)] = "Summary is required";
+        else if (row.Summary?.Length > 255)
+            row.ValidationErrors[nameof(row.Summary)] = $"Max length 255 (current: {row.Summary.Length})";
+
+        // Max length on optional fields
+        if (row.JiraId?.Length > 100)
+            row.ValidationErrors[nameof(row.JiraId)] = $"Max length 100 (current: {row.JiraId.Length})";
+        if (row.Description?.Length > 32767)
+            row.ValidationErrors[nameof(row.Description)] = $"Max length 32767";
+        if (row.Comments?.Length > 250)
+            row.ValidationErrors[nameof(row.Comments)] = $"Max length 250 (current: {row.Comments.Length})";
+        // Lookup validation
+        if (!string.IsNullOrWhiteSpace(row.BusinessOutcome) && !_lookups.Bo.ContainsKey(row.BusinessOutcome.Trim()))
+            row.ValidationErrors[nameof(row.BusinessOutcome)] = $"'{row.BusinessOutcome}' not found";
+        if (!string.IsNullOrWhiteSpace(row.Pi) && !_lookups.Pi.ContainsKey(row.Pi.Trim()))
+            row.ValidationErrors[nameof(row.Pi)] = $"'{row.Pi}' not found";
+        if (!string.IsNullOrWhiteSpace(row.UnfundedOption) && !_lookups.Unfunded.ContainsKey(row.UnfundedOption.Trim()))
+            row.ValidationErrors[nameof(row.UnfundedOption)] = $"'{row.UnfundedOption}' not found";
+    }
+
+    // ── Cell Styling ──
+
+    private string GetCellStyle(FeatureUploadRow row, string property)
+    {
+        if (row.ValidationErrors.ContainsKey(property))
+            return "background-color: #FFCDD2; padding: 2px 6px; border-radius: 4px;";
+        if (row.JiraDiffs.ContainsKey(property))
+            return "background-color: #FFF9C4; padding: 2px 6px; border-radius: 4px;";
+        return "";
+    }
+
+    private string GetCellTooltip(FeatureUploadRow row, string property)
+    {
+        if (row.ValidationErrors.TryGetValue(property, out var error)) return error;
+        if (row.JiraDiffs.TryGetValue(property, out var diff))
+            return $"Jira: {diff.JiraValue ?? "(empty)"} | Excel: {diff.ExcelValue ?? "(empty)"}";
+        return "";
+    }
+
+    private static Color GetActionColor(string action) => action switch
+    {
+        "Create" => Color.Success,
+        "Update" => Color.Info,
+        _ when action.Contains("Jira") => Color.Warning,
+        _ => Color.Default,
+    };
+
+    // ── Cell Edit ──
+
+    private Task<DataGridEditFormAction> OnCellCommitted(FeatureUploadRow item)
+    {
+        _needsRevalidation = true;
+        return Task.FromResult(DataGridEditFormAction.Close);
+    }
+
+    // ── Dialogs ──
+
+    private async Task ShowErrorDetail(FeatureUploadRow row)
+    {
+        if (string.IsNullOrEmpty(row.DetailedError) && string.IsNullOrEmpty(row.Error)) return;
+
+        var parameters = new DialogParameters<FeatureUploadErrorDialog>
+        {
+            { x => x.ErrorMessage, row.DetailedError ?? row.Error ?? "" }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<FeatureUploadErrorDialog>("Error Details", parameters, options);
+    }
+
+    private async Task ShowJiraDiffDialog(FeatureUploadRow row)
+    {
+        if (row.JiraDiffs.Count == 0) return;
+
+        var diffs = row.JiraDiffs.Values
+            .Select(d => new FeatureUploadJiraDiffDialog.DiffItem(d.PropertyName, d.JiraValue, d.ExcelValue))
+            .ToList();
+
+        var parameters = new DialogParameters<FeatureUploadJiraDiffDialog>
+        {
+            { x => x.Diffs, diffs }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+        await DialogService.ShowAsync<FeatureUploadJiraDiffDialog>("Jira vs Excel", parameters, options);
+    }
+
+    // ── Upload ──
+
+    private async Task UploadData()
+    {
+        _isLoading = true;
+        _successCount = 0;
+        StateHasChanged();
+
+        try
+        {
+            // Final re-validation
+            await ResolveActionsAsync();
+
+            var validRows = _rows.Where(r => r.IsValid).ToList();
+            if (validRows.Count == 0)
+            {
+                Snackbar.Add("No valid records to upload.", Severity.Warning);
+                return;
+            }
+
+            _lookups = await LoadLookups();
+            var uploaded = new List<FeatureUploadRow>();
+
+            for (int i = 0; i < validRows.Count; i++)
+            {
+                var row = validRows[i];
+                _statusMessage = $"Uploading ({i + 1}/{validRows.Count})...";
+                StateHasChanged();
+                await Task.Yield();
+
+                try
+                {
+                    // ── Jira first ──
+                    if (_connectToJira)
+                    {
+                        try
+                        {
+                            if (row.Action.Contains("Create Jira"))
+                            {
+                                var jiraKey = await JiraIssueService.CreateIssueAsync(_userName!, new JiraCreateIssueRequest
+                                {
+                                    ProjectKey = _projectKey.Trim(),
+                                    IssueType = _selectedIssueType,
+                                    Summary = row.Summary!,
+                                    Description = row.Description,
+                                    FeatureName = row.Name,
+                                });
+                                if (string.IsNullOrWhiteSpace(row.JiraId))
+                                    row.JiraId = jiraKey;
+                            }
+                            else if (row.Action.Contains("Update Jira"))
+                            {
+                                await JiraIssueService.UpdateIssueAsync(_userName!, row.JiraId!.Trim(),
+                                    new JiraUpdateIssueRequest
+                                    {
+                                        Summary = row.Summary!,
+                                        Description = row.Description,
+                                    });
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            row.Error = "Jira failed";
+                            row.DetailedError = ex.Message;
+                            continue; // Skip DB if Jira failed
+                        }
+                    }
+
+                    // ── DB ──
+                    if (row.ExistingDbFeature != null)
+                        await UpdateFeatureInDb(row);
+                    else
+                        await CreateFeatureInDb(row);
+
+                    _successCount++;
+                    uploaded.Add(row);
+                }
+                catch (Exception ex)
+                {
+                    row.Error = ex.Message.Length > 80 ? ex.Message[..80] + "..." : ex.Message;
+                    row.DetailedError = ex.Message;
+                }
+            }
+
+            foreach (var row in uploaded)
+                _rows.Remove(row);
+
+            if (_rows.Count == 0)
+            {
+                _step = UploadStep.Done;
+            }
+            else
+            {
+                if (_successCount > 0)
+                    Snackbar.Add($"Processed {_successCount} record(s). {_rows.Count} remain.", Severity.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Upload failed");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            _statusMessage = null;
+            _fileStream?.Dispose();
+            _fileStream = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task CreateFeatureInDb(FeatureUploadRow row)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var feature = new Feature
+        {
+            JiraId = row.JiraId?.Trim(),
+            Name = row.Name?.Trim(),
+            Summary = row.Summary?.Trim(),
+            Description = row.Description?.Trim(),
+            Comments = row.Comments?.Trim(),
+            Ranking = row.Ranking,
+            DateExpected = row.DateExpected,
+            IsLinkedToTheJira = _connectToJira ? true : null,
+        };
+
+        ResolveLookups(feature, row);
+        db.Features.Add(feature);
+        await db.SaveChangesAsync();
+    }
+
+    private async Task UpdateFeatureInDb(FeatureUploadRow row)
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var existing = await db.Features.FirstOrDefaultAsync(f => f.Id == row.ExistingDbFeature!.Id)
+                       ?? throw new InvalidOperationException($"Feature ID {row.ExistingDbFeature!.Id} not found.");
+
+        bool r = _replaceByEmpty;
+
+        if (r || !string.IsNullOrWhiteSpace(row.JiraId)) existing.JiraId = row.JiraId?.Trim();
+        if (r || !string.IsNullOrWhiteSpace(row.Name)) existing.Name = row.Name?.Trim();
+        if (r || !string.IsNullOrWhiteSpace(row.Summary)) existing.Summary = row.Summary?.Trim();
+        if (r || !string.IsNullOrWhiteSpace(row.Description)) existing.Description = row.Description?.Trim();
+        if (r || !string.IsNullOrWhiteSpace(row.Comments)) existing.Comments = row.Comments?.Trim();
+        if (r || row.Ranking != null) existing.Ranking = row.Ranking;
+        if (r || row.DateExpected != null) existing.DateExpected = row.DateExpected;
+
+        // Lookups
+        if (!string.IsNullOrWhiteSpace(row.BusinessOutcome))
+        {
+            if (_lookups.Bo.TryGetValue(row.BusinessOutcome.Trim(), out var boId))
+                existing.BusinessOutcomeId = boId;
+        }
+        else if (r) existing.BusinessOutcomeId = null;
+
+        if (!string.IsNullOrWhiteSpace(row.Pi))
+        {
+            if (_lookups.Pi.TryGetValue(row.Pi.Trim(), out var piId))
+                existing.PiId = piId;
+        }
+        else if (r) existing.PiId = null;
+
+        if (!string.IsNullOrWhiteSpace(row.UnfundedOption))
+        {
+            if (_lookups.Unfunded.TryGetValue(row.UnfundedOption.Trim(), out var uoId))
+                existing.UnfundedOptionId = uoId;
+        }
+        else if (r) existing.UnfundedOptionId = null;
+
+        if (_connectToJira)
+            existing.IsLinkedToTheJira = true;
+
+        await db.SaveChangesAsync();
+    }
+
+    private void ResolveLookups(Feature feature, FeatureUploadRow row)
+    {
+        if (!string.IsNullOrWhiteSpace(row.BusinessOutcome) && _lookups.Bo.TryGetValue(row.BusinessOutcome.Trim(), out var boId))
+            feature.BusinessOutcomeId = boId;
+        if (!string.IsNullOrWhiteSpace(row.Pi) && _lookups.Pi.TryGetValue(row.Pi.Trim(), out var piId))
+            feature.PiId = piId;
+        if (!string.IsNullOrWhiteSpace(row.UnfundedOption) && _lookups.Unfunded.TryGetValue(row.UnfundedOption.Trim(), out var uoId))
+            feature.UnfundedOptionId = uoId;
+    }
+
+    // ── Reset ──
+
+    private void Reset()
+    {
+        _step = UploadStep.SelectFile;
+        _rows = new();
+        _mapping = new();
+        _lookups = new();
+        _successCount = 0;
+        _connectToJira = false;
+        _replaceByEmpty = false;
+        _fileStream?.Dispose();
+        _fileStream = null;
+    }
+}

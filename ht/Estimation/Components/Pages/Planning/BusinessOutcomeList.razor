@@ -1,0 +1,439 @@
+@attribute [Route(RoutingPath.BusinessOutcomes)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@inject IBusinessOutcomeService BoService
+@inject NavigationManager Nav
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+
+@implements IDisposable
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">Business Outcomes</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showJiraId" Label="Jira ID" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showEpicJiraId" Label="Epic Id" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showEpic" Label="Epic" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showProgramJiraId" Label="Strategic Objective Jira Id" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showCapitalProject" Label="ART Level" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showFeatures" Label="Features" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       Style="margin-right: 10px"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Add"
+                       Style="margin-right: 10px"
+                       OnClick="@(() => Nav.NavigateTo(RoutingPath.BusinessOutcomesNew))">
+                New
+            </MudButton>
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudSelect T="string" Label="Portfolio Epic" MultiSelection
+                           @bind-SelectedValues="FilterEpicNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var epic in _availableEpics)
+                    {
+                        <MudSelectItem T="string" Value="@epic.JiraId">
+                            <div style="font-size:0.8rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+                                <b>@epic.JiraId</b> — @epic.Summary
+                            </div>
+                        </MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="Strategic Objective" MultiSelection
+                           @bind-SelectedValues="FilterProgramNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var prog in _availablePrograms)
+                    {
+                        <MudSelectItem T="string" Value="@prog.JiraId">
+                            <div style="font-size:0.8rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+                                <b>@prog.JiraId</b> — @prog.Summary
+                            </div>
+                        </MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="ART Level" MultiSelection
+                           @bind-SelectedValues="FilterCapitalProjectNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var cp in _availableCapitalProjects)
+                    {
+                        <MudSelectItem T="string" Value="@cp">@cp</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+
+        <MudDataGrid T="BoRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" LoadingProgressColor="Color.Primary">
+            <Columns>
+                <TemplateColumn Title="Jira ID" Sortable="false" CellStyle="width:150px;" Hidden="!_showJiraId">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                        {
+                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @context.Item.JiraId
+                                </MudChip>
+                            </a>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.Summary" Title="Summary" Sortable="true" Hidden="!_showName">
+                    <CellTemplate>
+                        <MudText Class="font-weight-bold">@context.Item.Summary</MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <TemplateColumn Title="Epic Id" Sortable="false" CellStyle="width:150px;" Hidden="!_showEpicJiraId">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.EpicJiraId))
+                        {
+                            <MudTooltip Text="@context.Item.EpicName">
+                                <a href="@(Configuration["JiraTaskUrl"] + context.Item.EpicJiraId)" target="_blank" style="text-decoration:none">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                        @context.Item.EpicJiraId
+                                    </MudChip>
+                                </a>
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Epic" Sortable="false" Hidden="!_showEpic">
+                    <CellTemplate>
+                        @if (context.Item.EpicName is not null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.PortfolioEpics}/{context.Item.EpicId}"))">@context.Item.EpicName</MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Strategic Objective Jira Id" Sortable="false" CellStyle="width:200px;" Hidden="!_showProgramJiraId">
+                    <CellTemplate>
+                        @if (context.Item.ProgramJiraIds.Count > 0)
+                        {
+                            @foreach (var prog in context.Item.ProgramJiraIds)
+                            {
+                                <MudTooltip Text="@prog.Summary">
+                                    <a href="@(Configuration["JiraTaskUrl"] + prog.JiraId)" target="_blank" style="text-decoration:none">
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                            @prog.JiraId
+                                        </MudChip>
+                                    </a>
+                                </MudTooltip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="ART Level" Sortable="false" CellStyle="width:200px;" Hidden="!_showCapitalProject">
+                    <CellTemplate>
+                        @if (context.Item.CapitalProjects.Count > 0)
+                        {
+                            @foreach (var cp in context.Item.CapitalProjects)
+                            {
+                                <MudTooltip Text="@cp.Description">
+                                    <a href="@($"{RoutingPath.CapitalProjects}/{cp.Id}")" target="_blank" style="text-decoration:none">
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Class="mr-1" Style="cursor:pointer">
+                                            @cp.Name
+                                        </MudChip>
+                                    </a>
+                                </MudTooltip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Features" Sortable="false" CellStyle="max-width:300px;" Hidden="!_showFeatures">
+                    <CellTemplate>
+                        @foreach (var f in context.Item.Features.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.Features}/{f.Id}"))">@f.Name</MudChip>
+                        }
+                        @if (context.Item.Features.Count > 3)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                +@(context.Item.Features.Count - 3)
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
+                    <CellTemplate>
+                        <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" Href="@($"{RoutingPath.BusinessOutcomes}/{context.Item.Id}")" Target="_blank" />
+                        <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No business outcomes found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="BoRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+@code {
+    private List<BoRow> _rows = new();
+    private List<BoRow> _filteredRows = new();
+    private bool _loading = true;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Column visibility (true = visible) ---
+    private bool _showJiraId = true;
+    private bool _showName = true;
+    private bool _showEpicJiraId = true;
+    private bool _showEpic = true;
+    private bool _showProgramJiraId = true;
+    private bool _showCapitalProject = true;
+    private bool _showFeatures = true;
+    private bool _showActions = true;
+
+    // --- Available filter values ---
+    private List<(string JiraId, string? Summary)> _availableEpics = new();
+    private List<(string JiraId, string? Summary)> _availablePrograms = new();
+    private List<string> _availableCapitalProjects = new();
+
+    // --- Filter properties with debounced recomputation ---
+
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterEpicNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterEpicNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterEpicNames
+    {
+        get => _filterEpicNamesBacking;
+        set { _filterEpicNamesBacking = value; _filterEpicNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterProgramNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterProgramNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterProgramNames
+    {
+        get => _filterProgramNamesBacking;
+        set { _filterProgramNamesBacking = value; _filterProgramNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterCapitalProjectNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterCapitalProjectNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterCapitalProjectNames
+    {
+        get => _filterCapitalProjectNamesBacking;
+        set { _filterCapitalProjectNamesBacking = value; _filterCapitalProjectNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterEpicNamesBacking = Array.Empty<string>();
+        _filterEpicNamesSet.Clear();
+        _filterProgramNamesBacking = Array.Empty<string>();
+        _filterProgramNamesSet.Clear();
+        _filterCapitalProjectNamesBacking = Array.Empty<string>();
+        _filterCapitalProjectNamesSet.Clear();
+        RecomputeFilteredRows();
+    }
+
+    // --- Filter logic ---
+
+    private void RecomputeFilteredRows()
+    {
+        _filteredRows = _rows.Where(MatchesFilter).ToList();
+    }
+
+    private bool MatchesFilter(BoRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!((r.Summary?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.JiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.EpicName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.EpicJiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+                return false;
+        }
+
+        if (_filterEpicNamesSet.Count > 0
+            && (r.EpicJiraId is null || !_filterEpicNamesSet.Contains(r.EpicJiraId)))
+            return false;
+
+        if (_filterProgramNamesSet.Count > 0
+            && !r.ProgramJiraIds.Any(p => _filterProgramNamesSet.Contains(p.JiraId)))
+            return false;
+
+        if (_filterCapitalProjectNamesSet.Count > 0
+            && !r.CapitalProjects.Any(cp => _filterCapitalProjectNamesSet.Contains(cp.Name)))
+            return false;
+
+        return true;
+    }
+
+    // --- Lifecycle ---
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var items = await BoService.GetAllWithHierarchyAsync();
+            _rows = items.Select(bo =>
+            {
+                var epic = bo.PortfolioEpic;
+                var programs = epic?.StrategicObjectivePortfolioEpics
+                    .Select(ppe => ppe.StrategicObjective).ToList() ?? new();
+                var capitalProjects = programs
+                    .SelectMany(pp => pp.CapitalProjectStrategicObjectives.Select(cpp => cpp.CapitalProject))
+                    .Where(cp => cp.Name is not null)
+                    .DistinctBy(cp => cp.Id).ToList();
+
+                return new BoRow(
+                    Id: bo.Id,
+                    JiraId: bo.JiraId,
+                    Summary: bo.Summary,
+                    EpicId: bo.PortfolioEpicId,
+                    EpicJiraId: epic?.JiraId,
+                    EpicName: epic?.Summary,
+                    ProgramJiraIds: programs
+                        .Where(p => !string.IsNullOrEmpty(p.JiraId))
+                        .Select(p => new JiraRef(p.JiraId!, p.Summary))
+                        .DistinctBy(p => p.JiraId).ToList(),
+                    CapitalProjects: capitalProjects
+                        .Select(cp => new CapitalProjectRef(cp.Id, cp.Name, cp.Description))
+                        .ToList(),
+                    Features: bo.Features.Select(f => new FeatureRef(f.Id, f.Name)).ToList()
+                );
+            }).ToList();
+
+            _availableEpics = _rows
+                .Where(r => !string.IsNullOrEmpty(r.EpicJiraId))
+                .Select(r => (r.EpicJiraId!, r.EpicName))
+                .DistinctBy(e => e.Item1, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(e => e.Item1).ToList();
+            _availablePrograms = _rows
+                .SelectMany(r => r.ProgramJiraIds)
+                .Where(p => !string.IsNullOrEmpty(p.JiraId))
+                .Select(p => (p.JiraId, p.Summary))
+                .DistinctBy(p => p.JiraId, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p.JiraId).ToList();
+            _availableCapitalProjects = _rows
+                .SelectMany(r => r.CapitalProjects.Select(cp => cp.Name))
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            RecomputeFilteredRows();
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task ConfirmDeleteAsync(BoRow row)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {row.Summary} ?"))
+            {
+                await BoService.DeleteAsync(row.Id);
+                _rows.RemoveAll(r => r.Id == row.Id);
+                RecomputeFilteredRows();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record JiraRef(string JiraId, string? Summary);
+    private record FeatureRef(int Id, string? Name);
+    private record CapitalProjectRef(int Id, string Name, string? Description);
+
+    private record BoRow(
+        int Id,
+        string? JiraId,
+        string? Summary,
+        int? EpicId,
+        string? EpicJiraId,
+        string? EpicName,
+        List<JiraRef> ProgramJiraIds,
+        List<CapitalProjectRef> CapitalProjects,
+        List<FeatureRef> Features
+    );
+}

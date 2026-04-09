@@ -1,0 +1,22 @@
+2026-04-09 10:40:50.803 +02:00 [WRN] Unhandled exception rendering component: Missing <MudPopoverProvider />, please add it to your layout. See https://mudblazor.com/getting-started/installation#manual-install-add-components
+System.InvalidOperationException: Missing <MudPopoverProvider />, please add it to your layout. See https://mudblazor.com/getting-started/installation#manual-install-add-components
+   at MudBlazor.PopoverService.CreatePopoverAsync(IPopover popover)
+   at MudBlazor.MudPopoverBase.OnInitializedAsync()
+   at Microsoft.AspNetCore.Components.ComponentBase.RunInitAndSetParametersAsync()
+2026-04-09 10:40:50.835 +02:00 [ERR] Unhandled exception in circuit 'iupYb3UVUdu00eqgrHw1YVafWD5wjwCxLmuF0rUwPT0'.
+System.InvalidOperationException: Missing <MudPopoverProvider />, please add it to your layout. See https://mudblazor.com/getting-started/installation#manual-install-add-components
+   at MudBlazor.PopoverService.CreatePopoverAsync(IPopover popover)
+   at MudBlazor.MudPopoverBase.OnInitializedAsync()
+   at Microsoft.AspNetCore.Components.ComponentBase.RunInitAndSetParametersAsync()
+2026-04-09 10:40:50.850 +02:00 [WRN] Unhandled exception rendering component: Cannot access a disposed object.
+System.ObjectDisposedException: Cannot access a disposed object.
+   at Microsoft.AspNetCore.Components.RenderTree.RenderTreeDiffBuilder.InsertNewFrame(DiffContext& diffContext, Int32 newFrameIndex)
+   at Microsoft.AspNetCore.Components.RenderTree.RenderTreeDiffBuilder.AppendDiffEntriesForRange(DiffContext& diffContext, Int32 oldStartIndex, Int32 oldEndIndexExcl, Int32 newStartIndex, Int32 newEndIndexExcl)
+   at Microsoft.AspNetCore.Components.Rendering.ComponentState.RenderIntoBatch(RenderBatchBuilder batchBuilder, RenderFragment renderFragment, Exception& renderFragmentException)
+   at Microsoft.AspNetCore.Components.RenderTree.Renderer.ProcessRenderQueue()
+2026-04-09 10:40:50.850 +02:00 [ERR] Unhandled exception in circuit 'iupYb3UVUdu00eqgrHw1YVafWD5wjwCxLmuF0rUwPT0'.
+System.ObjectDisposedException: Cannot access a disposed object.
+   at Microsoft.AspNetCore.Components.RenderTree.RenderTreeDiffBuilder.InsertNewFrame(DiffContext& diffContext, Int32 newFrameIndex)
+   at Microsoft.AspNetCore.Components.RenderTree.RenderTreeDiffBuilder.AppendDiffEntriesForRange(DiffContext& diffContext, Int32 oldStartIndex, Int32 oldEndIndexExcl, Int32 newStartIndex, Int32 newEndIndexExcl)
+   at Microsoft.AspNetCore.Components.Rendering.ComponentState.RenderIntoBatch(RenderBatchBuilder batchBuilder, RenderFragment renderFragment, Exception& renderFragmentException)
+   at Microsoft.AspNetCore.Components.RenderTree.Renderer.ProcessRenderQueue()

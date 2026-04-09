@@ -1,0 +1,439 @@
+@attribute [Route(RoutingPath.CapitalProjects)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.JiraLogic
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@inject ICapitalProjectService ProjectService
+@inject IStrategicObjectiveService ProgramService
+@inject IJiraAuthService JiraAuth
+@inject IJiraIssueService JiraIssueService
+@inject IWindowsAuthService WindowsAuth
+@inject NavigationManager Navigation
+@inject IModalDialogService MessageService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+@implements IDisposable
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">ART Level</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showJiraKey" Label="Jira Key" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showDescription" Label="Description" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showPrograms" Label="Programs" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTeams" Label="Teams" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       Style="margin-right: 10px"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            @if (_jiraConnected)
+            {
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Warning"
+                           StartIcon="@Icons.Material.Filled.Sync"
+                           Disabled="_syncing"
+                           Style="margin-right: 10px"
+                           OnClick="OpenSyncDialogAsync">
+                    Synchronize with Jira
+                </MudButton>
+            }
+
+            <MudButton Variant="Variant.Filled"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Add"
+                       Style="margin-right: 10px"
+                       OnClick="@(() => Navigation.NavigateTo(RoutingPath.CapitalProjectsNew))">
+                New
+            </MudButton>
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudSelect T="string" Label="Programs" MultiSelection
+                           @bind-SelectedValues="FilterProgramNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var prog in _availablePrograms)
+                    {
+                        <MudSelectItem T="string" Value="@prog">@prog</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="Teams" MultiSelection
+                           @bind-SelectedValues="FilterTeamNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var team in _availableTeams)
+                    {
+                        <MudSelectItem T="string" Value="@team">@team</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        @if (_syncing)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Warning" Class="mb-2" />
+            <MudAlert Severity="Severity.Info" Class="mb-2">Synchronizing Strategic Objectives from Jira...</MudAlert>
+        }
+
+        <MudDivider />
+
+        <MudDataGrid T="CpRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" LoadingProgressColor="Color.Primary">
+            <Columns>
+                <PropertyColumn Property="r => r.JiraKey" Title="Jira Key" Sortable="true" Hidden="!_showJiraKey" />
+                <PropertyColumn Property="r => r.Name" Title="Name" Sortable="true" Hidden="!_showName">
+                    <CellTemplate>
+                        <MudText Class="font-weight-bold">@context.Item.Name</MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <TemplateColumn Title="Description" Sortable="false" Hidden="!_showDescription">
+                    <CellTemplate>
+                        <MudText Class="mud-text-secondary">@context.Item.Description</MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Programs" Sortable="false" Hidden="!_showPrograms">
+                    <CellTemplate>
+                        @foreach (var prog in context.Item.Programs.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary"
+                                     Class="mr-1" OnClick="@(() => Navigation.NavigateTo($"{RoutingPath.StrategicObjectives}/{prog.Id}"))">@prog.Name</MudChip>
+                        }
+                        @if (context.Item.Programs.Count > 3)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                +@(context.Item.Programs.Count - 3)
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Teams" Sortable="false" Hidden="!_showTeams">
+                    <CellTemplate>
+                        @foreach (var team in context.Item.Teams.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary"
+                                     Class="mr-1" OnClick="@(() => Navigation.NavigateTo($"{RoutingPath.Teams}/{team.Id}"))">@team.Name</MudChip>
+                        }
+                        @if (context.Item.Teams.Count > 3)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                +@(context.Item.Teams.Count - 3)
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
+                    <CellTemplate>
+                        <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" Href="@($"{RoutingPath.CapitalProjects}/{context.Item.Id}")" Target="_blank" />
+                        <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No capital projects found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="CpRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+@code {
+    private List<CpRow> _rows = new();
+    private List<CpRow> _filteredRows = new();
+    private bool _loading = true;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Column visibility (true = visible) ---
+    // --- Jira state ---
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _syncing;
+
+    private bool _showJiraKey = true;
+    private bool _showName = true;
+    private bool _showDescription = true;
+    private bool _showPrograms = true;
+    private bool _showTeams = true;
+    private bool _showActions = true;
+
+    // --- Available filter values ---
+    private List<string> _availablePrograms = new();
+    private List<string> _availableTeams = new();
+
+    // --- Filter properties with debounced recomputation ---
+
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterProgramNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterProgramNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterProgramNames
+    {
+        get => _filterProgramNamesBacking;
+        set { _filterProgramNamesBacking = value; _filterProgramNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterTeamNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterTeamNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterTeamNames
+    {
+        get => _filterTeamNamesBacking;
+        set { _filterTeamNamesBacking = value; _filterTeamNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterProgramNamesBacking = Array.Empty<string>();
+        _filterProgramNamesSet.Clear();
+        _filterTeamNamesBacking = Array.Empty<string>();
+        _filterTeamNamesSet.Clear();
+        RecomputeFilteredRows();
+    }
+
+    // --- Filter logic ---
+
+    private void RecomputeFilteredRows()
+    {
+        _filteredRows = _rows.Where(MatchesFilter).ToList();
+    }
+
+    private bool MatchesFilter(CpRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!(r.Name.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || (r.Description?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+                return false;
+        }
+
+        if (_filterProgramNamesSet.Count > 0
+            && !r.Programs.Any(p => _filterProgramNamesSet.Contains(p.Name)))
+            return false;
+
+        if (_filterTeamNamesSet.Count > 0
+            && !r.Teams.Any(t => _filterTeamNamesSet.Contains(t.Name)))
+            return false;
+
+        return true;
+    }
+
+    // --- Lifecycle ---
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _userName = await WindowsAuth.GetUserName();
+            if (_userName is not null && JiraAuth.IsConfigured)
+                _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+
+            var items = await ProjectService.GetAllAsync();
+            _rows = items.Select(cp => new CpRow(
+                Id: cp.Id,
+                JiraKey: cp.JiraKey,
+                Name: cp.Name,
+                Description: cp.Description,
+                Programs: cp.CapitalProjectStrategicObjectives
+                    .Select(cpp => new NameRef(cpp.StrategicObjectiveId, cpp.StrategicObjective.Summary))
+                    .ToList(),
+                Teams: cp.CapitalProjectTeams
+                    .Select(cpt => new NameRef(cpt.TeamId, cpt.Team.Name))
+                    .ToList()
+            )).ToList();
+
+            _availablePrograms = _rows
+                .SelectMany(r => r.Programs.Select(p => p.Name))
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+            _availableTeams = _rows
+                .SelectMany(r => r.Teams.Select(t => t.Name))
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            RecomputeFilteredRows();
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task ConfirmDeleteAsync(CpRow row)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {row.Name} ?"))
+            {
+                await ProjectService.DeleteAsync(row.Id);
+                _rows.RemoveAll(r => r.Id == row.Id);
+                RecomputeFilteredRows();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    // --- Jira sync ---
+
+    private async Task OpenSyncDialogAsync()
+    {
+        var projectsWithKey = _rows.Where(r => !string.IsNullOrWhiteSpace(r.JiraKey)).ToList();
+        if (projectsWithKey.Count == 0)
+        {
+            Snackbar.Add("No ART Level records have a Jira Key configured.", Severity.Warning);
+            return;
+        }
+
+        var parameters = new DialogParameters<JiraSyncProjectDialog>
+        {
+            { x => x.Projects, projectsWithKey.Select(r => new JiraSyncProjectDialog.ProjectOption(r.Id, r.JiraKey!, r.Name)).ToList() }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<JiraSyncProjectDialog>("Synchronize with Jira", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled) return;
+
+        var selected = (JiraSyncProjectDialog.ProjectOption)result.Data!;
+        await RunSyncAsync(selected.Id, selected.JiraKey);
+    }
+
+    private async Task RunSyncAsync(int capitalProjectId, string projectKey)
+    {
+        _syncing = true;
+        StateHasChanged();
+
+        try
+        {
+            var jql = $"project = \"{projectKey}\" AND issuetype = \"{JiraIssueTypes.StrategicObjective}\"";
+            var jiraIssues = await JiraIssueService.SearchIssuesAsync(_userName!, jql);
+
+            if (jiraIssues.Count == 0)
+            {
+                Snackbar.Add($"No Strategic Objectives found in Jira project {projectKey}.", Severity.Info);
+                return;
+            }
+
+            var syncItems = jiraIssues.Select(ji => new JiraSyncItem(
+                JiraKey: ji.Key,
+                Name: ji.Summary,
+                Description: ji.Description,
+                IssueType: ji.IssueType,
+                Labels: ji.Labels is { Count: > 0 } ? string.Join(",", ji.Labels) : null
+            )).ToList();
+
+            var syncResult = await ProgramService.SyncFromJiraAsync(capitalProjectId, projectKey, syncItems);
+
+            Snackbar.Add(
+                $"Sync complete: {syncResult.Created} created, {syncResult.Updated} updated, {syncResult.Linked} linked.",
+                Severity.Success);
+
+            // Reload data
+            var items = await ProjectService.GetAllAsync();
+            _rows = items.Select(cp => new CpRow(
+                Id: cp.Id,
+                JiraKey: cp.JiraKey,
+                Name: cp.Name,
+                Description: cp.Description,
+                Programs: cp.CapitalProjectStrategicObjectives
+                    .Select(cpp => new NameRef(cpp.StrategicObjectiveId, cpp.StrategicObjective.Summary))
+                    .ToList(),
+                Teams: cp.CapitalProjectTeams
+                    .Select(cpt => new NameRef(cpt.TeamId, cpt.Team.Name))
+                    .ToList()
+            )).ToList();
+            RecomputeFilteredRows();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Jira sync failed");
+            Snackbar.Add($"Sync failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record NameRef(int Id, string Name);
+
+    private record CpRow(
+        int Id,
+        string? JiraKey,
+        string Name,
+        string? Description,
+        List<NameRef> Programs,
+        List<NameRef> Teams
+    );
+}

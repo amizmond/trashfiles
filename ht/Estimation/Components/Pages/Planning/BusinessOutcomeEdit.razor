@@ -1,0 +1,290 @@
+﻿@attribute [Route(RoutingPath.BusinessOutcomesNew)]
+@attribute [Route(RoutingPath.BusinessOutcomesEdit)]
+
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Serilog
+
+@inject IBusinessOutcomeService BoService
+@inject IPortfolioEpicService EpicService
+@inject IFeatureService FeatureService
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject IConfiguration Configuration
+
+<PageTitle>@(_isNew ? "New Business Outcome" : _model.Summary)</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Nav.NavigateTo(RoutingPath.BusinessOutcomes))" />
+            <MudText Typo="Typo.h6">@(_isNew ? "New Business Outcome" : _model.Summary)</MudText>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_saving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+            <div style="@(_saving ? "pointer-events:none;opacity:0.6" : "")">
+            <MudGrid Spacing="4">
+                @* ── Details ── *@
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">Details</MudText>
+                        <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                            <DataAnnotationsValidator />
+                            <div class="d-flex align-center gap-2 mb-3">
+                                <MudTextField @bind-Value="_model.JiraId" Label="Jira ID"
+                                              Variant="Variant.Outlined" Placeholder="RRWA-63833" />
+                                @if (!string.IsNullOrWhiteSpace(_model.JiraId))
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                   Color="Color.Primary"
+                                                   Href="@(Configuration["JiraTaskUrl"] + _model.JiraId)"
+                                                   Target="_blank" />
+                                }
+                            </div>
+                            <MudTextField @bind-Value="_model.Summary" Label="Summary"
+                                          Variant="Variant.Outlined" Class="mb-3" />
+                            <MudSelect T="int?" @bind-Value="_model.PortfolioEpicId" Label="Portfolio Epic"
+                                       Variant="Variant.Outlined" Clearable Class="mb-3">
+                                @foreach (var e in _allEpics)
+                                {
+                                    <MudSelectItem T="int?" Value="e.Id">
+                                        @(!string.IsNullOrEmpty(e.JiraId) ? $"[{e.JiraId}] " : "")@e.Summary
+                                    </MudSelectItem>
+                                }
+                            </MudSelect>
+                            <MudTextField @bind-Value="_model.Ranking" Label="Ranking"
+                                          Variant="Variant.Outlined" Class="mb-3"
+                                          InputType="InputType.Number" />
+                            <MudTextField @bind-Value="_model.ArtName" Label="ART Name"
+                                          Variant="Variant.Outlined" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.Description" Label="Description"
+                                          Variant="Variant.Outlined" Lines="3" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.Comments" Label="Comments"
+                                          Variant="Variant.Outlined" Lines="2" Class="mb-4" />
+                            @if (!string.IsNullOrEmpty(_error))
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mb-3">@_error</MudAlert>
+                            }
+                            <div class="d-flex gap-2">
+                                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                                           Color="Color.Primary" Disabled="_saving"
+                                           StartIcon="@Icons.Material.Filled.Save">
+                                    @(_isNew ? "Create" : "Save")
+                                </MudButton>
+                                @if (!_isNew)
+                                {
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                               OnClick="ConfirmDeleteAsync" Class="ml-auto"
+                                               StartIcon="@Icons.Material.Filled.Delete">Delete</MudButton>
+                                }
+                            </div>
+                        </EditForm>
+                    </MudPaper>
+                </MudItem>
+
+                @* ── Features ── *@
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">Features</MudText>
+                            <MudSpacer />
+                            @if (!_isNew)
+                            {
+                                <MudSelect T="int?"
+                                           @bind-Value="_selectedFeatureId"
+                                           Label="Select feature"
+                                           Variant="Variant.Outlined"
+                                           Dense
+                                           Style="min-width:160px;">
+                                    @foreach (var f in _availableFeatures)
+                                    {
+                                        <MudSelectItem T="int?" Value="f.Id">
+                                            @(!string.IsNullOrEmpty(f.JiraId) ? $"[{f.JiraId}] " : "")@f.Name
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           OnClick="AddFeatureAsync"
+                                           Disabled="_selectedFeatureId is null">
+                                    Add
+                                </MudButton>
+                            }
+                        </MudToolBar>
+                        @if (_isNew)
+                        {
+                            <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                                Save first to link features.
+                            </MudText>
+                        }
+                        else
+                        {
+                            <MudDataGrid T="Feature" Items="_model.Features"
+                                         Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                                <Columns>
+                                    <TemplateColumn Title="Jira ID" Sortable="true" SortBy="@(x => x.JiraId ?? string.Empty)" CellStyle="width:150px;">
+                                        <CellTemplate>
+                                            @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                                            {
+                                                <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                                    <MudChip T="string" Size="Size.Small"
+                                                             Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                                        @context.Item.JiraId
+                                                    </MudChip>
+                                                </a>
+                                            }
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                    <PropertyColumn Property="x => x.Name" Title="Name" Sortable="true" />
+
+                                    <PropertyColumn Property="x => x.Description" Title="Description" Sortable="false" />
+                                    <PropertyColumn Property="x => x.Comments" Title="Comments" Sortable="false" />
+                                    <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                        <CellTemplate>
+                                            <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                           Size="Size.Small" Color="Color.Primary"
+                                                           Href="@($"{RoutingPath.Features}/{context.Item.Id}")"
+                                                           Target="_blank" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small" Color="Color.Error"
+                                                           OnClick="() => RemoveFeatureAsync(context.Item.Id)" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                                <NoRecordsContent>
+                                    <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No features linked yet.</MudText>
+                                </NoRecordsContent>
+                                <PagerContent>
+                                    <MudDataGridPager T="Feature" PageSizeOptions="new[] { 5, 10, 25, 50 }" />
+                                </PagerContent>
+                            </MudDataGrid>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+
+    private BusinessOutcome _model = new();
+    private List<PortfolioEpic> _allEpics = new();
+    private List<Feature> _allFeatures = new();
+    private bool _loading = true;
+    private bool _saving;
+    private string? _error;
+    private bool _isNew => Id is null or 0;
+    private int? _selectedFeatureId;
+
+    private IEnumerable<Feature> _availableFeatures =>
+        _allFeatures.Where(f => f.BusinessOutcomeId is null && _model.Features.All(mf => mf.Id != f.Id));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        var epicsTask = EpicService.GetAllAsync();
+        var featuresTask = FeatureService.GetAllAsync();
+        await Task.WhenAll(epicsTask, featuresTask);
+        _allEpics = await epicsTask;
+        _allFeatures = await featuresTask;
+
+        if (!_isNew)
+        {
+            var e = await BoService.GetByIdAsync(Id!.Value);
+            if (e is null)
+            {
+                Nav.NavigateTo(RoutingPath.BusinessOutcomes); return;
+            }
+            _model = e;
+        }
+        else
+        {
+            _model = new BusinessOutcome();
+        }
+
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true;
+        _error = null;
+
+        try
+        {
+            if (_isNew)
+            {
+                var c = await BoService.CreateAsync(_model);
+                Nav.NavigateTo($"{RoutingPath.BusinessOutcomes}/{c.Id}", true);
+            }
+            else
+            {
+                await BoService.UpdateAsync(_model);
+                _model = (await BoService.GetByIdAsync(_model.Id))!;
+                Snackbar.Add("Saved.", Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {_model.Summary} ?"))
+            {
+                await BoService.DeleteAsync(_model.Id);
+                Nav.NavigateTo(RoutingPath.BusinessOutcomes);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task AddFeatureAsync()
+    {
+        if (_selectedFeatureId is null) return;
+        var feature = _allFeatures.First(f => f.Id == _selectedFeatureId);
+        feature.BusinessOutcomeId = _model.Id;
+        await FeatureService.UpdateAsync(feature);
+        _model.Features.Add(feature);
+        _selectedFeatureId = null;
+    }
+
+    private async Task RemoveFeatureAsync(int featureId)
+    {
+        var name = _model.Features.FirstOrDefault(f => f.Id == featureId)?.Name;
+        if (!await MessageService.Confirm($"Remove feature {name} ?")) return;
+        var feature = _allFeatures.First(f => f.Id == featureId);
+        feature.BusinessOutcomeId = null;
+        await FeatureService.UpdateAsync(feature);
+        _model.Features = _model.Features.Where(f => f.Id != featureId).ToList();
+    }
+}

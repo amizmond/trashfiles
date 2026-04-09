@@ -37,4 +37,5 @@ public interface IJiraIssueService
     Task<string> CreateIssueAsync(string userName, JiraCreateIssueRequest request);
     Task UpdateIssueAsync(string userName, string issueKey, JiraUpdateIssueRequest request);
     Task<JiraIssueResponse?> GetIssueAsync(string userName, string issueKey);
+    Task<List<JiraIssueResponse>> SearchIssuesAsync(string userName, string jql);
 }

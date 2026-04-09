@@ -198,7 +198,7 @@
                                         @foreach (var bo in _allBo)
                                         {
                                             <MudSelectItem T="int?" Value="bo.Id">
-                                                @(!string.IsNullOrEmpty(bo.JiraId) ? $"[{bo.JiraId}] " : "")@bo.Name
+                                                @(!string.IsNullOrEmpty(bo.JiraId) ? $"[{bo.JiraId}] " : "")@bo.Summary
                                             </MudSelectItem>
                                         }
                                     </MudSelect>
@@ -747,6 +747,7 @@
         finally
         {
             _loadingJira = false;
+            StateHasChanged();
         }
     }
 
