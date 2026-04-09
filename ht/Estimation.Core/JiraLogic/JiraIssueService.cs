@@ -154,6 +154,7 @@ public class JiraIssueService : IJiraIssueService
         var json = JsonNode.Parse(responseBody);
 
         var featureName = json?["fields"]?[_settings.FeatureNameCustomFieldId]?.GetValue<string>();
+        var parentLink = json?["fields"]?[_settings.BusinessOutcomeCustomFieldId]?.GetValue<string>();
 
         var labels = json?["fields"]?["labels"]?.AsArray()
             .Select(l => l?.GetValue<string>())
@@ -170,6 +171,7 @@ public class JiraIssueService : IJiraIssueService
             IssueType = json?["fields"]?["issuetype"]?["name"]?.GetValue<string>(),
             FeatureName = featureName,
             Labels = labels,
+            ParentLink = parentLink,
         };
     }
 
@@ -186,7 +188,7 @@ public class JiraIssueService : IJiraIssueService
 
         while (true)
         {
-            var url = $"{baseUrl}?jql={encodedJql}&fields=summary,description,status,issuetype,labels,{_settings.FeatureNameCustomFieldId}&maxResults={pageSize}&startAt={startAt}";
+            var url = $"{baseUrl}?jql={encodedJql}&fields=summary,description,status,issuetype,labels,{_settings.FeatureNameCustomFieldId},{_settings.BusinessOutcomeCustomFieldId}&maxResults={pageSize}&startAt={startAt}";
 
             using var httpClient = new HttpClient();
             var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -210,6 +212,7 @@ public class JiraIssueService : IJiraIssueService
                 foreach (var issue in issues)
                 {
                     var featureName = issue?["fields"]?[_settings.FeatureNameCustomFieldId]?.GetValue<string>();
+                    var parentLink = issue?["fields"]?[_settings.BusinessOutcomeCustomFieldId]?.GetValue<string>();
 
                     var labels = issue?["fields"]?["labels"]?.AsArray()
                         .Select(l => l?.GetValue<string>())
@@ -226,6 +229,7 @@ public class JiraIssueService : IJiraIssueService
                         IssueType = issue?["fields"]?["issuetype"]?["name"]?.GetValue<string>(),
                         FeatureName = featureName,
                         Labels = labels,
+                        ParentLink = parentLink,
                     });
                 }
             }

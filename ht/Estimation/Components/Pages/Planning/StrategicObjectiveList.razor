@@ -1,12 +1,18 @@
 @attribute [Route(RoutingPath.StrategicObjectives)]
 @using Estimation.Components.ModalDialog
+@using Estimation.Core.JiraLogic
 @using Estimation.Core.Models
 @using Estimation.Core.Services
 @using Serilog
 
 @inject IStrategicObjectiveService ProgramService
+@inject ICapitalProjectService CapitalProjectService
+@inject IJiraAuthService JiraAuth
+@inject IJiraIssueService JiraIssueService
+@inject IWindowsAuthService WindowsAuth
 @inject NavigationManager Nav
 @inject IModalDialogService MessageService
+@inject IDialogService DialogService
 @inject ISnackbar Snackbar
 @inject IConfiguration Configuration
 
@@ -49,6 +55,18 @@
                        OnClick="() => _drawerOpen = !_drawerOpen">
                 Filter
             </MudButton>
+
+            @if (_jiraConnected)
+            {
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Warning"
+                           StartIcon="@Icons.Material.Filled.Sync"
+                           Disabled="_syncing"
+                           Style="margin-right: 10px"
+                           OnClick="OpenSyncDialogAsync">
+                    Synchronize with Jira
+                </MudButton>
+            }
 
             <MudButton Variant="Variant.Filled"
                        Color="Color.Primary"
@@ -104,6 +122,12 @@
                 </MudButton>
             </div>
         </MudDrawer>
+
+        @if (_syncing)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Warning" Class="mb-2" />
+            <MudAlert Severity="Severity.Info" Class="mb-2">Synchronizing Strategic Objectives from Jira...</MudAlert>
+        }
 
         <MudDivider />
 
@@ -179,6 +203,12 @@
     private bool _loading = true;
     private bool _drawerOpen;
     private bool _columnsPopoverOpen;
+
+    // --- Jira state ---
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _syncing;
+    private List<CapitalProject> _allCapitalProjects = new();
 
     // --- Column visibility (true = visible) ---
     private bool _showJiraId = true;
@@ -271,6 +301,10 @@
     {
         try
         {
+            _userName = await WindowsAuth.GetUserName();
+            if (_userName is not null && JiraAuth.IsConfigured)
+                _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+
             var items = await ProgramService.GetAllWithHierarchyAsync();
             _rows = items.Select(pp =>
             {
@@ -323,6 +357,101 @@
         {
             Log.Error(ex, ex.Message);
             await MessageService.Exception(ex);
+        }
+    }
+
+    // --- Jira sync ---
+
+    private async Task OpenSyncDialogAsync()
+    {
+        if (_allCapitalProjects.Count == 0)
+            _allCapitalProjects = await CapitalProjectService.GetAllAsync();
+
+        var projectsWithKey = _allCapitalProjects
+            .Where(cp => !string.IsNullOrWhiteSpace(cp.JiraKey))
+            .ToList();
+
+        if (projectsWithKey.Count == 0)
+        {
+            Snackbar.Add("No ART Level records have a Jira Key configured.", Severity.Warning);
+            return;
+        }
+
+        var parameters = new DialogParameters<JiraSyncProjectDialog>
+        {
+            { x => x.Projects, projectsWithKey.Select(cp => new JiraSyncProjectDialog.ProjectOption(cp.Id, cp.JiraKey!, cp.Name)).ToList() }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<JiraSyncProjectDialog>("Synchronize with Jira", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled) return;
+
+        var selected = (JiraSyncProjectDialog.ProjectOption)result.Data!;
+        await RunSyncAsync(selected.Id, selected.JiraKey);
+    }
+
+    private async Task RunSyncAsync(int capitalProjectId, string projectKey)
+    {
+        _syncing = true;
+        StateHasChanged();
+
+        try
+        {
+            var jql = $"project = \"{projectKey}\" AND issuetype = \"{JiraIssueTypes.StrategicObjective}\"";
+            var jiraIssues = await JiraIssueService.SearchIssuesAsync(_userName!, jql);
+
+            if (jiraIssues.Count == 0)
+            {
+                Snackbar.Add($"No Strategic Objectives found in Jira project {projectKey}.", Severity.Info);
+                return;
+            }
+
+            var syncItems = jiraIssues.Select(ji => new JiraSyncItem(
+                JiraKey: ji.Key,
+                Name: ji.Summary,
+                Description: ji.Description,
+                IssueType: ji.IssueType,
+                Labels: ji.Labels is { Count: > 0 } ? string.Join(",", ji.Labels) : null
+            )).ToList();
+
+            var syncResult = await ProgramService.SyncFromJiraAsync(capitalProjectId, projectKey, syncItems);
+
+            Snackbar.Add(
+                $"Sync complete: {syncResult.Created} created, {syncResult.Updated} updated, {syncResult.Linked} linked.",
+                Severity.Success);
+
+            // Reload data
+            var items = await ProgramService.GetAllWithHierarchyAsync();
+            _rows = items.Select(pp =>
+            {
+                var capitalProjects = pp.CapitalProjectStrategicObjectives
+                    .Select(cpp => cpp.CapitalProject)
+                    .Where(cp => cp.Name is not null)
+                    .DistinctBy(cp => cp.Id).ToList();
+
+                return new ProgramRow(
+                    Id: pp.Id,
+                    JiraId: pp.JiraId,
+                    Summary: pp.Summary,
+                    CapitalProjects: capitalProjects
+                        .Select(cp => new CapitalProjectRef(cp.Id, cp.Name, cp.Description))
+                        .ToList(),
+                    Epics: pp.StrategicObjectivePortfolioEpics
+                        .Select(ppe => new EpicRef(ppe.PortfolioEpicId, ppe.PortfolioEpic.JiraId, ppe.PortfolioEpic.Summary))
+                        .ToList()
+                );
+            }).ToList();
+            RecomputeFilteredRows();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Jira sync failed");
+            Snackbar.Add($"Sync failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _syncing = false;
         }
     }
 

@@ -4,6 +4,8 @@ using Serilog;
 
 namespace Estimation.Core.Services;
 
+public record JiraEpicSyncItem(string JiraKey, string? Name, string? Description, string? IssueType, string? Labels, string? ParentLink);
+
 public interface IPortfolioEpicService
 {
     Task<List<PortfolioEpic>> GetAllAsync();
@@ -12,6 +14,7 @@ public interface IPortfolioEpicService
     Task<PortfolioEpic> CreateAsync(PortfolioEpic epic);
     Task<PortfolioEpic> UpdateAsync(PortfolioEpic epic);
     Task<bool> DeleteAsync(int id);
+    Task<JiraSyncResult> SyncFromJiraAsync(string projectKey, List<JiraEpicSyncItem> items);
 }
 
 public class PortfolioEpicService : IPortfolioEpicService
@@ -89,5 +92,85 @@ public class PortfolioEpicService : IPortfolioEpicService
         db.PortfolioEpics.Remove(pe);
         await db.SaveChangesAsync();
         return true;
+    }
+
+    public async Task<JiraSyncResult> SyncFromJiraAsync(string projectKey, List<JiraEpicSyncItem> items)
+    {
+        await using var db = await _ctx.CreateDbContextAsync();
+
+        // Load existing PortfolioEpics by JiraId
+        var jiraKeys = items.Select(i => i.JiraKey).ToList();
+        var existing = await db.PortfolioEpics
+            .Where(pe => pe.JiraId != null && jiraKeys.Contains(pe.JiraId))
+            .ToListAsync();
+        var existingByJiraId = existing.ToDictionary(pe => pe.JiraId!);
+
+        // Load StrategicObjectives by JiraId for parent linking
+        var parentLinks = items.Where(i => !string.IsNullOrEmpty(i.ParentLink)).Select(i => i.ParentLink!).Distinct().ToList();
+        var soByJiraId = parentLinks.Count > 0
+            ? await db.StrategicObjectives
+                .Where(so => so.JiraId != null && parentLinks.Contains(so.JiraId))
+                .ToDictionaryAsync(so => so.JiraId!)
+            : new Dictionary<string, StrategicObjective>();
+
+        // Load existing links
+        var existingLinks = (await db.StrategicObjectivePortfolioEpics.ToListAsync())
+            .Where(l => true)
+            .ToList();
+
+        int created = 0, updated = 0, linked = 0;
+
+        foreach (var item in items)
+        {
+            PortfolioEpic pe;
+            if (existingByJiraId.TryGetValue(item.JiraKey, out var existingPe))
+            {
+                existingPe.Summary = item.Name ?? existingPe.Summary;
+                existingPe.Description = item.Description;
+                existingPe.Labels = item.Labels;
+                pe = existingPe;
+                updated++;
+            }
+            else
+            {
+                pe = new PortfolioEpic
+                {
+                    JiraId = item.JiraKey,
+                    ProjectKey = projectKey,
+                    IssueType = item.IssueType,
+                    Summary = item.Name ?? item.JiraKey,
+                    Description = item.Description,
+                    Labels = item.Labels,
+                };
+                db.PortfolioEpics.Add(pe);
+                created++;
+            }
+
+            await db.SaveChangesAsync();
+
+            // Link to parent StrategicObjective via ParentLink
+            if (!string.IsNullOrEmpty(item.ParentLink) && soByJiraId.TryGetValue(item.ParentLink, out var parentSo))
+            {
+                var alreadyLinked = existingLinks.Any(l => l.StrategicObjectiveId == parentSo.Id && l.PortfolioEpicId == pe.Id);
+                if (!alreadyLinked)
+                {
+                    var link = new StrategicObjectivePortfolioEpic
+                    {
+                        StrategicObjectiveId = parentSo.Id,
+                        PortfolioEpicId = pe.Id,
+                    };
+                    db.StrategicObjectivePortfolioEpics.Add(link);
+                    existingLinks.Add(link);
+                    linked++;
+                }
+            }
+        }
+
+        await db.SaveChangesAsync();
+
+        Log.Information("Jira PortfolioEpic sync: created={Created}, updated={Updated}, linked={Linked}",
+            created, updated, linked);
+
+        return new JiraSyncResult(created, updated, linked);
     }
 }

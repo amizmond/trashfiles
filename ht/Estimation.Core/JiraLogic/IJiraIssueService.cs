@@ -30,6 +30,7 @@ public class JiraIssueResponse
     public string? IssueType { get; set; }
     public string? FeatureName { get; set; }
     public List<string>? Labels { get; set; }
+    public string? ParentLink { get; set; }
 }
 
 public interface IJiraIssueService
