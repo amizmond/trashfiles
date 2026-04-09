@@ -371,6 +371,58 @@ public class JiraService
         return rows.OrderBy(r => r.Value).ToList();
     }
 
+    public async Task<List<JiraChildIssue>> GetChildIssuesAsync(JiraCredentials credentials, string parentKey, CancellationToken ct = default)
+    {
+        using var client = CreateClient(credentials);
+        var issues = new List<JiraChildIssue>();
+        var startAt = 0;
+        const int pageSize = 100;
+        var encodedJql = Uri.EscapeDataString($"parent = {parentKey}");
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var response = await client.GetAsync(
+                $"rest/api/2/search?jql={encodedJql}&fields=summary,status,issuetype,assignee,priority&maxResults={pageSize}&startAt={startAt}", ct);
+            await EnsureSuccessAsync(response, ct);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            var total = doc.RootElement.TryGetProperty("total", out var totalEl) ? totalEl.GetInt32() : 0;
+
+            if (doc.RootElement.TryGetProperty("issues", out var issuesArray))
+            {
+                foreach (var issue in issuesArray.EnumerateArray())
+                {
+                    var key = issue.GetProperty("key").GetString() ?? "";
+                    var fields = issue.GetProperty("fields");
+
+                    issues.Add(new JiraChildIssue
+                    {
+                        Key = key,
+                        Summary = fields.TryGetProperty("summary", out var summary)
+                            ? summary.GetString() ?? "" : "",
+                        Status = fields.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.Object
+                            ? (status.TryGetProperty("name", out var sn) ? sn.GetString() ?? "" : "") : "",
+                        IssueType = fields.TryGetProperty("issuetype", out var issueType) && issueType.ValueKind == JsonValueKind.Object
+                            ? (issueType.TryGetProperty("name", out var itn) ? itn.GetString() ?? "" : "") : "",
+                        Assignee = fields.TryGetProperty("assignee", out var assignee) && assignee.ValueKind == JsonValueKind.Object
+                            ? (assignee.TryGetProperty("displayName", out var an) ? an.GetString() ?? "" : "") : "Unassigned",
+                        Priority = fields.TryGetProperty("priority", out var priority) && priority.ValueKind == JsonValueKind.Object
+                            ? (priority.TryGetProperty("name", out var pn) ? pn.GetString() ?? "" : "") : ""
+                    });
+                }
+            }
+
+            startAt += pageSize;
+            if (startAt >= total)
+                break;
+        }
+
+        return issues;
+    }
+
     private static string FormatJsonValue(JsonElement element)
     {
         switch (element.ValueKind)

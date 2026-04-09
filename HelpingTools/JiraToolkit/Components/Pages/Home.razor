@@ -1,39 +1,30 @@
 @page "/"
-@using JiraToolkit.Models
-@using JiraToolkit.Services
+@inject JiraSessionService Session
 @inject JiraService JiraService
-@inject LocalStorageService LocalStorage
 @inject ISnackbar Snackbar
+@inject ILogger<Home> Logger
 @rendermode InteractiveServer
 
 <PageTitle>Issue Explorer</PageTitle>
 
 <MudText Typo="Typo.h5" Class="mb-4">Issue Explorer</MudText>
 
+@if (!Session.HasCredentials)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">Please connect to Jira using the credentials bar above.</MudAlert>
+}
+
 <MudPaper Class="pa-4 mb-4" Elevation="1">
     <MudGrid>
         <MudItem xs="12" sm="4">
-            <MudTextField @bind-Value="_jiraUrl" Label="Jira URL" Placeholder="https://jira.example.com"
-                          Variant="Variant.Outlined" Adornment="Adornment.Start"
-                          AdornmentIcon="@Icons.Material.Filled.Link" />
-        </MudItem>
-        <MudItem xs="12" sm="2">
-            <MudTextField @bind-Value="_username" Label="Username" Variant="Variant.Outlined"
-                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Person" />
-        </MudItem>
-        <MudItem xs="12" sm="2">
-            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
-                          InputType="InputType.Password" Adornment="Adornment.Start"
-                          AdornmentIcon="@Icons.Material.Filled.Lock" />
-        </MudItem>
-        <MudItem xs="12" sm="2">
             <MudTextField @bind-Value="_issueKey" Label="Issue Key" Placeholder="PROJ-123"
                           Variant="Variant.Outlined" Adornment="Adornment.Start"
                           AdornmentIcon="@Icons.Material.Filled.ConfirmationNumber" />
         </MudItem>
         <MudItem xs="12" sm="2" Class="d-flex align-end">
             <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadIssue"
-                       Disabled="@_loading" FullWidth="true" StartIcon="@Icons.Material.Filled.Download">
+                       Disabled="@(_loading || !Session.HasCredentials)" FullWidth="true"
+                       StartIcon="@Icons.Material.Filled.Download">
                 @if (_loading)
                 {
                     <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
@@ -85,9 +76,6 @@
 }
 
 @code {
-    private string _jiraUrl = string.Empty;
-    private string _username = string.Empty;
-    private string _password = string.Empty;
     private string _issueKey = string.Empty;
     private string _searchText = string.Empty;
     private bool _showEmptyFields = true;
@@ -109,32 +97,11 @@
         return true;
     });
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (firstRender)
-        {
-            var savedUrl = await LocalStorage.GetItemAsync("jiraUrl");
-            if (!string.IsNullOrEmpty(savedUrl))
-            {
-                _jiraUrl = savedUrl;
-                StateHasChanged();
-            }
-
-            var savedUsername = await LocalStorage.GetItemAsync("jiraUsername");
-            if (!string.IsNullOrEmpty(savedUsername))
-            {
-                _username = savedUsername;
-                StateHasChanged();
-            }
-        }
-    }
-
     private async Task LoadIssue()
     {
-        if (string.IsNullOrWhiteSpace(_jiraUrl) || string.IsNullOrWhiteSpace(_issueKey)
-            || string.IsNullOrWhiteSpace(_username) || string.IsNullOrWhiteSpace(_password))
+        if (string.IsNullOrWhiteSpace(_issueKey))
         {
-            Snackbar.Add("Please fill in all fields", Severity.Warning);
+            Snackbar.Add("Please enter an issue key", Severity.Warning);
             return;
         }
 
@@ -143,25 +110,17 @@
 
         try
         {
-            await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
-            await LocalStorage.SetItemAsync("jiraUsername", _username);
-
-            var credentials = new JiraCredentials
-            {
-                BaseUrl = _jiraUrl,
-                Username = _username,
-                Password = _password
-            };
-
-            _fields = await JiraService.GetIssueFieldsAsync(credentials, _issueKey.Trim());
+            _fields = await JiraService.GetIssueFieldsAsync(Session.GetCredentials(), _issueKey.Trim());
             Snackbar.Add($"Loaded {_fields.Count} fields for {_issueKey}", Severity.Success);
         }
         catch (HttpRequestException ex)
         {
+            Logger.LogError(ex, "Failed to load issue {IssueKey}", _issueKey);
             Snackbar.Add($"HTTP Error: {ex.Message}", Severity.Error);
         }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load issue {IssueKey}", _issueKey);
             Snackbar.Add($"Error: {ex.Message}", Severity.Error);
         }
         finally

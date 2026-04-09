@@ -24,6 +24,7 @@ builder.Services.AddHttpClient("JiraClient")
         ServerCertificateCustomValidationCallback = (_, _, _, _) => true
     });
 
+builder.Services.AddScoped<JiraSessionService>();
 builder.Services.AddScoped<JiraService>();
 builder.Services.AddScoped<LocalStorageService>();
 

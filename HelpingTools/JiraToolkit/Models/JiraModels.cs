@@ -29,6 +29,16 @@ public class JiraLabel
     public string Name { get; set; } = string.Empty;
 }
 
+public class JiraChildIssue
+{
+    public string Key { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string IssueType { get; set; } = string.Empty;
+    public string Assignee { get; set; } = string.Empty;
+    public string Priority { get; set; } = string.Empty;
+}
+
 public class JiraCredentials
 {
     public string BaseUrl { get; set; } = string.Empty;
