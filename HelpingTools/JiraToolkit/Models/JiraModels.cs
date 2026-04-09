@@ -39,6 +39,14 @@ public class JiraChildIssue
     public string Priority { get; set; } = string.Empty;
 }
 
+public class JiraProjectIssue
+{
+    public string Key { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string IssueType { get; set; } = string.Empty;
+    public string Labels { get; set; } = string.Empty;
+}
+
 public class JiraCredentials
 {
     public string BaseUrl { get; set; } = string.Empty;

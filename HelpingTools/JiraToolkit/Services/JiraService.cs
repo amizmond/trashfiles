@@ -371,6 +371,85 @@ public class JiraService
         return rows.OrderBy(r => r.Value).ToList();
     }
 
+    public async Task<List<JiraIssueType>> GetProjectIssueTypesAsync(JiraCredentials credentials, string projectKey, CancellationToken ct = default)
+    {
+        using var client = CreateClient(credentials);
+        var response = await client.GetAsync($"rest/api/2/project/{Uri.EscapeDataString(projectKey)}/statuses", ct);
+        await EnsureSuccessAsync(response, ct);
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        var types = new List<JiraIssueType>();
+
+        foreach (var item in doc.RootElement.EnumerateArray())
+        {
+            types.Add(new JiraIssueType
+            {
+                Id = item.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "",
+                Name = item.TryGetProperty("name", out var name) ? name.GetString() ?? "" : "",
+                Subtask = item.TryGetProperty("subtask", out var sub) && sub.GetBoolean()
+            });
+        }
+
+        return types.OrderBy(t => t.Name).ToList();
+    }
+
+    public async Task<List<JiraProjectIssue>> GetProjectIssuesAsync(JiraCredentials credentials, string projectKey, string issueTypeName, CancellationToken ct = default)
+    {
+        using var client = CreateClient(credentials);
+        var issues = new List<JiraProjectIssue>();
+        var startAt = 0;
+        const int pageSize = 100;
+        var encodedJql = Uri.EscapeDataString($"project = \"{projectKey}\" AND issuetype = \"{issueTypeName}\"");
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var response = await client.GetAsync(
+                $"rest/api/2/search?jql={encodedJql}&fields=summary,issuetype,labels&maxResults={pageSize}&startAt={startAt}", ct);
+            await EnsureSuccessAsync(response, ct);
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+
+            var total = doc.RootElement.TryGetProperty("total", out var totalEl) ? totalEl.GetInt32() : 0;
+
+            if (doc.RootElement.TryGetProperty("issues", out var issuesArray))
+            {
+                foreach (var issue in issuesArray.EnumerateArray())
+                {
+                    var key = issue.GetProperty("key").GetString() ?? "";
+                    var fields = issue.GetProperty("fields");
+
+                    var summary = fields.TryGetProperty("summary", out var sumEl) ? sumEl.GetString() ?? "" : "";
+                    var issueType = fields.TryGetProperty("issuetype", out var itEl) && itEl.ValueKind == JsonValueKind.Object
+                        ? (itEl.TryGetProperty("name", out var itn) ? itn.GetString() ?? "" : "") : "";
+                    var labels = "";
+                    if (fields.TryGetProperty("labels", out var labelsEl) && labelsEl.ValueKind == JsonValueKind.Array)
+                    {
+                        labels = string.Join(", ", labelsEl.EnumerateArray()
+                            .Select(l => l.GetString() ?? "")
+                            .Where(l => !string.IsNullOrEmpty(l)));
+                    }
+
+                    issues.Add(new JiraProjectIssue
+                    {
+                        Key = key,
+                        Summary = summary,
+                        IssueType = issueType,
+                        Labels = labels
+                    });
+                }
+            }
+
+            startAt += pageSize;
+            if (startAt >= total)
+                break;
+        }
+
+        return issues;
+    }
+
     public async Task<List<JiraChildIssue>> GetChildIssuesAsync(JiraCredentials credentials, string parentKey, CancellationToken ct = default)
     {
         using var client = CreateClient(credentials);

@@ -28,6 +28,13 @@
             @if (_projectsLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
             Refresh
         </MudButton>
+        @if (_selectedProject != null)
+        {
+            <MudChip T="string" Icon="@Icons.Material.Filled.FilterAlt" Color="Color.Primary"
+                     Size="Size.Small" OnClose="ClearSelectedProject">
+                Selected: @_selectedProject.Key — @_selectedProject.Name
+            </MudChip>
+        }
         <MudSpacer />
         @if (Session.Projects.Count > 0)
         {
@@ -43,16 +50,115 @@
     }
     else if (Session.Projects.Count > 0)
     {
-        <MudDataGrid Items="@FilteredProjects" Dense="true" Striped="true" Hover="true" Bordered="true"
-                     FixedHeader="true" Height="200px" Class="mt-2">
+        <MudDataGrid T="JiraProject" Items="@FilteredProjects" Dense="true" Striped="true" Hover="true" Bordered="true"
+                     FixedHeader="true" Height="200px" Class="mt-2"
+                     SelectedItem="_selectedProject" SelectedItemChanged="@((JiraProject? p) => OnProjectSelected(p))"
+                     SelectOnRowClick="true" RowStyleFunc="@ProjectRowStyle">
             <Columns>
-                <PropertyColumn Property="x => x.Key" Title="Key" />
-                <PropertyColumn Property="x => x.Name" Title="Name" />
-                <PropertyColumn Property="x => x.Id" Title="Id" />
+                <PropertyColumn Property="x => x!.Key" Title="Key" />
+                <PropertyColumn Property="x => x!.Name" Title="Name" />
+                <PropertyColumn Property="x => x!.Id" Title="Id" />
             </Columns>
         </MudDataGrid>
     }
 </MudPaper>
+
+@* Project Issue Types *@
+@if (_selectedProject != null)
+{
+    <MudPaper Class="pa-3 mb-4" Elevation="1">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+            <MudIcon Icon="@Icons.Material.Filled.Category" Color="Color.Secondary" />
+            <MudText Typo="Typo.subtitle1"><b>Issue Types</b> for @_selectedProject.Key</MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Secondary">@_projectIssueTypes.Count</MudChip>
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                       OnClick="LoadProjectIssueTypesClick" Disabled="@_projectIssueTypesLoading"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_projectIssueTypesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Refresh
+            </MudButton>
+            @if (_selectedIssueType != null)
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.FilterAlt" Color="Color.Secondary"
+                         Size="Size.Small" OnClose="ClearSelectedIssueType">
+                    Selected: @_selectedIssueType.Name
+                </MudChip>
+            }
+        </MudStack>
+        @if (_projectIssueTypesLoading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Secondary" Class="mt-2" />
+        }
+        else if (_projectIssueTypes.Count > 0)
+        {
+            <MudDataGrid T="JiraIssueType" Items="@_projectIssueTypes" Dense="true" Striped="true" Hover="true" Bordered="true"
+                         FixedHeader="true" Height="180px" Class="mt-2"
+                         SelectedItem="_selectedIssueType" SelectedItemChanged="@((JiraIssueType? t) => OnIssueTypeSelected(t))"
+                         SelectOnRowClick="true" RowStyleFunc="@IssueTypeRowStyle">
+                <Columns>
+                    <PropertyColumn Property="x => x!.Id" Title="Id" />
+                    <PropertyColumn Property="x => x!.Name" Title="Name" />
+                    <TemplateColumn Title="Subtask">
+                        <CellTemplate>
+                            <MudIcon Icon="@(context.Item!.Subtask ? Icons.Material.Filled.Check : Icons.Material.Filled.Close)"
+                                     Color="@(context.Item.Subtask ? Color.Success : Color.Default)" Size="Size.Small" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        }
+    </MudPaper>
+}
+
+@* Project Issues *@
+@if (_selectedProject != null && _selectedIssueType != null)
+{
+    <MudPaper Class="pa-3 mb-4" Elevation="1">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+            <MudIcon Icon="@Icons.Material.Filled.List" Color="Color.Info" />
+            <MudText Typo="Typo.subtitle1">
+                <b>Issues</b> — @_selectedProject.Key / @_selectedIssueType.Name
+            </MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Info">@_projectIssues.Count</MudChip>
+            <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small"
+                       OnClick="LoadProjectIssuesClick" Disabled="@_projectIssuesLoading"
+                       StartIcon="@Icons.Material.Filled.Search">
+                @if (_projectIssuesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Issues
+            </MudButton>
+            <MudSpacer />
+            @if (_projectIssues.Count > 0)
+            {
+                <MudTextField @bind-Value="_projectIssueSearch" Placeholder="Search issues..."
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              Immediate="true" DebounceInterval="300" Clearable="true"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 300px;" />
+            }
+        </MudStack>
+        @if (_projectIssuesLoading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Info" Class="mt-2" />
+        }
+        else if (_projectIssues.Count > 0)
+        {
+            <MudDataGrid Items="@_projectIssues" Dense="true" Striped="true" Hover="true" Bordered="true"
+                         FixedHeader="true" Height="300px" Class="mt-2" QuickFilter="@ProjectIssueFilter">
+                <Columns>
+                    <PropertyColumn Property="x => x.Key" Title="Jira ID" />
+                    <PropertyColumn Property="x => x.Summary" Title="Name" />
+                    <PropertyColumn Property="x => x.IssueType" Title="Issue Type" />
+                    <PropertyColumn Property="x => x.Labels" Title="Labels" />
+                </Columns>
+            </MudDataGrid>
+        }
+        else if (_projectIssuesSearched)
+        {
+            <MudAlert Severity="Severity.Info" Class="mt-2">
+                No issues found for @_selectedProject.Key / @_selectedIssueType.Name.
+            </MudAlert>
+        }
+    </MudPaper>
+}
 
 @* Lookup tabs *@
 <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" Class="pa-4">
@@ -102,14 +208,18 @@
     <MudTabPanel Text="Labels" Icon="@Icons.Material.Filled.Label" BadgeData="@_labels.Count"
                  BadgeColor="Color.Tertiary">
         <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
-            <MudSelect @bind-Value="_labelsProjectFilter" Label="Filter by Project" Variant="Variant.Outlined"
-                       Margin="Margin.Dense" Style="max-width: 250px;" Clearable="true"
-                       Placeholder="All labels" Dense="true">
-                @foreach (var p in Session.Projects)
-                {
-                    <MudSelectItem Value="@p.Key">@p.Key — @p.Name</MudSelectItem>
-                }
-            </MudSelect>
+            @if (_selectedProject != null)
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.FilterAlt" Color="Color.Tertiary" Size="Size.Small">
+                    Project: @_selectedProject.Key
+                </MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.Public" Color="Color.Default" Size="Size.Small">
+                    All projects
+                </MudChip>
+            }
             <MudButton Variant="Variant.Outlined" Color="Color.Tertiary" Size="Size.Small"
                        OnClick="LoadLabelsClick" Disabled="@(!Session.HasCredentials || _labelsLoading)"
                        StartIcon="@Icons.Material.Filled.Refresh">
@@ -236,6 +346,9 @@
     private string _parentLinkFieldId = "customfield_19001";
 
     private bool _projectsLoading;
+    private bool _projectIssueTypesLoading;
+    private bool _projectIssuesLoading;
+    private bool _projectIssuesSearched;
     private bool _issueTypesLoading;
     private bool _labelsLoading;
     private bool _parentLinksLoading;
@@ -245,25 +358,32 @@
     private string _projectSearch = string.Empty;
     private string _issueTypeSearch = string.Empty;
     private string _labelSearch = string.Empty;
-    private string? _labelsProjectFilter;
     private string _parentIssueKey = string.Empty;
     private string _childIssueSearch = string.Empty;
+    private string _projectIssueSearch = string.Empty;
 
+    private JiraProject? _selectedProject;
+    private JiraIssueType? _selectedIssueType;
+
+    private List<JiraIssueType> _projectIssueTypes = new();
+    private List<JiraProjectIssue> _projectIssues = new();
     private List<JiraIssueType> _issueTypes = new();
     private List<JiraLabel> _labels = new();
     private List<JiraFieldRow> _parentLinks = new();
     private List<JiraChildIssue> _childIssues = new();
 
     private CancellationTokenSource _projectsCts = new();
+    private CancellationTokenSource _projectIssueTypesCts = new();
+    private CancellationTokenSource _projectIssuesCts = new();
     private CancellationTokenSource _issueTypesCts = new();
     private CancellationTokenSource _labelsCts = new();
     private CancellationTokenSource _parentLinksCts = new();
     private CancellationTokenSource _childIssuesCts = new();
 
-    private IEnumerable<JiraProject> FilteredProjects => Session.Projects.Where(p =>
+    private IEnumerable<JiraProject> FilteredProjects => Session.Projects.Where((JiraProject p) =>
     {
         if (string.IsNullOrWhiteSpace(_projectSearch)) return true;
-        var s = _projectSearch.Trim();
+        var s = _projectSearch!.Trim();
         return p.Key.Contains(s, StringComparison.OrdinalIgnoreCase)
             || p.Name.Contains(s, StringComparison.OrdinalIgnoreCase)
             || p.Id.Contains(s, StringComparison.OrdinalIgnoreCase);
@@ -282,6 +402,16 @@
     {
         if (string.IsNullOrWhiteSpace(_labelSearch)) return true;
         return l.Name.Contains(_labelSearch.Trim(), StringComparison.OrdinalIgnoreCase);
+    };
+
+    private Func<JiraProjectIssue, bool> ProjectIssueFilter => i =>
+    {
+        if (string.IsNullOrWhiteSpace(_projectIssueSearch)) return true;
+        var s = _projectIssueSearch.Trim();
+        return i.Key.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || i.Summary.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || i.IssueType.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || i.Labels.Contains(s, StringComparison.OrdinalIgnoreCase);
     };
 
     private Func<JiraChildIssue, bool> ChildIssueFilter => c =>
@@ -324,6 +454,109 @@
         cts.Dispose();
         cts = new CancellationTokenSource();
         return cts.Token;
+    }
+
+    private async void OnProjectSelected(JiraProject? project)
+    {
+        var newProject = _selectedProject == project ? null : project;
+        _selectedProject = newProject;
+        _selectedIssueType = null;
+        _projectIssueTypes.Clear();
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+
+        if (newProject != null && Session.HasCredentials)
+            await LoadProjectIssueTypes();
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ClearSelectedProject()
+    {
+        _selectedProject = null;
+        _selectedIssueType = null;
+        _projectIssueTypes.Clear();
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private void OnIssueTypeSelected(JiraIssueType? issueType)
+    {
+        _selectedIssueType = _selectedIssueType == issueType ? null : issueType;
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private void ClearSelectedIssueType()
+    {
+        _selectedIssueType = null;
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private string ProjectRowStyle(JiraProject? project, int _)
+    {
+        if (_selectedProject != null && project != null && project.Key == _selectedProject.Key)
+            return "background-color: var(--mud-palette-primary-lighten); font-weight: bold;";
+        return string.Empty;
+    }
+
+    private string IssueTypeRowStyle(JiraIssueType? issueType, int _)
+    {
+        if (_selectedIssueType != null && issueType != null && issueType.Id == _selectedIssueType.Id)
+            return "background-color: var(--mud-palette-secondary-lighten); font-weight: bold;";
+        return string.Empty;
+    }
+
+    private async Task LoadProjectIssueTypes()
+    {
+        if (_selectedProject == null) return;
+        _projectIssueTypesLoading = true;
+        var ct = ResetCts(ref _projectIssueTypesCts);
+        try
+        {
+            _projectIssueTypes = await JiraService.GetProjectIssueTypesAsync(Session.GetCredentials(), _selectedProject.Key, ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load issue types for project {Project}", _selectedProject.Key);
+            Snackbar.Add($"Issue types error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _projectIssueTypesLoading = false;
+        }
+    }
+
+    private async Task LoadProjectIssueTypesClick()
+    {
+        await LoadProjectIssueTypes();
+    }
+
+    private async Task LoadProjectIssuesClick()
+    {
+        if (_selectedProject == null || _selectedIssueType == null) return;
+        _projectIssuesLoading = true;
+        _projectIssuesSearched = false;
+        var ct = ResetCts(ref _projectIssuesCts);
+        try
+        {
+            _projectIssues = await JiraService.GetProjectIssuesAsync(
+                Session.GetCredentials(), _selectedProject.Key, _selectedIssueType.Name, ct);
+            _projectIssuesSearched = true;
+            Snackbar.Add($"Found {_projectIssues.Count} issues ({_selectedProject.Key} / {_selectedIssueType.Name})", Severity.Success);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load project issues");
+            Snackbar.Add($"Issues error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _projectIssuesLoading = false;
+        }
     }
 
     private async Task RefreshProjects()
@@ -375,8 +608,9 @@
         var ct = ResetCts(ref _labelsCts);
         try
         {
-            _labels = await JiraService.GetLabelsAsync(Session.GetCredentials(), _labelsProjectFilter, ct);
-            var scope = string.IsNullOrWhiteSpace(_labelsProjectFilter) ? "all" : _labelsProjectFilter;
+            var projectFilter = _selectedProject?.Key;
+            _labels = await JiraService.GetLabelsAsync(Session.GetCredentials(), projectFilter, ct);
+            var scope = string.IsNullOrWhiteSpace(projectFilter) ? "all" : projectFilter;
             Snackbar.Add($"Loaded {_labels.Count} labels ({scope})", Severity.Success);
         }
         catch (OperationCanceledException) { }
@@ -447,6 +681,8 @@
     {
         Session.OnChange -= HandleSessionChange;
         _projectsCts.Cancel(); _projectsCts.Dispose();
+        _projectIssueTypesCts.Cancel(); _projectIssueTypesCts.Dispose();
+        _projectIssuesCts.Cancel(); _projectIssuesCts.Dispose();
         _issueTypesCts.Cancel(); _issueTypesCts.Dispose();
         _labelsCts.Cancel(); _labelsCts.Dispose();
         _parentLinksCts.Cancel(); _parentLinksCts.Dispose();
