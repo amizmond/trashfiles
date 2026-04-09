@@ -461,13 +461,43 @@ public class JiraService
         return issues;
     }
 
-    public async Task<List<JiraChildIssue>> GetChildIssuesAsync(JiraCredentials credentials, string parentKey, CancellationToken ct = default)
+    public async Task<List<JiraChildIssue>> GetChildIssuesAsync(JiraCredentials credentials, string parentKey, string? parentLinkFieldId = null, CancellationToken ct = default)
     {
         using var client = CreateClient(credentials);
+        var seen = new HashSet<string>();
         var issues = new List<JiraChildIssue>();
+
+        // Search 1: native parent (subtasks + hierarchy)
+        await SearchChildIssues(client, $"parent = {parentKey}", issues, seen, ct);
+
+        // Search 2: custom parent link field (e.g. customfield_19001)
+        if (!string.IsNullOrWhiteSpace(parentLinkFieldId))
+        {
+            try
+            {
+                await SearchChildIssues(client, $"cf[{ExtractFieldNumber(parentLinkFieldId)}] = {parentKey}", issues, seen, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Parent link field search failed for {FieldId}, skipping", parentLinkFieldId);
+            }
+        }
+
+        return issues;
+    }
+
+    private static string ExtractFieldNumber(string fieldId)
+    {
+        // "customfield_19001" -> "19001"
+        var idx = fieldId.IndexOf('_');
+        return idx >= 0 ? fieldId[(idx + 1)..] : fieldId;
+    }
+
+    private async Task SearchChildIssues(HttpClient client, string jql, List<JiraChildIssue> issues, HashSet<string> seen, CancellationToken ct)
+    {
         var startAt = 0;
         const int pageSize = 100;
-        var encodedJql = Uri.EscapeDataString($"parent = {parentKey}");
+        var encodedJql = Uri.EscapeDataString(jql);
 
         while (true)
         {
@@ -486,6 +516,8 @@ public class JiraService
                 foreach (var issue in issuesArray.EnumerateArray())
                 {
                     var key = issue.GetProperty("key").GetString() ?? "";
+                    if (!seen.Add(key)) continue;
+
                     var fields = issue.GetProperty("fields");
 
                     issues.Add(new JiraChildIssue
@@ -509,8 +541,6 @@ public class JiraService
             if (startAt >= total)
                 break;
         }
-
-        return issues;
     }
 
     private static string FormatJsonValue(JsonElement element)

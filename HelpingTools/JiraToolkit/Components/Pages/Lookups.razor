@@ -261,6 +261,9 @@
                 @if (_childIssuesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
                 Find Children
             </MudButton>
+            <MudChip T="string" Icon="@Icons.Material.Filled.Info" Color="Color.Default" Size="Size.Small">
+                parent + @_parentLinkFieldId
+            </MudChip>
         </MudStack>
         @if (_childIssuesLoading)
         {
@@ -588,7 +591,7 @@
         var ct = ResetCts(ref _childIssuesCts);
         try
         {
-            _childIssues = await JiraService.GetChildIssuesAsync(Session.GetCredentials(), _parentIssueKey.Trim(), ct);
+            _childIssues = await JiraService.GetChildIssuesAsync(Session.GetCredentials(), _parentIssueKey.Trim(), _parentLinkFieldId, ct);
             _childIssuesSearched = true;
             if (_childIssues.Count > 0)
                 Snackbar.Add($"Found {_childIssues.Count} child issues for {_parentIssueKey}", Severity.Success);
