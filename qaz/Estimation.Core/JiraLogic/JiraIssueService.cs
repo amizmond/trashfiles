@@ -275,21 +275,32 @@ public class JiraIssueService : IJiraIssueService
             return null;
         }
 
+        // Single-value-as-array (e.g. Sprint / PI custom fields return an array of length 1).
+        if (node is JsonArray arr)
+        {
+            foreach (var n in arr)
+            {
+                var v = ParseJiraSingleOption(n);
+                if (!string.IsNullOrWhiteSpace(v))
+                {
+                    return v;
+                }
+            }
+            return null;
+        }
+
         if (node is JsonObject obj)
         {
-            var v = obj["value"]?.GetValue<string>() ?? obj["name"]?.GetValue<string>();
+            var v = SafeString(obj["value"]) ?? SafeString(obj["name"]);
             return string.IsNullOrWhiteSpace(v) ? null : v;
         }
 
-        try
-        {
-            var s = node.GetValue<string>();
-            return string.IsNullOrWhiteSpace(s) ? null : s;
-        }
-        catch
+        var s = SafeString(node);
+        if (string.IsNullOrWhiteSpace(s))
         {
             return null;
         }
+        return ExtractNameFromSprintString(s) ?? s;
     }
 
     private static string? ParseJiraMultiOption(JsonNode? node)
@@ -302,9 +313,7 @@ public class JiraIssueService : IJiraIssueService
         if (node is JsonArray arr)
         {
             var values = arr
-                .Select(n => n is JsonObject o
-                    ? (o["value"]?.GetValue<string>() ?? o["name"]?.GetValue<string>())
-                    : SafeString(n))
+                .Select(ParseJiraSingleOption)
                 .Where(v => !string.IsNullOrWhiteSpace(v))
                 .Cast<string>()
                 .ToList();
@@ -314,11 +323,44 @@ public class JiraIssueService : IJiraIssueService
         return ParseJiraSingleOption(node);
     }
 
+    private static string? ExtractNameFromSprintString(string s)
+    {
+        // Sprint-like SAFe Planning Increment fields serialize as:
+        //   com.atlassian.greenhopper.service.sprint.Sprint@<hash>[id=...,name=PI 2026.1,state=...]
+        const string marker = "name=";
+        var i = s.IndexOf(marker, StringComparison.Ordinal);
+        if (i < 0 || !s.Contains('['))
+        {
+            return null;
+        }
+
+        var start = i + marker.Length;
+        var end = s.IndexOfAny(new[] { ',', ']' }, start);
+        if (end < 0)
+        {
+            end = s.Length;
+        }
+        var name = s.Substring(start, end - start).Trim();
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
     private static string? SafeString(JsonNode? node)
     {
+        if (node is null)
+        {
+            return null;
+        }
         try
         {
-            return node?.GetValue<string>();
+            return node.GetValue<string>();
+        }
+        catch
+        {
+            // Fall through to numeric / generic stringification.
+        }
+        try
+        {
+            return node.ToJsonString().Trim('"');
         }
         catch
         {
