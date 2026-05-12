@@ -1,0 +1,91 @@
+@using Estimation.Core.JiraLogic
+
+<MudDialog Style="max-width:1100px">
+    <DialogContent>
+        @if (TeamsNotFound.Count > 0)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2" Dense>
+                <MudText Typo="Typo.body2" Class="font-weight-bold">
+                    Teams from Jira with no match in DB (will be ignored):
+                </MudText>
+                <MudText Typo="Typo.body2">@string.Join(", ", TeamsNotFound)</MudText>
+            </MudAlert>
+        }
+
+        @if (PisToCreate.Count > 0)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-2" Dense>
+                <MudText Typo="Typo.body2" Class="font-weight-bold">
+                    PIs that don't exist in DB and will be created:
+                </MudText>
+                <MudText Typo="Typo.body2">@string.Join(", ", PisToCreate)</MudText>
+            </MudAlert>
+        }
+
+        @if (Diffs.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info">No differences found. All filtered records are up to date with Jira.</MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.subtitle2" Class="mb-2">
+                @Diffs.Count difference(s) found across @Diffs.Select(d => d.JiraKey).Distinct().Count() record(s)
+            </MudText>
+
+            <MudDataGrid T="DiffItem" Items="Diffs" Dense Hover Striped
+                         Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterRow"
+                         Style="max-height:450px; overflow-y:auto"
+                         Bordered="true">
+                <Columns>
+                    <PropertyColumn Property="x => x.JiraKey" Title="Jira Key" />
+                    <PropertyColumn Property="x => x.PropertyName" Title="Property" />
+                    <PropertyColumn Property="x => x.DbValue" Title="Database Value">
+                        <CellTemplate>
+                            <MudText Style="max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                                     title="@context.Item.DbValue">
+                                @(context.Item.DbValue ?? "—")
+                            </MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.JiraValue" Title="Jira Value">
+                        <CellTemplate>
+                            <MudText Style="max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                                     title="@context.Item.JiraValue" Color="Color.Info">
+                                @(context.Item.JiraValue ?? "—")
+                            </MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                </Columns>
+            </MudDataGrid>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        @if (Diffs.Count > 0 || TeamsNotFound.Count > 0 || PisToCreate.Count > 0)
+        {
+            <MudButton Color="Color.Warning" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.Sync"
+                       OnClick="Apply">
+                Apply changes to DB
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public List<DiffItem> Diffs { get; set; } = new();
+    [Parameter] public List<JiraIssueResponse> JiraIssues { get; set; } = new();
+    [Parameter] public List<string> TeamsNotFound { get; set; } = new();
+    [Parameter] public List<string> PisToCreate { get; set; } = new();
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Apply()
+    {
+        MudDialog.Close(DialogResult.Ok(JiraIssues));
+    }
+
+    public record DiffItem(string JiraKey, string PropertyName, string? DbValue, string? JiraValue);
+}
