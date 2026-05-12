@@ -118,6 +118,7 @@
         width: calc(100vw - 25px) !important;
     }
     .jira-diff-dialog {
+        margin: 15px;
         max-width: calc(100vw - 25px) !important;
         width: calc(100vw - 25px) !important;
     }
@@ -235,7 +236,5 @@
     /// Jira key to the set of property names (canonical keys from <c>JiraSyncProperties</c>)
     /// the user explicitly picked.
     /// </summary>
-    public record SyncSelection(
-        List<JiraIssueResponse> Issues,
-        Dictionary<string, HashSet<string>>? PropertyMaskByJiraKey);
+    public record SyncSelection(List<JiraIssueResponse> Issues, Dictionary<string, HashSet<string>>? PropertyMaskByJiraKey);
 }
