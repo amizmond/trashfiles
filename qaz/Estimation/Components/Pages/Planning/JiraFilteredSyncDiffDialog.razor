@@ -112,6 +112,16 @@
 </MudDialog>
 
 <style>
+    /* Default mode: dialog stretches to viewport-width minus a small margin. */
+    .mud-dialog-container:has(.jira-diff-dialog) {
+        max-width: calc(100vw - 25px) !important;
+        width: calc(100vw - 25px) !important;
+    }
+    .jira-diff-dialog {
+        max-width: calc(100vw - 25px) !important;
+        width: calc(100vw - 25px) !important;
+    }
+
     /* Fullscreen mode: stretch the parent dialog container so the MudDialog fills the viewport.
        Uses :has() to detect when our dialog is in fullscreen state. */
     .mud-dialog-container:has(.jira-diff-dialog-fullscreen) {
@@ -164,7 +174,7 @@
 
     private string _dialogClass => _fullscreen ? "jira-diff-dialog jira-diff-dialog-fullscreen" : "jira-diff-dialog";
 
-    private string _dialogStyle => _fullscreen ? "" : "max-width:1400px;";
+    private string _dialogStyle => _fullscreen ? "" : "max-width: calc(100vw - 25px); width: calc(100vw - 25px);";
 
     private string _contentStyle => _fullscreen
         ? "height: calc(100vh - 180px);"
@@ -194,23 +204,38 @@
 
     private void ApplyAll()
     {
-        MudDialog.Close(DialogResult.Ok(JiraIssues));
+        // PropertyMaskByJiraKey == null signals "sync every property" to RunSyncAsync.
+        MudDialog.Close(DialogResult.Ok(new SyncSelection(JiraIssues, PropertyMaskByJiraKey: null)));
     }
 
     private void ApplySelected()
     {
-        if (SelectedFeatureCount == 0)
+        if (_selectedItems.Count == 0)
         {
             return;
         }
-        var selectedKeys = _selectedItems
-            .Select(d => d.JiraKey)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var maskByKey = _selectedItems
+            .GroupBy(d => d.JiraKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(d => d.PropertyName).ToHashSet(StringComparer.Ordinal),
+                StringComparer.OrdinalIgnoreCase);
+
         var issuesToApply = JiraIssues
-            .Where(j => selectedKeys.Contains(j.Key))
+            .Where(j => maskByKey.ContainsKey(j.Key))
             .ToList();
-        MudDialog.Close(DialogResult.Ok(issuesToApply));
+        MudDialog.Close(DialogResult.Ok(new SyncSelection(issuesToApply, maskByKey)));
     }
 
     public record DiffItem(string JiraKey, string PropertyName, string? DbValue, string? JiraValue);
+
+    /// <summary>
+    /// Result returned from the dialog. <paramref name="PropertyMaskByJiraKey"/> is null when the
+    /// user clicked "Synchronize all" (write every property); otherwise it maps each issue's
+    /// Jira key to the set of property names (canonical keys from <c>JiraSyncProperties</c>)
+    /// the user explicitly picked.
+    /// </summary>
+    public record SyncSelection(
+        List<JiraIssueResponse> Issues,
+        Dictionary<string, HashSet<string>>? PropertyMaskByJiraKey);
 }
