@@ -46,6 +46,7 @@
                         <MudSwitch T="bool" @bind-Value="_showEpicJiraId" Label="@PlanningDisplayNames.EpicId" Color="Color.Primary" Dense />
                         <MudSwitch T="bool" @bind-Value="_showEpic" Label="@PlanningDisplayNames.Epic" Color="Color.Primary" Dense />
                         <MudSwitch T="bool" @bind-Value="_showProgramJiraId" Label="@PlanningDisplayNames.StrategicObjectiveJiraId" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showLabels" Label="@PlanningDisplayNames.Labels" Color="Color.Primary" Dense />
                         <MudSwitch T="bool" @bind-Value="_showActions" Label="@PlanningDisplayNames.Actions" Color="Color.Primary" Dense />
                     </div>
                 </MudPopover>
@@ -171,6 +172,10 @@
                     }
                 </MudSelect>
 
+                <MudTextField @bind-Value="FilterLabel" Label="@PlanningDisplayNames.Labels" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Label" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
                 <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
                            StartIcon="@Icons.Material.Filled.ClearAll"
                            FullWidth OnClick="ClearFilters" Class="mt-2">
@@ -275,6 +280,17 @@
                         }
                     </CellTemplate>
                 </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.Labels" Sortable="false" CellStyle="max-width:250px;" Hidden="!_showLabels">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.Labels))
+                        {
+                            @foreach (var label in context.Item.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Class="mr-1">@label</MudChip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
                 @if (_canEdit)
                 {
                     <TemplateColumn Title="@PlanningDisplayNames.Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
@@ -318,6 +334,7 @@
     private bool _showEpicJiraId = true;
     private bool _showEpic = true;
     private bool _showProgramJiraId = true;
+    private bool _showLabels = true;
     private bool _showActions = true;
 
     // --- Sort state ---
@@ -421,6 +438,13 @@
         set { _filterSearchBacking = value; ScheduleRecompute(); }
     }
 
+    private string? _filterLabelBacking;
+    private string? FilterLabel
+    {
+        get => _filterLabelBacking;
+        set { _filterLabelBacking = value; ScheduleRecompute(); }
+    }
+
     private bool _filterEpicNotBacking;
     private bool FilterEpicNot
     {
@@ -485,6 +509,7 @@
     private void ClearFilters()
     {
         _filterSearchBacking = null;
+        _filterLabelBacking = null;
         _filterDepartmentNamesBacking = Array.Empty<string>();
         _filterDepartmentNamesSet.Clear();
         _filterEpicNotBacking = false;
@@ -552,6 +577,17 @@
                 || (r.JiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
                 || (r.EpicName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
                 || (r.EpicJiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+            {
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_filterLabelBacking))
+        {
+            var labelFilter = _filterLabelBacking.Trim();
+            if (string.IsNullOrEmpty(r.Labels)
+                || !r.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Any(l => l.Contains(labelFilter, StringComparison.OrdinalIgnoreCase)))
             {
                 return false;
             }
@@ -653,6 +689,11 @@
             _filterSearchBacking = search.ToString();
         }
 
+        if (q.TryGetValue("label", out var label) && !string.IsNullOrWhiteSpace(label))
+        {
+            _filterLabelBacking = label.ToString();
+        }
+
         if (q.TryGetValue("epicNot", out var epicNot)
             && string.Equals(epicNot, "true", StringComparison.OrdinalIgnoreCase))
         {
@@ -723,6 +764,7 @@
 
         var query = new Dictionary<string, object?>();
         query["search"] = string.IsNullOrWhiteSpace(_filterSearchBacking) ? null : _filterSearchBacking;
+        query["label"] = string.IsNullOrWhiteSpace(_filterLabelBacking) ? null : _filterLabelBacking;
         query["dept"] = _filterDepartmentNamesSet.Count > 0 ? string.Join(",", _filterDepartmentNamesBacking) : null;
         query["epicNot"] = _filterEpicNotBacking ? (object?)true : null;
         query["epic"] = _filterEpicNamesSet.Count > 0 ? string.Join(",", _filterEpicNamesBacking) : null;
@@ -802,7 +844,8 @@
                     FeaturePis: bo.Features
                         .Where(f => f.Pi is not null)
                         .Select(f => new FeaturePiRef(f.Pi!.Name, f.Pi.StartDate))
-                        .DistinctBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList()
+                        .DistinctBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                    Labels: bo.Labels
                 );
             }).ToList();
 
@@ -963,7 +1006,8 @@
                     FeaturePis: bo.Features
                         .Where(f => f.Pi is not null)
                         .Select(f => new FeaturePiRef(f.Pi!.Name, f.Pi.StartDate))
-                        .DistinctBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList()
+                        .DistinctBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                    Labels: bo.Labels
                 );
             }).ToList();
             RecomputeFilteredRows();
@@ -1092,6 +1136,7 @@
         string? EpicName,
         List<JiraRef> ProgramJiraIds,
         List<CapitalProjectRef> CapitalProjects,
-        List<FeaturePiRef> FeaturePis
+        List<FeaturePiRef> FeaturePis,
+        string? Labels
     );
 }

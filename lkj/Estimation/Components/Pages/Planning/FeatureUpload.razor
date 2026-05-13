@@ -379,6 +379,7 @@
     private List<string> _teamNames = new();
     private List<string> _boOptions = new();
     private Dictionary<int, string> _boDisplayById = new();
+    private Dictionary<int, string?> _boJiraIdById = new();
 
     // ── State ──
 
@@ -438,6 +439,7 @@
         var businessOutcomes = await BusinessOutcomeService.GetAllAsync();
         _boLookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         _boDisplayById = new Dictionary<int, string>();
+        _boJiraIdById = new Dictionary<int, string?>();
         foreach (var bo in businessOutcomes)
         {
             var display = ExcelTemplateService.FormatBusinessOutcomeDisplay(bo.JiraId, bo.Summary);
@@ -448,8 +450,21 @@
             // First entry wins on collision
             _boLookup.TryAdd(display, bo.Id);
             _boDisplayById[bo.Id] = display;
+            _boJiraIdById[bo.Id] = bo.JiraId;
         }
         _boOptions = _boLookup.Keys.OrderBy(s => s).ToList();
+    }
+
+    private static List<string> ParseLabels(string? labels)
+    {
+        if (string.IsNullOrWhiteSpace(labels))
+        {
+            return new List<string>();
+        }
+        return labels.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0)
+            .ToList();
     }
 
     // ── File Loading ──
@@ -1193,6 +1208,15 @@
                     {
                         try
                         {
+                            var labelsToPush = ParseLabels(row.Labels);
+                            string? boJiraKey = null;
+                            if (row.BusinessOutcomeId.HasValue
+                                && _boJiraIdById.TryGetValue(row.BusinessOutcomeId.Value, out var bj)
+                                && !string.IsNullOrWhiteSpace(bj))
+                            {
+                                boJiraKey = bj.Trim();
+                            }
+
                             if (row.Action.Contains("Create Jira"))
                             {
                                 var jiraKey = await JiraIssueService.CreateIssueAsync(_userName!, new JiraCreateIssueRequest
@@ -1201,7 +1225,10 @@
                                     IssueType = _selectedIssueType,
                                     Summary = row.Summary!,
                                     Description = row.Description,
-                                    FeatureName = row.FeatureName
+                                    FeatureName = row.FeatureName,
+                                    Labels = labelsToPush,
+                                    ParentJiraKey = boJiraKey,
+                                    PlanningIncrement = row.Pi?.Trim()
                                 });
                                 if (string.IsNullOrWhiteSpace(row.JiraId))
                                 {
@@ -1215,6 +1242,9 @@
                                     {
                                         Summary = row.Summary!,
                                         Description = row.Description,
+                                        Labels = labelsToPush,
+                                        ParentJiraKey = boJiraKey,
+                                        PlanningIncrement = row.Pi?.Trim()
                                     });
                             }
                         }
