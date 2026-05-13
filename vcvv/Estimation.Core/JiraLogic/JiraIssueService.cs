@@ -62,7 +62,10 @@ public class JiraIssueService : IJiraIssueService
 
         if (!string.IsNullOrEmpty(request.PlanningIncrement) && !string.IsNullOrEmpty(_settings.PlanningIncrementCustomFieldId))
         {
-            fields[_settings.PlanningIncrementCustomFieldId] = request.PlanningIncrement;
+            fields[_settings.PlanningIncrementCustomFieldId] = new JsonArray
+            {
+                new JsonObject { ["value"] = request.PlanningIncrement }
+            };
         }
 
         if (request.TargetStart.HasValue && !string.IsNullOrEmpty(_settings.TargetStartCustomFieldId))
@@ -153,7 +156,10 @@ public class JiraIssueService : IJiraIssueService
 
         if (!string.IsNullOrEmpty(request.PlanningIncrement) && !string.IsNullOrEmpty(_settings.PlanningIncrementCustomFieldId))
         {
-            fields[_settings.PlanningIncrementCustomFieldId] = request.PlanningIncrement;
+            fields[_settings.PlanningIncrementCustomFieldId] = new JsonArray
+            {
+                new JsonObject { ["value"] = request.PlanningIncrement }
+            };
         }
 
         if (!string.IsNullOrEmpty(_settings.TargetStartCustomFieldId))
