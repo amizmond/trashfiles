@@ -1,0 +1,1768 @@
+@attribute [Route(RoutingPath.Features)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.JiraLogic
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Estimation.Excel
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
+@using Serilog
+
+@inject IFeatureService FeatureService
+@inject IPiService PiService
+@inject ICapitalProjectService CapitalProjectService
+@inject IDepartmentService DepartmentService
+@inject ITeamService TeamService
+@inject ITechnologyStackService TechnologyStackService
+@inject IBusinessOutcomeService BusinessOutcomeService
+@inject IJiraAuthService JiraAuth
+@inject IWindowsAuthService WindowsAuth
+@inject NavigationManager Nav
+@inject IModalDialogService MessageService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject IJiraIssueService JiraIssueService
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+@implements IDisposable
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">@PlanningDisplayNames.Features</MudText>
+
+        <div class="d-flex flex-wrap align-center justify-end gap-2 pa-2">
+            <div style="position:relative;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@PlanningDisplayNames.ToggleColumns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showJiraId" Label="@PlanningDisplayNames.JiraId" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showFeatureName" Label="@PlanningDisplayNames.FeatureName" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="@PlanningDisplayNames.Summary" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showPi" Label="@PlanningDisplayNames.PI" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showBoJiraId" Label="@PlanningDisplayNames.BusinessOutcome" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showBoName" Label="@PlanningDisplayNames.BusinessOutcomeName" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showEpicJiraId" Label="@PlanningDisplayNames.PortfolioEpic" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showEpicName" Label="@PlanningDisplayNames.PortfolioEpicName" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showProgramJiraId" Label="@PlanningDisplayNames.StrategicObjective" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showProgramName" Label="@PlanningDisplayNames.StrategicObjectiveName" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showCapitalProject" Label="@PlanningDisplayNames.CapitalProjec" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showLabels" Label="@PlanningDisplayNames.Labels" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTeams" Label="@PlanningDisplayNames.Teams" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTechPo" Label="@PlanningDisplayNames.TechnologyStacks" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showComments" Label="@PlanningDisplayNames.Comments" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTargetStart" Label="@PlanningDisplayNames.TargetStart" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTargetEnd" Label="@PlanningDisplayNames.TargetEnd" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showStoryPoints" Label="@PlanningDisplayNames.StoryPoints" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="@PlanningDisplayNames.Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            @if (_canEdit)
+            {
+                @if (_jiraConnected)
+                {
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Warning"
+                               StartIcon="@Icons.Material.Filled.Sync"
+                               Disabled="_syncing"
+                               OnClick="OpenSyncDialogAsync">
+                        Synchronize with Jira
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Info"
+                               StartIcon="@Icons.Material.Filled.SyncAlt"
+                               Disabled="_syncing"
+                               OnClick="SyncFilteredAsync">
+                        Synchronize only filtered
+                    </MudButton>
+                }
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Map"
+                           Disabled="_loading"
+                           OnClick="OpenMapToPiDialogAsync">
+                    Map to PI
+                </MudButton>
+
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.FeaturesNew))">
+                    New
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="_loading || _exporting"
+                           OnClick="ExportFilteredAsync">
+                    Export to excel
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Description"
+                           Disabled="_loading || _exporting"
+                           OnClick="ExportEmptyTemplateAsync">
+                    Empty template
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.UploadFile"
+                           Disabled="_loading"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.FeaturesUpload))">
+                    Upload
+                </MudButton>
+            }
+        </div>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">@PlanningDisplayNames.Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="FilterSearch" Label="@PlanningDisplayNames.Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <div class="d-flex align-end gap-2">
+                    <MudSelect T="string" Label="@PlanningDisplayNames.PI" MultiSelection
+                               @bind-SelectedValues="FilterPiNames"
+                               Dense Variant="Variant.Outlined" Clearable
+                               AnchorOrigin="Origin.BottomCenter" Style="flex:1">
+                        @foreach (var pi in _availablePis)
+                        {
+                            <MudSelectItem T="string" Value="@pi">@pi</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudTooltip Text="Negate: find features without PI or exclude selected">
+                        <MudCheckBox T="bool" @bind-Value="FilterPiNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="@_availableBoIds"
+                                        Values="FilterBoNames"
+                                        ValuesChanged="OnFilterBoNamesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.BusinessOutcome"
+                                        ToStringFunc="@LookupBoText"
+                                        ItemTemplate="@BoItemTemplate"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find features without Business Outcome or exclude selected">
+                        <MudCheckBox T="bool" @bind-Value="FilterBoNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="@_availableEpicIds"
+                                        Values="FilterEpicNames"
+                                        ValuesChanged="OnFilterEpicNamesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.PortfolioEpic"
+                                        ToStringFunc="@LookupEpicText"
+                                        ItemTemplate="@EpicItemTemplate"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find features without Portfolio Epic or exclude selected">
+                        <MudCheckBox T="bool" @bind-Value="FilterEpicNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availablePrograms"
+                                        Values="FilterProgramNames"
+                                        ValuesChanged="OnFilterProgramNamesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.StrategicObjective"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find features without Strategic Objective or exclude selected">
+                        <MudCheckBox T="bool" @bind-Value="FilterProgramNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <MudSelect T="string" Label="@PlanningDisplayNames.Department" MultiSelection
+                           @bind-SelectedValues="FilterDepartmentNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var dept in _availableDepartments)
+                    {
+                        <MudSelectItem T="string" Value="@dept">@dept</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="string" Label="@PlanningDisplayNames.CapitalProjec" MultiSelection
+                           @bind-SelectedValues="FilterCapitalProjectNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var cp in _availableCapitalProjects)
+                    {
+                        <MudSelectItem T="string" Value="@cp">@cp</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <SearchableDropdown T="string"
+                                    Items="_availableTechStacks"
+                                    Values="FilterTechStackNames"
+                                    ValuesChanged="OnFilterTechStackNamesChanged"
+                                    MultiSelect="true"
+                                    Label="@PlanningDisplayNames.TechnologyStacks" />
+
+                <MudTextField @bind-Value="FilterLabel" Label="@PlanningDisplayNames.Labels" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Label" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    @PlanningDisplayNames.ClearFilters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        @if (_syncing)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Warning" Class="mb-2" />
+            <MudAlert Severity="Severity.Info" Class="mb-2">Synchronizing Features from Jira...</MudAlert>
+        }
+
+        <MudDivider />
+
+        <MudDataGrid T="FeatureRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" LoadingProgressColor="Color.Primary">
+            <Columns>
+                <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="false" CellStyle="width:150px;" Hidden="!_showJiraId">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                        {
+                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @context.Item.JiraId
+                                </MudChip>
+                            </a>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.FeatureName" Title="@PlanningDisplayNames.FeatureName" Sortable="true" Hidden="!_showFeatureName" />
+
+                <TemplateColumn Sortable="false" Hidden="!_showName">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableSummary))">
+                            <span>@PlanningDisplayNames.Summary</span>
+                            @if (_sortColumn == SortableSummary)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        <MudText Class="font-weight-bold">@context.Item.Summary</MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.PI" Sortable="false" Hidden="!_showPi" CellStyle="width:150px;">
+                    <CellTemplate>
+                        @if (context.Item.PiName is not null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.Pis}/{context.Item.PiId}"))">@context.Item.PiName</MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.CapitalProjectName" Title="@PlanningDisplayNames.CapitalProjec" Sortable="true" Hidden="!_showCapitalProject" />
+                <TemplateColumn Sortable="false" CellStyle="width:150px;" Hidden="!_showBoJiraId">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableBusinessOutcome))">
+                            <span>@PlanningDisplayNames.BusinessOutcome</span>
+                            @if (_sortColumn == SortableBusinessOutcome)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.BoJiraId))
+                        {
+                            <MudTooltip Text="@context.Item.BoName">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" Style="cursor:pointer"
+                                         OnClick="@(() => OpenJiraDetailsDialogAsync(PlanningDisplayNames.BusinessOutcome, context.Item.BoJiraId, context.Item.BoName, context.Item.BoDescription))">
+                                    @context.Item.BoJiraId
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Hidden="!_showBoName">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableBusinessOutcomeName))">
+                            <span>@PlanningDisplayNames.BusinessOutcomeName</span>
+                            @if (_sortColumn == SortableBusinessOutcomeName)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @context.Item.BoName
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" CellStyle="width:150px;" Hidden="!_showEpicJiraId">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortablePortfolioEpic))">
+                            <span>@PlanningDisplayNames.PortfolioEpic</span>
+                            @if (_sortColumn == SortablePortfolioEpic)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.EpicJiraId))
+                        {
+                            <MudTooltip Text="@context.Item.EpicName">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" Style="cursor:pointer"
+                                         OnClick="@(() => OpenJiraDetailsDialogAsync(PlanningDisplayNames.PortfolioEpic, context.Item.EpicJiraId, context.Item.EpicName, context.Item.EpicDescription))">
+                                    @context.Item.EpicJiraId
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Hidden="!_showEpicName">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortablePortfolioEpicName))">
+                            <span>@PlanningDisplayNames.PortfolioEpicName</span>
+                            @if (_sortColumn == SortablePortfolioEpicName)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @context.Item.EpicName
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" CellStyle="width:150px;" Hidden="!_showProgramJiraId">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableStrategicObjective))">
+                            <span>@PlanningDisplayNames.StrategicObjective</span>
+                            @if (_sortColumn == SortableStrategicObjective)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (context.Item.ProgramJiraIds.Count > 0)
+                        {
+                            @foreach (var prog in context.Item.ProgramJiraIds)
+                            {
+                                <MudTooltip Text="@prog.Summary">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" Style="cursor:pointer"
+                                             OnClick="@(() => OpenJiraDetailsDialogAsync(PlanningDisplayNames.StrategicObjective, prog.JiraId, prog.Summary, prog.Description))">
+                                        @prog.JiraId
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Hidden="!_showProgramName">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableStrategicObjectiveName))">
+                            <span>@PlanningDisplayNames.StrategicObjectiveName</span>
+                            @if (_sortColumn == SortableStrategicObjectiveName)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (context.Item.ProgramJiraIds.Count > 0)
+                        {
+                            @string.Join(", ", context.Item.ProgramJiraIds.Select(p => p.Summary).Where(s => !string.IsNullOrEmpty(s)))
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.Labels" Sortable="false" CellStyle="max-width:250px;" Hidden="!_showLabels">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.Labels))
+                        {
+                            @foreach (var label in context.Item.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Class="mr-1">@label</MudChip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.Teams" Sortable="false" CellStyle="max-width:250px;" Hidden="!_showTeams">
+                    <CellTemplate>
+                        @foreach (var t in context.Item.Teams.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.Teams}/{t.Id}"))">@t.Name</MudChip>
+                        }
+                        @if (context.Item.Teams.Count > 3)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                +@(context.Item.Teams.Count - 3)
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.TechnologyStacks" Sortable="false" CellStyle="max-width:250px;" Hidden="!_showTechPo">
+                    <CellTemplate>
+                        @if (context.Item.TechStacks.Count > 0)
+                        {
+                            @foreach (var ts in context.Item.TechStacks)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Class="mr-1">@(ts.EstimatedEffort.HasValue ? $"{ts.Name}: {ts.EstimatedEffort}" : ts.Name)</MudChip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.Comments" Title="@PlanningDisplayNames.Comments" Sortable="false" Hidden="!_showComments" />
+                <TemplateColumn Title="@PlanningDisplayNames.TargetStart" Sortable="false" CellStyle="width:130px;" Hidden="!_showTargetStart">
+                    <CellTemplate>
+                        @if (context.Item.TargetStart.HasValue)
+                        {
+                            @context.Item.TargetStart.Value.ToString("yyyy-MM-dd")
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.TargetEnd" Sortable="false" CellStyle="width:130px;" Hidden="!_showTargetEnd">
+                    <CellTemplate>
+                        @if (context.Item.TargetEnd.HasValue)
+                        {
+                            @context.Item.TargetEnd.Value.ToString("yyyy-MM-dd")
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="r => r.StoryPoints" Title="@PlanningDisplayNames.StoryPoints" Sortable="false" CellStyle="width:110px;" Hidden="!_showStoryPoints" />
+                @if (_canEdit)
+                {
+                    <TemplateColumn Title="@PlanningDisplayNames.Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
+                        <CellTemplate>
+                            <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => NavigateToEdit(context.Item.Id))" />
+                            <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No features found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="FeatureRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+@code {
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private List<FeatureRow> _rows = new();
+    private List<FeatureRow> _filteredRows = new();
+    private bool _loading = true;
+    private bool _canEdit;
+    private bool _exporting;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Capital project lookup: JiraKey -> CapitalProjectRef ---
+    private Dictionary<string, CapitalProjectRef> _capitalProjectByJiraKey = new(StringComparer.OrdinalIgnoreCase);
+
+    // --- Jira state ---
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _syncing;
+    private List<CapitalProject> _allCapitalProjectsForSync = new();
+
+    // --- Sort state ---
+    private const string SortableSummary = "Summary";
+    private const string SortableBusinessOutcome = "BusinessOutcome";
+    private const string SortableBusinessOutcomeName = "BusinessOutcomeName";
+    private const string SortablePortfolioEpic = "PortfolioEpic";
+    private const string SortablePortfolioEpicName = "PortfolioEpicName";
+    private const string SortableStrategicObjective = "StrategicObjective";
+    private const string SortableStrategicObjectiveName = "StrategicObjectiveName";
+    private string? _sortColumn = SortablePortfolioEpicName;
+    private bool _sortDescending;
+
+    // --- URL state ---
+    private bool _suppressUrlUpdate = true;
+
+    // --- Column visibility (true = visible) ---
+    private bool _showJiraId = true;
+    private bool _showFeatureName = true;
+    private bool _showName = true;
+    private bool _showPi = true;
+    private bool _showBoJiraId = true;
+    private bool _showBoName;
+    private bool _showEpicJiraId = true;
+    private bool _showEpicName;
+    private bool _showProgramJiraId = true;
+    private bool _showProgramName;
+    private bool _showCapitalProject = true;
+    private bool _showLabels = true;
+    private bool _showTeams = true;
+    private bool _showTechPo;
+    private bool _showComments;
+    private bool _showTargetStart;
+    private bool _showTargetEnd;
+    private bool _showStoryPoints;
+    private bool _showActions = true;
+
+    // --- Available filter values ---
+    private List<string> _availableDepartments = new();
+    private List<string> _availablePis = new();
+    private List<(string JiraId, string? Summary)> _availableBos = new();
+    private List<(string JiraId, string? Summary)> _availableEpics = new();
+    private List<string> _availablePrograms = new();
+    private List<string> _availableCapitalProjects = new();
+    private List<string> _availableTechStacks = new();
+    private Dictionary<string, string> _cpNameToDept = new();
+
+    private List<string> _availableBoIds => _availableBos.Select(b => b.JiraId).ToList();
+    private List<string> _availableEpicIds => _availableEpics.Select(e => e.JiraId).ToList();
+
+    private string LookupBoText(string? jiraId)
+    {
+        if (string.IsNullOrEmpty(jiraId))
+        {
+            return string.Empty;
+        }
+
+        var bo = _availableBos.FirstOrDefault(b => b.JiraId == jiraId);
+
+        if (bo.JiraId is null)
+        {
+            return jiraId;
+        }
+
+        return string.IsNullOrEmpty(bo.Summary) ? bo.JiraId : $"{bo.JiraId} — {bo.Summary}";
+    }
+
+    private string LookupEpicText(string? jiraId)
+    {
+        if (string.IsNullOrEmpty(jiraId))
+        {
+            return string.Empty;
+        }
+
+        var epic = _availableEpics.FirstOrDefault(e => e.JiraId == jiraId);
+
+        if (epic.JiraId is null)
+        {
+            return jiraId;
+        }
+
+        return string.IsNullOrEmpty(epic.Summary) ? epic.JiraId : $"{epic.JiraId} — {epic.Summary}";
+    }
+
+    private RenderFragment<string> BoItemTemplate => jiraId => @<text>
+        @{
+            var bo = _availableBos.FirstOrDefault(b => b.JiraId == jiraId);
+        }
+        <div style="font-size:0.8rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+            <b>@jiraId</b>@(string.IsNullOrEmpty(bo.Summary) ? "" : $" — {bo.Summary}")
+        </div>
+    </text>;
+
+    private RenderFragment<string> EpicItemTemplate => jiraId => @<text>
+        @{
+            var epic = _availableEpics.FirstOrDefault(e => e.JiraId == jiraId);
+        }
+        <div style="font-size:0.8rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+            <b>@jiraId</b>@(string.IsNullOrEmpty(epic.Summary) ? "" : $" — {epic.Summary}")
+        </div>
+    </text>;
+
+    private void OnFilterBoNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterBoNames = values;
+    }
+
+    private void OnFilterEpicNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterEpicNames = values;
+    }
+
+    private void OnFilterProgramNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterProgramNames = values;
+    }
+
+    private void OnFilterTechStackNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterTechStackNames = values;
+    }
+
+    // --- Filter properties with debounced recomputation ---
+
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); UpdateUrl(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private string? _filterLabelBacking;
+    private string? FilterLabel
+    {
+        get => _filterLabelBacking;
+        set { _filterLabelBacking = value; ScheduleRecompute(); }
+    }
+
+    private bool _filterPiNotBacking;
+    private bool FilterPiNot
+    {
+        get => _filterPiNotBacking;
+        set { _filterPiNotBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterPiNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterPiNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterPiNames
+    {
+        get => _filterPiNamesBacking;
+        set { _filterPiNamesBacking = value; _filterPiNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private bool _filterBoNotBacking;
+    private bool FilterBoNot
+    {
+        get => _filterBoNotBacking;
+        set { _filterBoNotBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterBoNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterBoNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterBoNames
+    {
+        get => _filterBoNamesBacking;
+        set { _filterBoNamesBacking = value; _filterBoNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private bool _filterEpicNotBacking;
+    private bool FilterEpicNot
+    {
+        get => _filterEpicNotBacking;
+        set { _filterEpicNotBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterEpicNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterEpicNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterEpicNames
+    {
+        get => _filterEpicNamesBacking;
+        set { _filterEpicNamesBacking = value; _filterEpicNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private bool _filterProgramNotBacking;
+    private bool FilterProgramNot
+    {
+        get => _filterProgramNotBacking;
+        set { _filterProgramNotBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterProgramNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterProgramNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterProgramNames
+    {
+        get => _filterProgramNamesBacking;
+        set { _filterProgramNamesBacking = value; _filterProgramNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterDepartmentNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterDepartmentNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterDepartmentNames
+    {
+        get => _filterDepartmentNamesBacking;
+        set { _filterDepartmentNamesBacking = value; _filterDepartmentNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterCapitalProjectNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterCapitalProjectNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterCapitalProjectNames
+    {
+        get => _filterCapitalProjectNamesBacking;
+        set { _filterCapitalProjectNamesBacking = value; _filterCapitalProjectNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterTechStackNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterTechStackNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterTechStackNames
+    {
+        get => _filterTechStackNamesBacking;
+        set { _filterTechStackNamesBacking = value; _filterTechStackNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterLabelBacking = null;
+        _filterDepartmentNamesBacking = Array.Empty<string>();
+        _filterDepartmentNamesSet.Clear();
+        _filterPiNotBacking = false;
+        _filterPiNamesBacking = Array.Empty<string>();
+        _filterPiNamesSet.Clear();
+        _filterBoNotBacking = false;
+        _filterBoNamesBacking = Array.Empty<string>();
+        _filterBoNamesSet.Clear();
+        _filterEpicNotBacking = false;
+        _filterEpicNamesBacking = Array.Empty<string>();
+        _filterEpicNamesSet.Clear();
+        _filterProgramNotBacking = false;
+        _filterProgramNamesBacking = Array.Empty<string>();
+        _filterProgramNamesSet.Clear();
+        _filterCapitalProjectNamesBacking = Array.Empty<string>();
+        _filterCapitalProjectNamesSet.Clear();
+        _filterTechStackNamesBacking = Array.Empty<string>();
+        _filterTechStackNamesSet.Clear();
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    // --- Sort logic ---
+
+    private void ToggleSort(string sortKey)
+    {
+        if (_sortColumn == sortKey)
+        {
+            if (_sortDescending)
+            {
+                _sortColumn = null;
+                _sortDescending = false;
+            }
+            else
+            {
+                _sortDescending = true;
+            }
+        }
+        else
+        {
+            _sortColumn = sortKey;
+            _sortDescending = false;
+        }
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private static string? FirstProgramJiraId(FeatureRow r)
+    {
+        return r.ProgramJiraIds.Count > 0 ? r.ProgramJiraIds[0].JiraId : null;
+    }
+
+    private static string? FirstProgramSummary(FeatureRow r)
+    {
+        return r.ProgramJiraIds.Count > 0 ? r.ProgramJiraIds[0].Summary : null;
+    }
+
+    private static IOrderedEnumerable<FeatureRow> OrderRows<TKey>(
+        IEnumerable<FeatureRow> source, Func<FeatureRow, TKey> keySelector, bool descending)
+    {
+        return descending
+            ? source.OrderByDescending(keySelector)
+            : source.OrderBy(keySelector);
+    }
+
+    // --- Filter logic ---
+
+    private void RecomputeFilteredRows()
+    {
+        IEnumerable<FeatureRow> filtered = _rows.Where(MatchesFilter);
+
+        filtered = _sortColumn switch
+        {
+            SortableSummary => OrderRows(filtered, r => r.Summary, _sortDescending),
+            SortableBusinessOutcome => OrderRows(filtered, r => r.BoJiraId, _sortDescending),
+            SortableBusinessOutcomeName => OrderRows(filtered, r => r.BoName, _sortDescending),
+            SortablePortfolioEpic => OrderRows(filtered, r => r.EpicJiraId, _sortDescending),
+            SortablePortfolioEpicName => OrderRows(filtered, r => r.EpicName, _sortDescending),
+            SortableStrategicObjective => OrderRows(filtered, FirstProgramJiraId, _sortDescending),
+            SortableStrategicObjectiveName => OrderRows(filtered, FirstProgramSummary, _sortDescending),
+            _ => filtered
+        };
+
+        _filteredRows = filtered.ToList();
+    }
+
+    private bool MatchesFilter(FeatureRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!((r.Summary?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.JiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.PiName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.BoName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.BoJiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.FeatureName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.EpicName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+            {
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_filterLabelBacking))
+        {
+            var labelFilter = _filterLabelBacking.Trim();
+            if (string.IsNullOrEmpty(r.Labels)
+                || !r.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Any(l => l.Contains(labelFilter, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+        }
+
+        if (_filterPiNotBacking)
+        {
+            if (_filterPiNamesSet.Count > 0)
+            {
+                // Exclude features that match any of the selected PIs
+                if (r.PiName is not null && _filterPiNamesSet.Contains(r.PiName))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                // No PIs selected + Not checked => show only features without a PI
+                if (r.PiName is not null)
+                {
+                    return false;
+                }
+            }
+        }
+        else if (_filterPiNamesSet.Count > 0
+            && (r.PiName is null || !_filterPiNamesSet.Contains(r.PiName)))
+        {
+            return false;
+        }
+
+        if (_filterBoNotBacking)
+        {
+            if (_filterBoNamesSet.Count > 0)
+            {
+                if (r.BoJiraId is not null && _filterBoNamesSet.Contains(r.BoJiraId))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (r.BoJiraId is not null)
+                {
+                    return false;
+                }
+            }
+        }
+        else if (_filterBoNamesSet.Count > 0
+            && (r.BoJiraId is null || !_filterBoNamesSet.Contains(r.BoJiraId)))
+        {
+            return false;
+        }
+
+        if (_filterEpicNotBacking)
+        {
+            if (_filterEpicNamesSet.Count > 0)
+            {
+                if (r.EpicJiraId is not null && _filterEpicNamesSet.Contains(r.EpicJiraId))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (r.EpicJiraId is not null)
+                {
+                    return false;
+                }
+            }
+        }
+        else if (_filterEpicNamesSet.Count > 0
+            && (r.EpicJiraId is null || !_filterEpicNamesSet.Contains(r.EpicJiraId)))
+        {
+            return false;
+        }
+
+        if (_filterProgramNotBacking)
+        {
+            if (_filterProgramNamesSet.Count > 0)
+            {
+                if (r.ProgramJiraIds.Any(p => _filterProgramNamesSet.Contains(p.Summary ?? "")))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (r.ProgramJiraIds.Count > 0)
+                {
+                    return false;
+                }
+            }
+        }
+        else if (_filterProgramNamesSet.Count > 0
+            && !r.ProgramJiraIds.Any(p => _filterProgramNamesSet.Contains(p.Summary ?? "")))
+        {
+            return false;
+        }
+
+        if (_filterDepartmentNamesSet.Count > 0
+            && !(r.CapitalProjectName is not null
+                && _cpNameToDept.TryGetValue(r.CapitalProjectName, out var dn)
+                && _filterDepartmentNamesSet.Contains(dn)))
+        {
+            return false;
+        }
+
+        if (_filterCapitalProjectNamesSet.Count > 0
+            && (r.CapitalProjectName is null || !_filterCapitalProjectNamesSet.Contains(r.CapitalProjectName)))
+        {
+            return false;
+        }
+
+        if (_filterTechStackNamesSet.Count > 0
+            && !r.TechStacks.Any(ts => _filterTechStackNamesSet.Contains(ts.Name)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    // --- Lifecycle ---
+
+    protected override async Task OnInitializedAsync()
+    {
+        _canEdit = UserPageAccess.TryGetValue("Features", out var access) && access == AccessLevel.Edit;
+
+        try
+        {
+            _userName = await WindowsAuth.GetUserName();
+            if (_userName is not null && JiraAuth.IsConfigured)
+            {
+                _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+            }
+
+            var departments = await DepartmentService.GetAllAsync();
+            _cpNameToDept = departments
+                .SelectMany(d => d.CapitalProjects.Select(cp => (cp.Name, d.Name)))
+                .GroupBy(x => x.Item1, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First().Item2, StringComparer.OrdinalIgnoreCase);
+
+            _allCapitalProjectsForSync = await CapitalProjectService.GetAllAsync();
+            _capitalProjectByJiraKey = _allCapitalProjectsForSync
+                .Where(cp => !string.IsNullOrWhiteSpace(cp.JiraKey))
+                .GroupBy(cp => cp.JiraKey!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    g => g.Key,
+                    g => new CapitalProjectRef(g.First().Id, g.First().Name, g.First().Description),
+                    StringComparer.OrdinalIgnoreCase);
+
+            var items = await FeatureService.GetAllWithHierarchyAsync();
+            _rows = items.Select(f =>
+            {
+                var bo = f.BusinessOutcome;
+                var epic = bo?.PortfolioEpic;
+                var programs = epic?.StrategicObjectivePortfolioEpics
+                    .Select(ppe => ppe.StrategicObjective).ToList() ?? new();
+
+                var resolvedCapitalProjectName = ArtHelper.ResolveArtByJiraId(f.ProjectKey, f.JiraId, _capitalProjectByJiraKey)?.Name;
+
+                return new FeatureRow(
+                    Id: f.Id,
+                    JiraId: f.JiraId,
+                    FeatureName: f.Name,
+                    Summary: f.Summary,
+                    PiId: f.PiId,
+                    PiName: f.Pi?.Name,
+                    BoJiraId: bo?.JiraId,
+                    BoName: bo?.Summary,
+                    BoDescription: bo?.Description,
+                    EpicJiraId: epic?.JiraId,
+                    EpicName: epic?.Summary,
+                    EpicDescription: epic?.Description,
+                    ProgramJiraIds: programs
+                        .Where(p => !string.IsNullOrEmpty(p.JiraId))
+                        .Select(p => new JiraRef(p.JiraId!, p.Summary, p.Description))
+                        .DistinctBy(p => p.JiraId).ToList(),
+                    CapitalProjectName: resolvedCapitalProjectName,
+                    Labels: f.Labels,
+                    Teams: f.FeatureTeams.Select(ft => new TeamRef(ft.TeamId, ft.Team.Name)).ToList(),
+                    TechStacks: f.FeatureTechnologyStacks.Select(fts => new TechStackRef(fts.TechnologyStack.Name, fts.EstimatedEffort)).ToList(),
+                    Comments: f.Comments,
+                    TargetStart: f.TargetStart,
+                    TargetEnd: f.TargetEnd,
+                    StoryPoints: f.StoryPoints
+                );
+            }).ToList();
+
+            _availablePis = _rows
+                .Where(r => r.PiName is not null)
+                .Select(r => r.PiName!).Distinct().OrderBy(n => n).ToList();
+            _availableBos = _rows
+                .Where(r => !string.IsNullOrEmpty(r.BoJiraId))
+                .Select(r => (r.BoJiraId!, r.BoName))
+                .DistinctBy(b => b.Item1, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(b => b.Item1).ToList();
+            _availableEpics = _rows
+                .Where(r => !string.IsNullOrEmpty(r.EpicJiraId))
+                .Select(r => (r.EpicJiraId!, r.EpicName))
+                .DistinctBy(e => e.Item1, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(e => e.Item1).ToList();
+            _availablePrograms = _rows
+                .SelectMany(r => r.ProgramJiraIds.Select(p => p.Summary ?? ""))
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+            _availableDepartments = _rows
+                .Where(r => r.CapitalProjectName is not null && _cpNameToDept.ContainsKey(r.CapitalProjectName))
+                .Select(r => _cpNameToDept[r.CapitalProjectName!])
+                .Distinct().OrderBy(n => n).ToList();
+            _availableCapitalProjects = _rows
+                .Where(r => !string.IsNullOrEmpty(r.CapitalProjectName))
+                .Select(r => r.CapitalProjectName!)
+                .Distinct().OrderBy(n => n).ToList();
+            _availableTechStacks = _rows
+                .SelectMany(r => r.TechStacks.Select(ts => ts.Name))
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            ReadUrlParams();
+            RecomputeFilteredRows();
+        }
+        finally
+        {
+            _loading = false;
+            _suppressUrlUpdate = false;
+        }
+    }
+
+    private async Task ConfirmDeleteAsync(FeatureRow row)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {row.Summary} ?"))
+            {
+                await FeatureService.DeleteAsync(row.Id);
+                _rows.RemoveAll(r => r.Id == row.Id);
+                RecomputeFilteredRows();
+                UpdateUrl();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    // --- URL state management ---
+
+    private void ReadUrlParams()
+    {
+        var uri = Nav.ToAbsoluteUri(Nav.Uri);
+        var q = QueryHelpers.ParseQuery(uri.Query);
+
+        if (q.TryGetValue("search", out var search) && !string.IsNullOrWhiteSpace(search))
+        {
+            _filterSearchBacking = search.ToString();
+        }
+
+        if (q.TryGetValue("label", out var label) && !string.IsNullOrWhiteSpace(label))
+        {
+            _filterLabelBacking = label.ToString();
+        }
+
+        if (q.TryGetValue("piNot", out var piNot)
+            && string.Equals(piNot, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _filterPiNotBacking = true;
+        }
+
+        if (q.TryGetValue("pi", out var pi) && !string.IsNullOrWhiteSpace(pi))
+        {
+            var vals = pi.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterPiNamesBacking = vals;
+            _filterPiNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("boNot", out var boNot)
+            && string.Equals(boNot, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _filterBoNotBacking = true;
+        }
+
+        if (q.TryGetValue("bo", out var bo) && !string.IsNullOrWhiteSpace(bo))
+        {
+            var vals = bo.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterBoNamesBacking = vals;
+            _filterBoNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("epicNot", out var epicNot)
+            && string.Equals(epicNot, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _filterEpicNotBacking = true;
+        }
+
+        if (q.TryGetValue("epic", out var epic) && !string.IsNullOrWhiteSpace(epic))
+        {
+            var vals = epic.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterEpicNamesBacking = vals;
+            _filterEpicNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("programNot", out var programNot)
+            && string.Equals(programNot, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _filterProgramNotBacking = true;
+        }
+
+        if (q.TryGetValue("program", out var program) && !string.IsNullOrWhiteSpace(program))
+        {
+            var vals = program.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterProgramNamesBacking = vals;
+            _filterProgramNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("dept", out var dept) && !string.IsNullOrWhiteSpace(dept))
+        {
+            var vals = dept.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterDepartmentNamesBacking = vals;
+            _filterDepartmentNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("cp", out var cp) && !string.IsNullOrWhiteSpace(cp))
+        {
+            var vals = cp.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterCapitalProjectNamesBacking = vals;
+            _filterCapitalProjectNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("ts", out var ts) && !string.IsNullOrWhiteSpace(ts))
+        {
+            var vals = ts.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterTechStackNamesBacking = vals;
+            _filterTechStackNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("sortBy", out var sortBy) && !string.IsNullOrWhiteSpace(sortBy))
+        {
+            _sortColumn = sortBy.ToString();
+            _sortDescending = q.TryGetValue("sortDesc", out var sortDesc)
+                && string.Equals(sortDesc, "true", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        if (_suppressUrlUpdate)
+        {
+            return;
+        }
+
+        var query = new Dictionary<string, object?>();
+        query["search"] = string.IsNullOrWhiteSpace(_filterSearchBacking) ? null : _filterSearchBacking;
+        query["label"] = string.IsNullOrWhiteSpace(_filterLabelBacking) ? null : _filterLabelBacking;
+        query["piNot"] = _filterPiNotBacking ? (object?)true : null;
+        query["pi"] = _filterPiNamesSet.Count > 0 ? string.Join(",", _filterPiNamesBacking) : null;
+        query["boNot"] = _filterBoNotBacking ? (object?)true : null;
+        query["bo"] = _filterBoNamesSet.Count > 0 ? string.Join(",", _filterBoNamesBacking) : null;
+        query["epicNot"] = _filterEpicNotBacking ? (object?)true : null;
+        query["epic"] = _filterEpicNamesSet.Count > 0 ? string.Join(",", _filterEpicNamesBacking) : null;
+        query["programNot"] = _filterProgramNotBacking ? (object?)true : null;
+        query["program"] = _filterProgramNamesSet.Count > 0 ? string.Join(",", _filterProgramNamesBacking) : null;
+        query["dept"] = _filterDepartmentNamesSet.Count > 0 ? string.Join(",", _filterDepartmentNamesBacking) : null;
+        query["cp"] = _filterCapitalProjectNamesSet.Count > 0 ? string.Join(",", _filterCapitalProjectNamesBacking) : null;
+        query["ts"] = _filterTechStackNamesSet.Count > 0 ? string.Join(",", _filterTechStackNamesBacking) : null;
+        query["sortBy"] = _sortColumn;
+        query["sortDesc"] = _sortDescending && _sortColumn is not null ? (object?)true : null;
+
+        var uri = Nav.GetUriWithQueryParameters(query);
+        Nav.NavigateTo(uri, replace: true);
+    }
+
+    private void NavigateToEdit(int id)
+    {
+        var currentUri = new Uri(Nav.Uri);
+        var returnUrl = currentUri.PathAndQuery;
+        var editUri = Nav.GetUriWithQueryParameters(
+            $"{RoutingPath.Features}/{id}",
+            new Dictionary<string, object?> { ["returnUrl"] = returnUrl });
+        Nav.NavigateTo(editUri);
+    }
+
+    // --- Excel export ---
+
+    private async Task<(List<string> ProjectKeys, List<string> PiNames, List<string> TeamNames, List<string> TechStackNames, List<string> BusinessOutcomeOptions)> LoadExportLookupsAsync()
+    {
+        var capitalProjects = await CapitalProjectService.GetAllAsync();
+        var projectKeys = capitalProjects
+            .Where(cp => !string.IsNullOrWhiteSpace(cp.JiraKey))
+            .Select(cp => cp.JiraKey!).Distinct().OrderBy(k => k).ToList();
+
+        var pis = await PiService.GetAllLightAsync();
+        var piNames = pis.Select(p => p.Name).OrderBy(n => n).ToList();
+
+        var teams = await TeamService.GetAllNamesAsync();
+        var teamNames = teams.Select(t => t.Name).OrderBy(n => n).ToList();
+
+        var techStacks = await TechnologyStackService.GetAllAsync();
+        var techStackNames = techStacks.Select(ts => ts.Name).OrderBy(n => n).ToList();
+
+        var businessOutcomes = await BusinessOutcomeService.GetAllAsync();
+        var boOptions = businessOutcomes
+            .Select(bo => ExcelTemplateService.FormatBusinessOutcomeDisplay(bo.JiraId, bo.Summary))
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct()
+            .OrderBy(s => s)
+            .ToList();
+
+        return (projectKeys, piNames, teamNames, techStackNames, boOptions);
+    }
+
+    private async Task ExportFilteredAsync()
+    {
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var (projectKeys, piNames, teamNames, techStackNames, boOptions) = await LoadExportLookupsAsync();
+
+            // Build lookup: feature ID -> full feature with tech stacks and teams
+            var allFeatures = await FeatureService.GetAllAsync();
+            var featureById = allFeatures.ToDictionary(f => f.Id);
+
+            var exportRows = _filteredRows.Select(r =>
+            {
+                featureById.TryGetValue(r.Id, out var dbFeature);
+
+                // Determine project key from hierarchy
+                string? pk = dbFeature?.ProjectKey;
+
+                // Team: take first team name
+                var teamName = dbFeature?.FeatureTeams.FirstOrDefault()?.Team?.Name;
+
+                // Tech stack efforts
+                var tsDict = dbFeature?.FeatureTechnologyStacks
+                    .Where(fts => fts.TechnologyStack != null)
+                    .ToDictionary(fts => fts.TechnologyStack.Name, fts => fts.EstimatedEffort, StringComparer.OrdinalIgnoreCase)
+                    ?? new Dictionary<string, int?>(StringComparer.OrdinalIgnoreCase);
+
+                var efforts = techStackNames.Select(tsName =>
+                    tsDict.TryGetValue(tsName, out var effort) ? effort : null).ToList();
+
+                var bo = dbFeature?.BusinessOutcome;
+                var boDisplay = bo != null
+                    ? ExcelTemplateService.FormatBusinessOutcomeDisplay(bo.JiraId, bo.Summary)
+                    : null;
+
+                return new FeatureExportRow
+                {
+                    ProjectKey = pk,
+                    JiraId = r.JiraId,
+                    FeatureName = r.FeatureName,
+                    Summary = r.Summary,
+                    Ranking = dbFeature?.Ranking,
+                    Description = dbFeature?.Description,
+                    BusinessOutcome = boDisplay,
+                    Pi = r.PiName,
+                    Labels = dbFeature?.Labels,
+                    Team = teamName,
+                    Comments = r.Comments,
+                    TechStackEfforts = efforts
+                };
+            }).ToList();
+
+            var bytes = ExcelTemplateService.GenerateFeatureExport(exportRows, projectKeys, piNames, teamNames, techStackNames, boOptions);
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='Features.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export features");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ExportEmptyTemplateAsync()
+    {
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var (projectKeys, piNames, teamNames, techStackNames, boOptions) = await LoadExportLookupsAsync();
+
+            var bytes = ExcelTemplateService.GenerateFeatureExport(new List<FeatureExportRow>(), projectKeys, piNames, teamNames, techStackNames, boOptions);
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='Features_Template.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export template");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    // --- Map to PI ---
+
+    private async Task OpenMapToPiDialogAsync()
+    {
+        try
+        {
+            var pis = await PiService.GetAllLightAsync();
+            if (pis.Count == 0)
+            {
+                await MessageService.Info(
+                    "No Planning Increments have been created yet. Please create a PI first.",
+                    "No PIs available");
+                return;
+            }
+
+            var parameters = new DialogParameters<MapToPiDialog>
+            {
+                { x => x.Pis, pis },
+                { x => x.FeatureCount, _filteredRows.Count }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<MapToPiDialog>("Map to PI", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is null || result.Canceled)
+            {
+                return;
+            }
+
+            var mapResult = (MapToPiDialog.MapToPiResult)result.Data!;
+            var featureIds = _filteredRows.Select(r => r.Id).ToList();
+
+            if (mapResult.PiId is not null)
+            {
+                var piName = pis.First(p => p.Id == mapResult.PiId.Value).Name;
+                if (!await MessageService.Confirm(
+                    $"Map {featureIds.Count} filtered feature(s) to PI \"{piName}\"?"))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                if (!await MessageService.Confirm(
+                    $"Remove PI mapping from {featureIds.Count} filtered feature(s)?"))
+                {
+                    return;
+                }
+            }
+
+            await FeatureService.MapFeaturesToPiAsync(featureIds, mapResult.PiId);
+
+            // Update local rows to reflect the change
+            var newPiId = mapResult.PiId;
+            var newPiName = newPiId.HasValue ? pis.First(p => p.Id == newPiId.Value).Name : null;
+            _rows = _rows.Select(r =>
+                featureIds.Contains(r.Id)
+                    ? r with { PiId = newPiId, PiName = newPiName }
+                    : r).ToList();
+            RecomputeFilteredRows();
+
+            Snackbar.Add(
+                mapResult.PiId is not null
+                    ? $"Mapped {featureIds.Count} feature(s) to PI \"{newPiName}\"."
+                    : $"Removed PI mapping from {featureIds.Count} feature(s).",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Map to PI failed");
+            await MessageService.Exception(ex);
+        }
+    }
+
+    // --- Jira sync ---
+
+    private async Task OpenSyncDialogAsync()
+    {
+        if (_allCapitalProjectsForSync.Count == 0)
+        {
+            _allCapitalProjectsForSync = await CapitalProjectService.GetAllAsync();
+        }
+
+        var projectsWithKey = _allCapitalProjectsForSync
+            .Where(cp => !string.IsNullOrWhiteSpace(cp.JiraKey)).ToList();
+
+        if (projectsWithKey.Count == 0)
+        {
+            Snackbar.Add("No ART Level records have a Jira Key configured.", Severity.Warning);
+            return;
+        }
+
+        var dbPis = await PiService.GetAllLightAsync();
+        var dbTeams = await TeamService.GetAllNamesAsync();
+
+        var parameters = new DialogParameters<JiraSyncDialog>
+        {
+            { x => x.Projects, projectsWithKey.Select(cp => new JiraSyncDialog.ProjectOption(cp.Id, cp.JiraKey!, cp.Name)).ToList() },
+            { x => x.IssueType, JiraIssueTypes.Feature },
+            { x => x.UserName, _userName! },
+            { x => x.AvailablePiNames, dbPis.Select(p => p.Name).OrderBy(n => n).ToList() },
+            { x => x.AvailableTeamNames, dbTeams.Select(t => t.Name).OrderBy(n => n).ToList() }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<JiraSyncDialog>("Synchronize with Jira", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled)
+        {
+            return;
+        }
+
+        var syncResult = (JiraSyncDialog.JiraSyncDialogResult)result.Data!;
+        await RunSyncAsync(syncResult.ProjectKey, syncResult.Issues);
+    }
+
+    private async Task RunSyncAsync(string projectKey, List<JiraIssueResponse> jiraIssues, Dictionary<string, HashSet<string>>? propertyMaskByJiraKey = null)
+    {
+        _syncing = true;
+        StateHasChanged();
+
+        try
+        {
+            if (jiraIssues.Count == 0)
+            {
+                Snackbar.Add($"No Features found in Jira project {projectKey}.", Severity.Info);
+                return;
+            }
+
+            var syncItems = jiraIssues.Select(ji => new JiraFeatureSyncItem(
+                JiraKey: ji.Key,
+                Summary: ji.Summary,
+                Description: ji.Description,
+                IssueType: ji.IssueType,
+                Labels: ji.Labels is { Count: > 0 } ? string.Join(",", ji.Labels) : null,
+                FeatureName: ji.FeatureName,
+                ParentLink: ji.ParentLink,
+                Status: ji.Status,
+                JiraUpdated: ji.Updated,
+                TargetStart: ji.TargetStart,
+                TargetEnd: ji.TargetEnd,
+                StoryPoints: ji.StoryPoints,
+                GfedTeam: ji.GfedTeam,
+                PlanningIncrement: ji.PlanningIncrement
+            )
+            {
+                PropertyMask = propertyMaskByJiraKey?.GetValueOrDefault(ji.Key)
+            }).ToList();
+
+            var syncResult = await FeatureService.SyncFromJiraAsync(projectKey, syncItems);
+
+            Snackbar.Add(
+                $"Sync complete: {syncResult.Created} created, {syncResult.Updated} updated, {syncResult.Linked} linked.",
+                Severity.Success);
+
+            // Reload data
+            var items = await FeatureService.GetAllWithHierarchyAsync();
+            _rows = items.Select(f =>
+            {
+                var bo = f.BusinessOutcome;
+                var epic = bo?.PortfolioEpic;
+                var programs = epic?.StrategicObjectivePortfolioEpics
+                    .Select(ppe => ppe.StrategicObjective).ToList() ?? new();
+
+                var resolvedCapitalProjectName = ArtHelper.ResolveArtByJiraId(f.ProjectKey, f.JiraId, _capitalProjectByJiraKey)?.Name;
+
+                return new FeatureRow(
+                    Id: f.Id,
+                    JiraId: f.JiraId,
+                    FeatureName: f.Name,
+                    Summary: f.Summary,
+                    PiId: f.PiId,
+                    PiName: f.Pi?.Name,
+                    BoJiraId: bo?.JiraId,
+                    BoName: bo?.Summary,
+                    BoDescription: bo?.Description,
+                    EpicJiraId: epic?.JiraId,
+                    EpicName: epic?.Summary,
+                    EpicDescription: epic?.Description,
+                    ProgramJiraIds: programs
+                        .Where(p => !string.IsNullOrEmpty(p.JiraId))
+                        .Select(p => new JiraRef(p.JiraId!, p.Summary, p.Description))
+                        .DistinctBy(p => p.JiraId).ToList(),
+                    CapitalProjectName: resolvedCapitalProjectName,
+                    Labels: f.Labels,
+                    Teams: f.FeatureTeams.Select(ft => new TeamRef(ft.TeamId, ft.Team.Name)).ToList(),
+                    TechStacks: f.FeatureTechnologyStacks.Select(fts => new TechStackRef(fts.TechnologyStack.Name, fts.EstimatedEffort)).ToList(),
+                    Comments: f.Comments,
+                    TargetStart: f.TargetStart,
+                    TargetEnd: f.TargetEnd,
+                    StoryPoints: f.StoryPoints
+                );
+            }).ToList();
+            RecomputeFilteredRows();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Jira Feature sync failed");
+            Snackbar.Add($"Sync failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
+    private async Task SyncFilteredAsync()
+    {
+        var jiraKeys = _filteredRows
+            .Where(r => !string.IsNullOrWhiteSpace(r.JiraId))
+            .Select(r => r.JiraId!)
+            .Distinct().ToList();
+
+        if (jiraKeys.Count == 0)
+        {
+            Snackbar.Add("No filtered records have a Jira ID.", Severity.Warning);
+            return;
+        }
+
+        _syncing = true;
+        StateHasChanged();
+
+        try
+        {
+            var jiraIssues = await JiraIssueService.GetIssuesByKeysAsync(_userName!, jiraKeys);
+
+            // Load current DB state for comparison
+            var dbFeatures = (await FeatureService.GetAllAsync())
+                .Where(f => jiraKeys.Contains(f.JiraId!))
+                .ToDictionary(f => f.JiraId!);
+
+            var dbPis = await PiService.GetAllLightAsync();
+            var dbTeams = await TeamService.GetAllNamesAsync();
+            var dbPiNames = new HashSet<string>(dbPis.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+            var teamsNotFound = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var pisToCreate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var diffs = new List<JiraFilteredSyncDiffDialog.DiffItem>();
+            foreach (var ji in jiraIssues)
+            {
+                if (!dbFeatures.TryGetValue(ji.Key, out var db))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(db.Summary, ji.Summary, StringComparison.Ordinal))
+                {
+                    diffs.Add(new(ji.Key, "Summary", db.Summary, ji.Summary));
+                }
+                if (!string.Equals(db.Description, ji.Description, StringComparison.Ordinal))
+                {
+                    diffs.Add(new(ji.Key, "Description", db.Description, ji.Description));
+                }
+                var jiraLabels = ji.Labels is { Count: > 0 } ? string.Join(",", ji.Labels) : null;
+                if (!string.Equals(db.Labels, jiraLabels, StringComparison.Ordinal))
+                {
+                    diffs.Add(new(ji.Key, "Labels", db.Labels, jiraLabels));
+                }
+                if (!string.Equals(db.Status, ji.Status, StringComparison.Ordinal))
+                {
+                    diffs.Add(new(ji.Key, "Status", db.Status, ji.Status));
+                }
+                if (db.TargetStart != ji.TargetStart)
+                {
+                    diffs.Add(new(ji.Key, PlanningDisplayNames.TargetStart, db.TargetStart?.ToString("yyyy-MM-dd"), ji.TargetStart?.ToString("yyyy-MM-dd")));
+                }
+                if (db.TargetEnd != ji.TargetEnd)
+                {
+                    diffs.Add(new(ji.Key, PlanningDisplayNames.TargetEnd, db.TargetEnd?.ToString("yyyy-MM-dd"), ji.TargetEnd?.ToString("yyyy-MM-dd")));
+                }
+                if (db.StoryPoints != ji.StoryPoints)
+                {
+                    diffs.Add(new(ji.Key, PlanningDisplayNames.StoryPoints, db.StoryPoints?.ToString(), ji.StoryPoints?.ToString()));
+                }
+
+                // PI diff
+                var dbPiName = db.Pi?.Name;
+                var jiraPiName = string.IsNullOrWhiteSpace(ji.PlanningIncrement) ? null : ji.PlanningIncrement.Trim();
+                if (!string.Equals(dbPiName, jiraPiName, StringComparison.OrdinalIgnoreCase))
+                {
+                    diffs.Add(new(ji.Key, PlanningDisplayNames.PI, dbPiName, jiraPiName));
+                }
+                if (jiraPiName is not null && !dbPiNames.Contains(jiraPiName))
+                {
+                    pisToCreate.Add(jiraPiName);
+                }
+
+                // Teams diff (resolve Jira values to matched DB teams; ignore unmatched)
+                var dbTeamNames = db.FeatureTeams
+                    .Where(ft => ft.Team is not null)
+                    .Select(ft => ft.Team.Name)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var resolvedJiraTeamNames = new List<string>();
+                if (!string.IsNullOrWhiteSpace(ji.GfedTeam))
+                {
+                    var jiraTeamValues = ji.GfedTeam.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    foreach (var jt in jiraTeamValues)
+                    {
+                        var match = dbTeams
+                            .Where(t => !string.IsNullOrEmpty(t.Name) && jt.Contains(t.Name, StringComparison.OrdinalIgnoreCase))
+                            .OrderByDescending(t => t.Name.Length)
+                            .FirstOrDefault();
+                        if (match is null)
+                        {
+                            teamsNotFound.Add(jt);
+                        }
+                        else if (!resolvedJiraTeamNames.Contains(match.Name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            resolvedJiraTeamNames.Add(match.Name);
+                        }
+                    }
+                }
+                var resolvedSorted = resolvedJiraTeamNames.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+                if (!dbTeamNames.SequenceEqual(resolvedSorted, StringComparer.OrdinalIgnoreCase))
+                {
+                    diffs.Add(new(
+                        ji.Key,
+                        PlanningDisplayNames.Teams,
+                        dbTeamNames.Count > 0 ? string.Join(", ", dbTeamNames) : null,
+                        resolvedSorted.Count > 0 ? string.Join(", ", resolvedSorted) : null));
+                }
+            }
+
+            var parameters = new DialogParameters<JiraFilteredSyncDiffDialog>
+            {
+                { x => x.Diffs, diffs },
+                { x => x.JiraIssues, jiraIssues },
+                { x => x.TeamsNotFound, teamsNotFound.OrderBy(s => s).ToList() },
+                { x => x.PisToCreate, pisToCreate.OrderBy(s => s).ToList() }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<JiraFilteredSyncDiffDialog>(
+                "Jira Differences — Features", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is not null && !result.Canceled)
+            {
+                var selection = (JiraFilteredSyncDiffDialog.SyncSelection)result.Data!;
+                await RunSyncAsync(string.Empty, selection.Issues, selection.PropertyMaskByJiraKey);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Sync filtered features failed");
+            Snackbar.Add($"Sync failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
+    private async Task OpenJiraDetailsDialogAsync(string title, string? jiraId, string? summary, string? description)
+    {
+        var parameters = new DialogParameters<JiraIssueDetailsDialog>
+        {
+            { x => x.Title, title },
+            { x => x.JiraId, jiraId },
+            { x => x.Summary, summary },
+            { x => x.Description, description }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        await DialogService.ShowAsync<JiraIssueDetailsDialog>(title, parameters, options);
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record JiraRef(string JiraId, string? Summary, string? Description);
+    private record TeamRef(int Id, string Name);
+    private record TechStackRef(string Name, int? EstimatedEffort);
+
+    private record FeatureRow(
+        int Id,
+        string? JiraId,
+        string? FeatureName,
+        string? Summary,
+        int? PiId,
+        string? PiName,
+        string? BoJiraId,
+        string? BoName,
+        string? BoDescription,
+        string? EpicJiraId,
+        string? EpicName,
+        string? EpicDescription,
+        List<JiraRef> ProgramJiraIds,
+        string? CapitalProjectName,
+        string? Labels,
+        List<TeamRef> Teams,
+        List<TechStackRef> TechStacks,
+        string? Comments,
+        DateTime? TargetStart,
+        DateTime? TargetEnd,
+        int? StoryPoints
+    );
+
+}
