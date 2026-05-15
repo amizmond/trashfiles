@@ -1,0 +1,265 @@
+@attribute [Route(RoutingPath.Authorization)]
+
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Estimation.Services
+
+@inject IAppAuthorizationService AppAuthService
+@inject IWindowsAuthService WindowsAuthService
+@inject IActiveDirectoryService AdService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject IModalDialogService MessageService
+
+<PageTitle>Authorization</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h5" Class="mb-4">Authorization Management</MudText>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4">
+                <MudTabPanel Text="Users" BadgeData="@_users.Count" BadgeColor="Color.Primary">
+                    <MudStack Row="true" Class="mb-3">
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                                   OnClick="RefreshAdInfoAsync" Disabled="_refreshingAd">
+                            @if (_refreshingAd)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                            }
+                            Refresh AD Info
+                        </MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.PersonAdd"
+                                   OnClick="OpenAddUserDialog">Add User</MudButton>
+                    </MudStack>
+                    <MudDataGrid T="AppUser" Items="_users" Dense Hover Striped Bordered="true" RowsPerPage="25">
+                        <Columns>
+                            <PropertyColumn Property="x => x.WindowsUserName" Title="Windows User" />
+                            <PropertyColumn Property="x => x.DisplayName" Title="Display Name" />
+                            <PropertyColumn Property="x => x.SamAccountName" Title="SAM Account" />
+                            <PropertyColumn Property="x => x.EmployeeId" Title="Employee Id" />
+                            <PropertyColumn Property="x => x.IsAdmin" Title="Admin">
+                                <CellTemplate>
+                                    @if (context.Item.IsAdmin)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">Admin</MudChip>
+                                    }
+                                </CellTemplate>
+                            </PropertyColumn>
+                            <PropertyColumn Property="x => x.IsApproved" Title="Status">
+                                <CellTemplate>
+                                    @if (context.Item.IsApproved)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Active</MudChip>
+                                    }
+                                    else if (context.Item.IsAccessRequested)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Pending</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Filled">Revoked</MudChip>
+                                    }
+                                </CellTemplate>
+                            </PropertyColumn>
+                            <PropertyColumn Property="x => x.ApprovedBy" Title="Approved By" />
+                            <PropertyColumn Property="x => x.ApprovedAt" Title="Approved At" Format="yyyy-MM-dd HH:mm" />
+                            <TemplateColumn Title="Actions" Sortable="false" Filterable="false">
+                                <CellTemplate>
+                                    <MudStack Row="true" Spacing="1">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                                       OnClick="@(() => OpenEditUserDialog(context.Item))" Title="Edit permissions" />
+                                        @if (context.Item.IsApproved)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Block" Size="Size.Small" Color="Color.Warning"
+                                                           OnClick="@(() => RevokeUserAsync(context.Item))" Title="Revoke access" />
+                                        }
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       OnClick="@(() => DeleteUserAsync(context.Item))" Title="Delete user" />
+                                    </MudStack>
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <PagerContent>
+                            <MudDataGridPager T="AppUser" PageSizeOptions="new[] { 10, 25, 50 }" />
+                        </PagerContent>
+                    </MudDataGrid>
+                </MudTabPanel>
+
+                <MudTabPanel Text="Pending Requests" BadgeData="@_pendingRequests.Count" BadgeColor="@(_pendingRequests.Count > 0 ? Color.Error : Color.Default)">
+                    @if (_pendingRequests.Count == 0)
+                    {
+                        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No pending access requests.</MudAlert>
+                    }
+                    else
+                    {
+                        <MudDataGrid T="AppUser" Items="_pendingRequests" Dense Hover Striped Bordered="true">
+                            <Columns>
+                                <PropertyColumn Property="x => x.WindowsUserName" Title="Windows User" />
+                                <PropertyColumn Property="x => x.RequestedAt" Title="Requested At" Format="yyyy-MM-dd HH:mm" />
+                                <TemplateColumn Title="Actions" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        <MudStack Row="true" Spacing="1">
+                                            <MudButton Variant="Variant.Filled" Color="Color.Success" Size="Size.Small"
+                                                       OnClick="@(() => OpenApproveUserDialog(context.Item))">Approve</MudButton>
+                                            <MudButton Variant="Variant.Filled" Color="Color.Error" Size="Size.Small"
+                                                       OnClick="@(() => DeleteUserAsync(context.Item))">Reject</MudButton>
+                                        </MudStack>
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                        </MudDataGrid>
+                    }
+                </MudTabPanel>
+            </MudTabs>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    private List<AppUser> _users = [];
+    private List<AppUser> _pendingRequests = [];
+    private List<AppPage> _allPages = [];
+    private bool _loading = true;
+    private bool _refreshingAd;
+    private string? _currentUserName;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _currentUserName = await WindowsAuthService.GetUserName();
+        await LoadDataAsync();
+        _loading = false;
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _users = await AppAuthService.GetAllUsersAsync();
+        _pendingRequests = await AppAuthService.GetPendingRequestsAsync();
+        _allPages = await AppAuthService.GetAllPagesAsync();
+    }
+
+    private async Task OpenAddUserDialog()
+    {
+        var parameters = new DialogParameters<UserPermissionDialog>
+        {
+            { x => x.AllPages, _allPages },
+            { x => x.IsNewUser, true }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<UserPermissionDialog>("Add User", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is UserPermissionDialog.UserPermissionResult data)
+        {
+            var adInfo = AdService.GetUser(data.WindowsUserName);
+            var displayName = string.IsNullOrWhiteSpace(data.DisplayName) ? adInfo?.DisplayName : data.DisplayName;
+            await AppAuthService.AddUserAsync(data.WindowsUserName, displayName, data.IsAdmin, data.Permissions, _currentUserName ?? "System", adInfo?.SamAccountName, adInfo?.EmployeeId);
+            Snackbar.Add($"User '{data.WindowsUserName}' added successfully.", Severity.Success);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task RefreshAdInfoAsync()
+    {
+        if (_refreshingAd || _users.Count == 0)
+        {
+            return;
+        }
+
+        _refreshingAd = true;
+        var refreshed = 0;
+        var notFound = 0;
+
+        foreach (var user in _users)
+        {
+            var adInfo = AdService.GetUser(user.WindowsUserName);
+            if (adInfo is null)
+            {
+                notFound++;
+                continue;
+            }
+
+            if (await AppAuthService.SetAdInfoAsync(user.Id, adInfo.DisplayName, adInfo.SamAccountName, adInfo.EmployeeId))
+            {
+                refreshed++;
+            }
+        }
+
+        await LoadDataAsync();
+        _refreshingAd = false;
+
+        Snackbar.Add($"AD refresh complete: {refreshed} updated, {notFound} not found.", notFound > 0 ? Severity.Warning : Severity.Success);
+    }
+
+    private async Task OpenEditUserDialog(AppUser user)
+    {
+        var existingPermissions = await AppAuthService.GetUserPermissionsAsync(user.Id);
+        var parameters = new DialogParameters<UserPermissionDialog>
+        {
+            { x => x.AllPages, _allPages },
+            { x => x.IsNewUser, false },
+            { x => x.WindowsUserName, user.WindowsUserName },
+            { x => x.DisplayName, user.DisplayName },
+            { x => x.IsAdmin, user.IsAdmin },
+            { x => x.ExistingPermissions, existingPermissions }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<UserPermissionDialog>("Edit User Permissions", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is UserPermissionDialog.UserPermissionResult data)
+        {
+            await AppAuthService.UpdateUserPermissionsAsync(user.Id, data.IsAdmin, data.Permissions);
+            Snackbar.Add($"Permissions for '{user.WindowsUserName}' updated.", Severity.Success);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task OpenApproveUserDialog(AppUser user)
+    {
+        var parameters = new DialogParameters<UserPermissionDialog>
+        {
+            { x => x.AllPages, _allPages },
+            { x => x.IsNewUser, false },
+            { x => x.WindowsUserName, user.WindowsUserName },
+            { x => x.IsApproving, true }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<UserPermissionDialog>("Approve User", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is UserPermissionDialog.UserPermissionResult data)
+        {
+            await AppAuthService.ApproveUserAsync(user.Id, data.IsAdmin, data.Permissions, _currentUserName ?? "System");
+            Snackbar.Add($"User '{user.WindowsUserName}' approved.", Severity.Success);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task RevokeUserAsync(AppUser user)
+    {
+        if (await MessageService.Confirm($"Revoke access for '{user.WindowsUserName}'?"))
+        {
+            await AppAuthService.RevokeUserAsync(user.Id);
+            Snackbar.Add($"Access revoked for '{user.WindowsUserName}'.", Severity.Warning);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task DeleteUserAsync(AppUser user)
+    {
+        if (await MessageService.Confirm($"Delete '{user.WindowsUserName}'? This will remove all permissions."))
+        {
+            await AppAuthService.DeleteUserAsync(user.Id);
+            Snackbar.Add($"User '{user.WindowsUserName}' deleted.", Severity.Error);
+            await LoadDataAsync();
+        }
+    }
+}

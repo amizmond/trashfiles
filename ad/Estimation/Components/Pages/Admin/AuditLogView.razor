@@ -1,0 +1,85 @@
+@attribute [Route(RoutingPath.AuditLog)]
+
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+
+@inject IAuditLogService AuditLogService
+
+<PageTitle>Audit Log</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h5" Class="mb-4">Audit Log</MudText>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudDataGrid T="AuditLog" Items="_auditLogs" Dense Hover Striped
+                         Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterRow"
+                         SortMode="SortMode.Multiple"
+                         Bordered="true"
+                         RowsPerPage="25">
+                <Columns>
+                    <PropertyColumn Property="x => x.Timestamp" Title="Date/Time" Format="yyyy-MM-dd HH:mm:ss"
+                                    InitialDirection="SortDirection.Descending" />
+                    <PropertyColumn Property="x => x.UserName" Title="User" />
+                    <PropertyColumn Property="x => x.EntityName" Title="Model" />
+                    <PropertyColumn Property="x => x.EntityId" Title="Entity Id" />
+                    <PropertyColumn Property="x => x.Action" Title="Action">
+                        <CellTemplate>
+                            @switch (context.Item.Action)
+                            {
+                                case "Create":
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Create</MudChip>
+                                    break;
+                                case "Update":
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Update</MudChip>
+                                    break;
+                                case "Delete":
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Delete</MudChip>
+                                    break;
+                                default:
+                                    <MudText>@context.Item.Action</MudText>
+                                    break;
+                            }
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.PropertyName" Title="Property" />
+                    <PropertyColumn Property="x => x.OldValue" Title="Old Value">
+                        <CellTemplate>
+                            <MudText Style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                                     title="@context.Item.OldValue">
+                                @(context.Item.OldValue ?? "—")
+                            </MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                    <PropertyColumn Property="x => x.NewValue" Title="New Value">
+                        <CellTemplate>
+                            <MudText Style="max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                                     title="@context.Item.NewValue">
+                                @(context.Item.NewValue ?? "—")
+                            </MudText>
+                        </CellTemplate>
+                    </PropertyColumn>
+                </Columns>
+                <PagerContent>
+                    <MudDataGridPager T="AuditLog" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+                </PagerContent>
+            </MudDataGrid>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    private List<AuditLog> _auditLogs = new();
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _auditLogs = await AuditLogService.GetAllAsync(1000);
+        _loading = false;
+    }
+}

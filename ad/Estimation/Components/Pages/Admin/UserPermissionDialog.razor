@@ -1,0 +1,153 @@
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="3">
+            @if (IsNewUser)
+            {
+                <MudTextField @bind-Value="_windowsUserName" Label="Windows User Name" Placeholder="DOMAIN\username"
+                              Required="true" RequiredError="Windows user name is required" />
+                <MudTextField @bind-Value="_displayName" Label="Display Name" Placeholder="John Doe" />
+            }
+            else
+            {
+                <MudText Typo="Typo.body1">User: <strong>@WindowsUserName</strong></MudText>
+            }
+
+            <MudSwitch @bind-value="_isAdmin" Color="Color.Warning" T="bool" Label="Administrator (full access to all pages)" />
+
+            @if (!_isAdmin)
+            {
+                <MudDivider />
+                <MudText Typo="Typo.subtitle1" Class="mb-2">Page Permissions</MudText>
+
+                @foreach (var group in _permissionRows.GroupBy(r => r.AppPage.Group ?? "General").OrderBy(g => g.Min(r => r.AppPage.SortOrder)))
+                {
+                    <MudText Typo="Typo.subtitle2" Color="Color.Primary" Class="mt-2">@group.Key</MudText>
+                    @foreach (var row in group.OrderBy(r => r.AppPage.SortOrder))
+                    {
+                        @if (row.AppPage.IsAdminOnly)
+                        {
+                            continue;
+                        }
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Class="ml-4">
+                            <MudText Style="min-width:200px;">@row.AppPage.DisplayName</MudText>
+                            <MudSelect T="AccessLevel" @bind-Value="row.SelectedAccess" Dense Margin="Margin.Dense" Style="max-width:200px;">
+                                <MudSelectItem T="AccessLevel" Value="AccessLevel.None">No Access</MudSelectItem>
+                                <MudSelectItem T="AccessLevel" Value="AccessLevel.ReadOnly">Read Only</MudSelectItem>
+                                <MudSelectItem T="AccessLevel" Value="AccessLevel.Edit">Edit</MudSelectItem>
+                            </MudSelect>
+                        </MudStack>
+                    }
+                }
+
+                <MudStack Row="true" Spacing="2" Class="mt-2">
+                    <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="SetAllReadOnly">Set All Read Only</MudButton>
+                    <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="SetAllEdit">Set All Edit</MudButton>
+                    <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="SetAllNone">Clear All</MudButton>
+                </MudStack>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit"
+                   Disabled="@(IsNewUser && string.IsNullOrWhiteSpace(_windowsUserName))">
+            @(IsApproving ? "Approve" : "Save")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public List<AppPage> AllPages { get; set; } = [];
+    [Parameter] public bool IsNewUser { get; set; }
+    [Parameter] public bool IsApproving { get; set; }
+    [Parameter] public string? WindowsUserName { get; set; }
+    [Parameter] public string? DisplayName { get; set; }
+    [Parameter] public bool IsAdmin { get; set; }
+    [Parameter] public List<AppUserPagePermission>? ExistingPermissions { get; set; }
+
+    private string _windowsUserName = string.Empty;
+    private string? _displayName;
+    private bool _isAdmin;
+    private List<PermissionRow> _permissionRows = [];
+
+    protected override void OnInitialized()
+    {
+        _windowsUserName = WindowsUserName ?? string.Empty;
+        _displayName = DisplayName;
+        _isAdmin = IsAdmin;
+
+        var existingMap = (ExistingPermissions ?? [])
+            .ToDictionary(p => p.AppPageId, p => p.AccessLevel);
+
+        _permissionRows = AllPages.Select(ap => new PermissionRow
+        {
+            AppPage = ap,
+            SelectedAccess = existingMap.TryGetValue(ap.Id, out var level) ? level : AccessLevel.None
+        }).ToList();
+    }
+
+    private void SetAllReadOnly()
+    {
+        foreach (var row in _permissionRows.Where(r => !r.AppPage.IsAdminOnly))
+        {
+            row.SelectedAccess = AccessLevel.ReadOnly;
+        }
+    }
+
+    private void SetAllEdit()
+    {
+        foreach (var row in _permissionRows.Where(r => !r.AppPage.IsAdminOnly))
+        {
+            row.SelectedAccess = AccessLevel.Edit;
+        }
+    }
+
+    private void SetAllNone()
+    {
+        foreach (var row in _permissionRows.Where(r => !r.AppPage.IsAdminOnly))
+        {
+            row.SelectedAccess = AccessLevel.None;
+        }
+    }
+
+    private void Submit()
+    {
+        var permissions = _permissionRows
+            .Where(r => !r.AppPage.IsAdminOnly)
+            .Select(r => new PagePermissionDto
+            {
+                AppPageId = r.AppPage.Id,
+                AccessLevel = r.SelectedAccess
+            }).ToList();
+
+        MudDialog.Close(DialogResult.Ok(new UserPermissionResult
+        {
+            WindowsUserName = _windowsUserName.Trim(),
+            DisplayName = _displayName?.Trim(),
+            IsAdmin = _isAdmin,
+            Permissions = permissions
+        }));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private class PermissionRow
+    {
+        public AppPage AppPage { get; set; } = null!;
+        public AccessLevel SelectedAccess { get; set; }
+    }
+
+    public class UserPermissionResult
+    {
+        public string WindowsUserName { get; set; } = string.Empty;
+        public string? DisplayName { get; set; }
+        public bool IsAdmin { get; set; }
+        public List<PagePermissionDto> Permissions { get; set; } = [];
+    }
+}
