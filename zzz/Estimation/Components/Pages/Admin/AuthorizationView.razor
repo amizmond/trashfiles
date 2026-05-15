@@ -45,6 +45,7 @@
                             <PropertyColumn Property="x => x.DisplayName" Title="Display Name" />
                             <PropertyColumn Property="x => x.SamAccountName" Title="SAM Account" />
                             <PropertyColumn Property="x => x.EmployeeId" Title="Employee Id" />
+                            <PropertyColumn Property="x => x.EmailAddress" Title="Email" />
                             <PropertyColumn Property="x => x.IsAdmin" Title="Admin">
                                 <CellTemplate>
                                     @if (context.Item.IsAdmin)
@@ -160,7 +161,7 @@
         {
             var adInfo = AdService.GetUser(data.WindowsUserName);
             var displayName = string.IsNullOrWhiteSpace(data.DisplayName) ? adInfo?.DisplayName : data.DisplayName;
-            await AppAuthService.AddUserAsync(data.WindowsUserName, displayName, data.IsAdmin, data.Permissions, _currentUserName ?? "System", adInfo?.SamAccountName, adInfo?.EmployeeId);
+            await AppAuthService.AddUserAsync(data.WindowsUserName, displayName, data.IsAdmin, data.Permissions, _currentUserName ?? "System", adInfo?.SamAccountName, adInfo?.EmployeeId, adInfo?.EmailAddress);
             Snackbar.Add($"User '{data.WindowsUserName}' added successfully.", Severity.Success);
             await LoadDataAsync();
         }
@@ -186,7 +187,7 @@
                 continue;
             }
 
-            if (await AppAuthService.SetAdInfoAsync(user.Id, adInfo.DisplayName, adInfo.SamAccountName, adInfo.EmployeeId))
+            if (await AppAuthService.SetAdInfoAsync(user.Id, adInfo.DisplayName, adInfo.SamAccountName, adInfo.EmployeeId, adInfo.EmailAddress))
             {
                 refreshed++;
             }

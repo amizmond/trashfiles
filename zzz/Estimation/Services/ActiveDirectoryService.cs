@@ -11,6 +11,8 @@ public class UserDetailedInfo
     public string? SamAccountName { get; set; }
 
     public string? EmployeeId { get; set; }
+
+    public string? EmailAddress { get; set; }
 }
 
 public interface IActiveDirectoryService
@@ -47,6 +49,7 @@ public class ActiveDirectoryService : IActiveDirectoryService
                 DisplayName = userPrincipal.DisplayName,
                 SamAccountName = userPrincipal.SamAccountName,
                 EmployeeId = userPrincipal.EmployeeId,
+                EmailAddress = userPrincipal.EmailAddress,
             };
         }
         catch (Exception ex)

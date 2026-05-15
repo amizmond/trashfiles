@@ -5,20 +5,13 @@
 namespace Estimation.Core.Migrations
 {
     /// <inheritdoc />
-    public partial class AddAppUserAdFields : Migration
+    public partial class AddAppUserEmail : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.AddColumn<string>(
-                name: "EmployeeId",
-                table: "AppUsers",
-                type: "nvarchar(50)",
-                maxLength: 50,
-                nullable: true);
-
-            migrationBuilder.AddColumn<string>(
-                name: "SamAccountName",
+                name: "EmailAddress",
                 table: "AppUsers",
                 type: "nvarchar(256)",
                 maxLength: 256,
@@ -29,11 +22,7 @@ namespace Estimation.Core.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
-                name: "EmployeeId",
-                table: "AppUsers");
-
-            migrationBuilder.DropColumn(
-                name: "SamAccountName",
+                name: "EmailAddress",
                 table: "AppUsers");
         }
     }

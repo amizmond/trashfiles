@@ -19,6 +19,9 @@ public class AppUser
     [MaxLength(50)]
     public string? EmployeeId { get; set; }
 
+    [MaxLength(256)]
+    public string? EmailAddress { get; set; }
+
     public bool IsAdmin { get; set; }
 
     public bool IsApproved { get; set; }

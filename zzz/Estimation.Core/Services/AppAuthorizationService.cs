@@ -24,7 +24,7 @@ public interface IAppAuthorizationService
     Task<AppUser?> GetCurrentUserAsync(string windowsUserName);
     Task<bool> IsAuthorizedAsync(string windowsUserName);
     Task<bool> IsAdminAsync(string windowsUserName);
-    Task RequestAccessAsync(string windowsUserName, string? displayName = null, string? samAccountName = null, string? employeeId = null);
+    Task RequestAccessAsync(string windowsUserName, string? displayName = null, string? samAccountName = null, string? employeeId = null, string? emailAddress = null);
     Task<AccessLevel> GetPageAccessAsync(string windowsUserName, string pageKey);
     Task<List<NavPageInfo>> GetNavigationPagesAsync(string windowsUserName);
     Task<bool> HasPendingRequestsAsync();
@@ -35,8 +35,8 @@ public interface IAppAuthorizationService
     Task<List<AppUserPagePermission>> GetUserPermissionsAsync(int userId);
     Task ApproveUserAsync(int userId, bool isAdmin, List<PagePermissionDto> permissions, string approvedBy);
     Task UpdateUserPermissionsAsync(int userId, bool isAdmin, List<PagePermissionDto> permissions);
-    Task AddUserAsync(string windowsUserName, string? displayName, bool isAdmin, List<PagePermissionDto> permissions, string createdBy, string? samAccountName = null, string? employeeId = null);
-    Task<bool> SetAdInfoAsync(int userId, string? displayName, string? samAccountName, string? employeeId);
+    Task AddUserAsync(string windowsUserName, string? displayName, bool isAdmin, List<PagePermissionDto> permissions, string createdBy, string? samAccountName = null, string? employeeId = null, string? emailAddress = null);
+    Task<bool> SetAdInfoAsync(int userId, string? displayName, string? samAccountName, string? employeeId, string? emailAddress);
     Task RevokeUserAsync(int userId);
     Task DeleteUserAsync(int userId);
 }
@@ -71,7 +71,7 @@ public class AppAuthorizationService : IAppAuthorizationService
             .AnyAsync(u => u.WindowsUserName == windowsUserName && u.IsApproved && u.IsAdmin);
     }
 
-    public async Task RequestAccessAsync(string windowsUserName, string? displayName = null, string? samAccountName = null, string? employeeId = null)
+    public async Task RequestAccessAsync(string windowsUserName, string? displayName = null, string? samAccountName = null, string? employeeId = null, string? emailAddress = null)
     {
         await using var db = await _ctx.CreateDbContextAsync();
         var existing = await db.AppUsers
@@ -85,7 +85,7 @@ public class AppAuthorizationService : IAppAuthorizationService
                 existing.RequestedAt = DateTime.UtcNow;
             }
 
-            ApplyAdInfo(existing, displayName, samAccountName, employeeId);
+            ApplyAdInfo(existing, displayName, samAccountName, employeeId, emailAddress);
             await db.SaveChangesAsync();
             return;
         }
@@ -97,7 +97,7 @@ public class AppAuthorizationService : IAppAuthorizationService
             RequestedAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow
         };
-        ApplyAdInfo(user, displayName, samAccountName, employeeId);
+        ApplyAdInfo(user, displayName, samAccountName, employeeId, emailAddress);
         db.AppUsers.Add(user);
         await db.SaveChangesAsync();
     }
@@ -272,7 +272,7 @@ public class AppAuthorizationService : IAppAuthorizationService
         await db.SaveChangesAsync();
     }
 
-    public async Task AddUserAsync(string windowsUserName, string? displayName, bool isAdmin, List<PagePermissionDto> permissions, string createdBy, string? samAccountName = null, string? employeeId = null)
+    public async Task AddUserAsync(string windowsUserName, string? displayName, bool isAdmin, List<PagePermissionDto> permissions, string createdBy, string? samAccountName = null, string? employeeId = null, string? emailAddress = null)
     {
         await using var db = await _ctx.CreateDbContextAsync();
 
@@ -290,6 +290,7 @@ public class AppAuthorizationService : IAppAuthorizationService
             DisplayName = displayName,
             SamAccountName = samAccountName,
             EmployeeId = employeeId,
+            EmailAddress = emailAddress,
             IsAdmin = isAdmin,
             IsApproved = true,
             IsAccessRequested = false,
@@ -304,7 +305,7 @@ public class AppAuthorizationService : IAppAuthorizationService
         await db.SaveChangesAsync();
     }
 
-    public async Task<bool> SetAdInfoAsync(int userId, string? displayName, string? samAccountName, string? employeeId)
+    public async Task<bool> SetAdInfoAsync(int userId, string? displayName, string? samAccountName, string? employeeId, string? emailAddress)
     {
         await using var db = await _ctx.CreateDbContextAsync();
         var user = await db.AppUsers.FindAsync(userId);
@@ -313,12 +314,12 @@ public class AppAuthorizationService : IAppAuthorizationService
             return false;
         }
 
-        ApplyAdInfo(user, displayName, samAccountName, employeeId);
+        ApplyAdInfo(user, displayName, samAccountName, employeeId, emailAddress);
         await db.SaveChangesAsync();
         return true;
     }
 
-    private static void ApplyAdInfo(AppUser user, string? displayName, string? samAccountName, string? employeeId)
+    private static void ApplyAdInfo(AppUser user, string? displayName, string? samAccountName, string? employeeId, string? emailAddress)
     {
         if (!string.IsNullOrWhiteSpace(displayName))
         {
@@ -333,6 +334,11 @@ public class AppAuthorizationService : IAppAuthorizationService
         if (!string.IsNullOrWhiteSpace(employeeId))
         {
             user.EmployeeId = employeeId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(emailAddress))
+        {
+            user.EmailAddress = emailAddress;
         }
     }
 

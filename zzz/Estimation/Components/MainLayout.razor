@@ -81,7 +81,7 @@ else
                                    OnClick="OpenJiraDialogAsync" />
                 </MudTooltip>
             }
-            <MudText Typo="Typo.body2" Class="mr-4">@_userName</MudText>
+            <MudText Typo="Typo.body2" Class="mr-4">@_displayName</MudText>
             <div>
                 <MudSwitch @bind-value="@_isDarkMode" Color="Color.Primary" Class="ma-4" T="bool" Label="Light/Dark Mode" />
             </div>
@@ -142,6 +142,7 @@ else
     private bool _isAuthorized;
     private bool _isAdmin;
     private string? _userName;
+    private string? _displayName;
     private bool _jiraConnected;
     private bool _accessRequested;
     private bool _requestingAccess;
@@ -162,6 +163,7 @@ else
         var currentUser = await AppAuthService.GetCurrentUserAsync(_userName);
         _isAuthorized = currentUser is not null && currentUser.IsApproved;
         _accessRequested = currentUser is not null && currentUser.IsAccessRequested && !currentUser.IsApproved;
+        _displayName = string.IsNullOrWhiteSpace(currentUser?.DisplayName) ? _userName : currentUser.DisplayName;
 
         if (_isAuthorized)
         {
@@ -192,7 +194,11 @@ else
 
         _requestingAccess = true;
         var adInfo = AdService.GetUser(_userName);
-        await AppAuthService.RequestAccessAsync(_userName, adInfo?.DisplayName, adInfo?.SamAccountName, adInfo?.EmployeeId);
+        await AppAuthService.RequestAccessAsync(_userName, adInfo?.DisplayName, adInfo?.SamAccountName, adInfo?.EmployeeId, adInfo?.EmailAddress);
+        if (!string.IsNullOrWhiteSpace(adInfo?.DisplayName))
+        {
+            _displayName = adInfo.DisplayName;
+        }
         _accessRequested = true;
         _requestingAccess = false;
     }

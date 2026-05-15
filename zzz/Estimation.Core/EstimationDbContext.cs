@@ -388,6 +388,7 @@ public class EstimationDbContext : DbContext
             e.Property(u => u.DisplayName).HasMaxLength(200);
             e.Property(u => u.SamAccountName).HasMaxLength(256);
             e.Property(u => u.EmployeeId).HasMaxLength(50);
+            e.Property(u => u.EmailAddress).HasMaxLength(256);
             e.Property(u => u.ApprovedBy).HasMaxLength(256);
             e.HasIndex(u => u.WindowsUserName).IsUnique();
         });
