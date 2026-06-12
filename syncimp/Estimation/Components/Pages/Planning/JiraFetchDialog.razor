@@ -1,0 +1,103 @@
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@inject IFeatureService FeatureService
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center" style="gap:8px;">
+            <MudIcon Icon="@Icons.Material.Filled.CloudDownload" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Get data from Jira</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+            Enter the Jira issue key to pull its data into the form (e.g. PROJ-123).
+        </MudText>
+        <MudTextField T="string"
+                      Value="@_jiraId"
+                      ValueChanged="OnJiraIdChanged"
+                      Label="@PlanningDisplayNames.JiraId"
+                      Variant="Variant.Outlined"
+                      Placeholder="PROJ-123"
+                      Immediate="true"
+                      OnKeyDown="OnKeyDown"
+                      Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Search"
+                      AutoFocus="true" />
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Dense Class="mt-2">@_error</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.CloudDownload"
+                   Disabled="@(string.IsNullOrWhiteSpace(_jiraId) || _checking)"
+                   OnClick="Confirm">
+            Get Jira
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public string? InitialJiraId { get; set; }
+
+    private string? _jiraId;
+    private string? _error;
+    private bool _checking;
+
+    protected override void OnInitialized()
+    {
+        _jiraId = InitialJiraId;
+    }
+
+    private void OnJiraIdChanged(string value)
+    {
+        _jiraId = value;
+        _error = null;
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or "NumpadEnter")
+        {
+            await Confirm();
+        }
+    }
+
+    private async Task Confirm()
+    {
+        if (string.IsNullOrWhiteSpace(_jiraId) || _checking)
+        {
+            return;
+        }
+
+        var jiraId = _jiraId.Trim();
+        _checking = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            if (await FeatureService.JiraIdExistsAsync(jiraId))
+            {
+                _error = $"A Feature with Jira ID '{jiraId}' already exists in the database.";
+                return;
+            }
+        }
+        finally
+        {
+            _checking = false;
+        }
+
+        MudDialog.Close(DialogResult.Ok(jiraId));
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

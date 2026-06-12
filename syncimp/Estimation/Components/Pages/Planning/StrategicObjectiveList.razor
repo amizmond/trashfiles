@@ -1,0 +1,1353 @@
+@attribute [Route(RoutingPath.StrategicObjectives)]
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.JiraLogic
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Estimation.Excel
+@using Serilog
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
+
+@inject IStrategicObjectiveService ProgramService
+@inject ICapitalProjectService CapitalProjectService
+@inject IDepartmentService DepartmentService
+@inject IJiraAuthService JiraAuth
+@inject IWindowsAuthService WindowsAuth
+@inject ISolutionTrainResolver TrainResolver
+@inject IPermissionGuard PermissionGuard
+@inject NavigationManager Nav
+@inject IModalDialogService MessageService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject IJiraIssueService JiraIssueService
+@inject IJiraDiffService JiraDiffService
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+@implements IDisposable
+
+<AccessGuard PageKey="StrategicObjectives">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">@PlanningDisplayNames.StrategicObjectives</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@PlanningDisplayNames.ToggleColumns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showJiraId" Label="@PlanningDisplayNames.JiraId" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="@PlanningDisplayNames.Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showStatus" Label="@PlanningDisplayNames.Status" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showEpics" Label="@PlanningDisplayNames.Epics" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showLabels" Label="@PlanningDisplayNames.Labels" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="@PlanningDisplayNames.Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       Style="margin-right: 10px"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            @if (_canEdit)
+            {
+                @if (_jiraConnected)
+                {
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Warning"
+                               StartIcon="@Icons.Material.Filled.Sync"
+                               Disabled="_syncing"
+                               Style="margin-right: 10px"
+                               OnClick="OpenSyncDialogAsync">
+                        Find new Strategic Objectives in Jira
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Info"
+                               StartIcon="@Icons.Material.Filled.SyncAlt"
+                               Disabled="_syncing"
+                               Style="margin-right: 10px"
+                               OnClick="SyncFilteredAsync">
+                        Update filtered from Jira
+                    </MudButton>
+                }
+
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           Style="margin-right: 10px; display: none;"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.StrategicObjectivesNew))">
+                    New
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="_loading || _exporting"
+                           OnClick="ExportFilteredAsync">
+                    Export to excel
+                </MudButton>
+            }
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">@PlanningDisplayNames.Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                <MudTextField @bind-Value="FilterSearch" Label="@PlanningDisplayNames.Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <div class="d-flex align-end gap-2">
+                    <MudSelect T="string" Label="@PlanningDisplayNames.PI" MultiSelection
+                               @bind-SelectedValues="FilterPiNames"
+                               Dense Variant="Variant.Outlined" Clearable
+                               AnchorOrigin="Origin.BottomCenter" Style="flex:1">
+                        @foreach (var pi in _availablePis)
+                        {
+                            <MudSelectItem T="string" Value="@pi">@pi</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudTooltip Text="Negate: find strategic objectives whose features have no PI or exclude selected">
+                        <MudCheckBox T="bool" @bind-Value="FilterPiNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <MudSelect T="string" Label="@PlanningDisplayNames.Department" MultiSelection
+                           @bind-SelectedValues="FilterDepartmentNames"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var dept in _availableDepartments)
+                    {
+                        <MudSelectItem T="string" Value="@dept">@dept</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <fieldset class="rounded-lg pa-3"
+                          style="border:1px solid var(--mud-palette-lines-default); margin:0">
+                    <legend class="px-2">
+                        <MudText Typo="Typo.subtitle2" Class="mud-text-secondary">ARTs</MudText>
+                    </legend>
+
+                    <MudSelect T="string" Label="BO ARTs" MultiSelection
+                               @bind-SelectedValues="FilterBoArtNames"
+                               Dense Variant="Variant.Outlined" Clearable
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var ba in _availableBoArts)
+                        {
+                            <MudSelectItem T="string" Value="@ba">@ba</MudSelectItem>
+                        }
+                    </MudSelect>
+
+                    <div class="d-flex justify-center gap-6 my-2">
+                        <MudCheckBox T="bool"
+                                     Value="@FilterArtAnd"
+                                     ValueChanged="@OnFilterArtAndChanged"
+                                     Label="And" Dense Color="Color.Secondary" />
+                        <MudCheckBox T="bool"
+                                     Value="@FilterArtOr"
+                                     ValueChanged="@OnFilterArtOrChanged"
+                                     Label="Or" Dense Color="Color.Secondary" />
+                    </div>
+
+                    <MudSelect T="string" Label="Feature ARTs" MultiSelection
+                               @bind-SelectedValues="FilterCapitalProjectNames"
+                               Dense Variant="Variant.Outlined" Clearable
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var cp in _availableCapitalProjects)
+                        {
+                            <MudSelectItem T="string" Value="@cp">@cp</MudSelectItem>
+                        }
+                    </MudSelect>
+                </fieldset>
+
+                <SearchableDropdown T="string"
+                                    Items="@_availableEpicIds"
+                                    Values="FilterEpicNames"
+                                    ValuesChanged="OnFilterEpicNamesChanged"
+                                    MultiSelect="true"
+                                    Label="@PlanningDisplayNames.Epic"
+                                    ToStringFunc="@LookupEpicText"
+                                    ItemTemplate="@EpicItemTemplate" />
+
+                <MudSelect T="string" Label="@PlanningDisplayNames.Status" MultiSelection
+                           @bind-SelectedValues="FilterStatuses"
+                           Dense Variant="Variant.Outlined" Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var s in _availableStatuses)
+                    {
+                        <MudSelectItem T="string" Value="@s">@s</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudTextField @bind-Value="FilterLabel" Label="@PlanningDisplayNames.Labels" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Label" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudTextField @bind-Value="FilterFeatureLabel" Label="@PlanningDisplayNames.FeatureLabels" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Label" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    @PlanningDisplayNames.ClearFilters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        @if (_syncing)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Warning" Class="mb-2" />
+            <MudAlert Severity="Severity.Info" Class="mb-2">Synchronizing Strategic Objectives from Jira...</MudAlert>
+        }
+
+        <MudDivider />
+
+        <MudDataGrid @ref="_grid" T="ProgramRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" LoadingProgressColor="Color.Primary"
+                     @bind-CurrentPage="CurrentPage"
+                     @bind-RowsPerPage="PageSize">
+            <Columns>
+                <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="false" CellStyle="width:150px;" Hidden="!_showJiraId">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                        {
+                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @context.Item.JiraId
+                                </MudChip>
+                            </a>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" Hidden="!_showName">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableSummary))">
+                            <span>@PlanningDisplayNames.Summary</span>
+                            @if (_sortColumn == SortableSummary)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        <MudText Class="font-weight-bold">@context.Item.Summary</MudText>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Sortable="false" CellStyle="width:130px;" Hidden="!_showStatus">
+                    <HeaderTemplate>
+                        <div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(SortableStatus))">
+                            <span>@PlanningDisplayNames.Status</span>
+                            @if (_sortColumn == SortableStatus)
+                            {
+                                <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)"
+                                         Size="Size.Small" Class="ml-1" />
+                            }
+                        </div>
+                    </HeaderTemplate>
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.Status))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Default">@context.Item.Status</MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="BO ARTs" Sortable="false" CellStyle="width:150px;" Hidden="@(_filterBoArtNamesSet.Count == 0)">
+                    <CellTemplate>
+                        @{
+                            var matchedBoCount = GetMatchedBos(context.Item).Count;
+                        }
+                        @if (matchedBoCount > 0)
+                        {
+                            <MudTooltip Text="Show business outcomes matching the selected BO ARTs">
+                                <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Primary"
+                                           StartIcon="@Icons.Material.Filled.ListAlt"
+                                           OnClick="@(() => ShowMatchedBosAsync(context.Item))">
+                                    @matchedBoCount
+                                </MudButton>
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Feature ARTs" Sortable="false" CellStyle="width:150px;" Hidden="@(_filterCapitalProjectNamesSet.Count == 0)">
+                    <CellTemplate>
+                        @{
+                            var matchedFeatureCount = GetMatchedFeatures(context.Item).Count;
+                        }
+                        @if (matchedFeatureCount > 0)
+                        {
+                            <MudTooltip Text="Show features matching the selected Feature ARTs">
+                                <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Primary"
+                                           StartIcon="@Icons.Material.Filled.ListAlt"
+                                           OnClick="@(() => ShowMatchedFeaturesAsync(context.Item))">
+                                    @matchedFeatureCount
+                                </MudButton>
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.Epics" Sortable="false" Hidden="!_showEpics">
+                    <CellTemplate>
+                        @foreach (var epic in context.Item.Epics.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary"
+                                     Class="mr-1" OnClick="@(() => Nav.NavigateTo($"{RoutingPath.PortfolioEpics}/{epic.Id}"))">@epic.Summary</MudChip>
+                        }
+                        @if (context.Item.Epics.Count > 3)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">
+                                +@(context.Item.Epics.Count - 3)
+                            </MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="@PlanningDisplayNames.Labels" Sortable="false" CellStyle="max-width:250px;" Hidden="!_showLabels">
+                    <CellTemplate>
+                        @if (!string.IsNullOrEmpty(context.Item.Labels))
+                        {
+                            @foreach (var label in context.Item.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Class="mr-1">@label</MudChip>
+                            }
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                @if (_canEdit)
+                {
+                    <TemplateColumn Title="@PlanningDisplayNames.Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
+                        <CellTemplate>
+                            <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Article" Size="Size.Small" OnClick="@(() => NavigateToEdit(context.Item.Id))" />
+                            <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No strategic objectives found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="ProgramRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private List<ProgramRow> _rows = new();
+    private List<ProgramRow> _filteredRows = new();
+    private bool _loading = true;
+    private bool _canEdit;
+    private bool _exporting;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+
+    // --- Capital project lookup: JiraKey -> CapitalProjectRef ---
+    private Dictionary<string, CapitalProjectRef> _capitalProjectByJiraKey = new(StringComparer.OrdinalIgnoreCase);
+
+    // --- Profile-based train visibility ---
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private IReadOnlyDictionary<string, int> _jiraKeyMap = new Dictionary<string, int>();
+
+    // --- Jira state ---
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _syncing;
+    private List<CapitalProject> _allCapitalProjects = new();
+
+    // --- Column visibility (true = visible) ---
+    private bool _showJiraId = true;
+    private bool _showName = true;
+    private bool _showStatus = true;
+    private bool _showEpics = true;
+    private bool _showLabels = true;
+    private bool _showActions = true;
+
+    // --- Sort state ---
+    private const string SortableSummary = "Summary";
+    private const string SortableStatus = "Status";
+    private string? _sortColumn;
+    private bool _sortDescending;
+    private bool _suppressUrlUpdate = true;
+
+    // --- Pagination state ---
+    private MudDataGrid<ProgramRow>? _grid;
+    private int? _initialPageSizeFromUrl;
+    private int _currentPageBacking;
+    private int CurrentPage
+    {
+        get => _currentPageBacking;
+        set
+        {
+            if (_currentPageBacking == value)
+            {
+                return;
+            }
+            _currentPageBacking = value;
+            UpdateUrl();
+        }
+    }
+
+    private int _pageSizeBacking = 10;
+    private int PageSize
+    {
+        get => _pageSizeBacking;
+        set
+        {
+            if (_pageSizeBacking == value)
+            {
+                return;
+            }
+            _pageSizeBacking = value;
+            UpdateUrl();
+        }
+    }
+
+    // --- Available filter values ---
+    private List<string> _availableDepartments = new();
+    private List<string> _availableCapitalProjects = new();
+    private List<string> _availableBoArts = new();
+    private List<(string JiraId, string? Summary)> _availableEpics = new();
+    private List<string> _availablePis = new();
+    private List<string> _availableStatuses = new();
+    private Dictionary<int, string> _cpToDept = new();
+
+    private enum ArtFilterLogic { None, And, Or }
+
+    private List<string> _availableEpicIds => _availableEpics.Select(e => e.JiraId).ToList();
+
+    private string LookupEpicText(string? jiraId)
+    {
+        if (string.IsNullOrEmpty(jiraId))
+        {
+            return string.Empty;
+        }
+
+        var epic = _availableEpics.FirstOrDefault(e => e.JiraId == jiraId);
+
+        if (epic.JiraId is null)
+        {
+            return jiraId;
+        }
+
+        return string.IsNullOrEmpty(epic.Summary) ? epic.JiraId : $"{epic.JiraId} — {epic.Summary}";
+    }
+
+    private RenderFragment<string> EpicItemTemplate => jiraId => @<text>
+        @{
+            var epic = _availableEpics.FirstOrDefault(e => e.JiraId == jiraId);
+        }
+        <div style="font-size:0.8rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+            <b>@jiraId</b>@(string.IsNullOrEmpty(epic.Summary) ? "" : $" — {epic.Summary}")
+        </div>
+    </text>;
+
+    private void OnFilterEpicNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterEpicNames = values;
+    }
+
+    // --- Filter properties with debounced recomputation ---
+
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); UpdateUrl(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private string? _filterLabelBacking;
+    private string? FilterLabel
+    {
+        get => _filterLabelBacking;
+        set { _filterLabelBacking = value; ScheduleRecompute(); }
+    }
+
+    private string? _filterFeatureLabelBacking;
+    private string? FilterFeatureLabel
+    {
+        get => _filterFeatureLabelBacking;
+        set { _filterFeatureLabelBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterDepartmentNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterDepartmentNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterDepartmentNames
+    {
+        get => _filterDepartmentNamesBacking;
+        set { _filterDepartmentNamesBacking = value; _filterDepartmentNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterCapitalProjectNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterCapitalProjectNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterCapitalProjectNames
+    {
+        get => _filterCapitalProjectNamesBacking;
+        set { _filterCapitalProjectNamesBacking = value; _filterCapitalProjectNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterBoArtNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterBoArtNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterBoArtNames
+    {
+        get => _filterBoArtNamesBacking;
+        set { _filterBoArtNamesBacking = value; _filterBoArtNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private ArtFilterLogic _filterArtLogicBacking = ArtFilterLogic.And;
+    private bool FilterArtAnd => _filterArtLogicBacking == ArtFilterLogic.And;
+    private bool FilterArtOr => _filterArtLogicBacking == ArtFilterLogic.Or;
+
+    private void OnFilterArtAndChanged(bool value)
+    {
+        if (!value)
+        {
+            return; // one combination mode is always active; unchecking is a no-op
+        }
+        _filterArtLogicBacking = ArtFilterLogic.And;
+        ScheduleRecompute();
+    }
+
+    private void OnFilterArtOrChanged(bool value)
+    {
+        if (!value)
+        {
+            return; // one combination mode is always active; unchecking is a no-op
+        }
+        _filterArtLogicBacking = ArtFilterLogic.Or;
+        ScheduleRecompute();
+    }
+
+    private IReadOnlyCollection<string> _filterEpicNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterEpicNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterEpicNames
+    {
+        get => _filterEpicNamesBacking;
+        set { _filterEpicNamesBacking = value; _filterEpicNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private bool _filterPiNotBacking;
+    private bool FilterPiNot
+    {
+        get => _filterPiNotBacking;
+        set { _filterPiNotBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterPiNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterPiNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterPiNames
+    {
+        get => _filterPiNamesBacking;
+        set { _filterPiNamesBacking = value; _filterPiNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterStatusesBacking = Array.Empty<string>();
+    private HashSet<string> _filterStatusesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterStatuses
+    {
+        get => _filterStatusesBacking;
+        set { _filterStatusesBacking = value; _filterStatusesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterLabelBacking = null;
+        _filterFeatureLabelBacking = null;
+        _filterDepartmentNamesBacking = Array.Empty<string>();
+        _filterDepartmentNamesSet.Clear();
+        _filterCapitalProjectNamesBacking = Array.Empty<string>();
+        _filterCapitalProjectNamesSet.Clear();
+        _filterBoArtNamesBacking = Array.Empty<string>();
+        _filterBoArtNamesSet.Clear();
+        _filterArtLogicBacking = ArtFilterLogic.And;
+        _filterEpicNamesBacking = Array.Empty<string>();
+        _filterEpicNamesSet.Clear();
+        _filterPiNotBacking = false;
+        _filterPiNamesBacking = Array.Empty<string>();
+        _filterPiNamesSet.Clear();
+        _filterStatusesBacking = Array.Empty<string>();
+        _filterStatusesSet.Clear();
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    // --- Filter logic ---
+
+    private void RecomputeFilteredRows()
+    {
+        IEnumerable<ProgramRow> filtered = _rows.Where(MatchesFilter);
+        filtered = _sortColumn switch
+        {
+            SortableSummary => _sortDescending
+                ? filtered.OrderByDescending(r => r.Summary)
+                : filtered.OrderBy(r => r.Summary),
+            SortableStatus => _sortDescending
+                ? filtered.OrderByDescending(r => r.Status)
+                : filtered.OrderBy(r => r.Status),
+            _ => filtered
+        };
+        _filteredRows = filtered.ToList();
+    }
+
+    private bool MatchesFilter(ProgramRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!((r.Summary?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (r.JiraId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+            {
+                return false;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_filterLabelBacking))
+        {
+            var labelFilter = _filterLabelBacking.Trim();
+            if (string.IsNullOrEmpty(r.Labels)
+                || !r.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Any(l => l.Contains(labelFilter, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+        }
+
+        var featureLabelFilter = string.IsNullOrWhiteSpace(_filterFeatureLabelBacking)
+            ? null
+            : _filterFeatureLabelBacking.Trim();
+        var hasFeaturePiFilter = !_filterPiNotBacking && _filterPiNamesSet.Count > 0;
+        if (featureLabelFilter is not null || hasFeaturePiFilter)
+        {
+            // a single feature must satisfy every active feature-level condition (ART, label, PI)
+            if (!r.Features.Any(f =>
+                (_filterCapitalProjectNamesSet.Count == 0
+                    || (f.ArtName is not null && _filterCapitalProjectNamesSet.Contains(f.ArtName)))
+                && (featureLabelFilter is null || HasLabel(f.Labels, featureLabelFilter))
+                && (!hasFeaturePiFilter || (f.PiName is not null && _filterPiNamesSet.Contains(f.PiName)))))
+            {
+                return false;
+            }
+        }
+
+        if (_filterDepartmentNamesSet.Count > 0
+            && !r.CapitalProjects.Any(cp => _cpToDept.TryGetValue(cp.Id, out var dn) && _filterDepartmentNamesSet.Contains(dn)))
+        {
+            return false;
+        }
+
+        var hasBoArtFilter = _filterBoArtNamesSet.Count > 0;
+        var hasFeatureArtFilter = _filterCapitalProjectNamesSet.Count > 0;
+        if (hasBoArtFilter || hasFeatureArtFilter)
+        {
+            var boMatch = hasBoArtFilter && r.BoArts.Any(b => _filterBoArtNamesSet.Contains(b.ArtName));
+            var featureMatch = hasFeatureArtFilter && r.Features.Any(f => f.ArtName is not null && _filterCapitalProjectNamesSet.Contains(f.ArtName));
+
+            bool pass;
+            if (hasBoArtFilter && hasFeatureArtFilter)
+            {
+                pass = _filterArtLogicBacking == ArtFilterLogic.Or
+                    ? boMatch || featureMatch
+                    : boMatch && featureMatch;
+            }
+            else if (hasBoArtFilter)
+            {
+                pass = boMatch;
+            }
+            else
+            {
+                pass = featureMatch;
+            }
+
+            if (!pass)
+            {
+                return false;
+            }
+        }
+
+        if (_filterEpicNamesSet.Count > 0
+            && !r.Epics.Any(e => e.JiraId is not null && _filterEpicNamesSet.Contains(e.JiraId)))
+        {
+            return false;
+        }
+
+        // positive PI matching happens in the combined feature-level check above
+        if (_filterPiNotBacking)
+        {
+            if (_filterPiNamesSet.Count > 0)
+            {
+                if (r.FeaturePis.Any(p => _filterPiNamesSet.Contains(p.Name)))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (r.FeaturePis.Count > 0)
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (_filterStatusesSet.Count > 0
+            && (r.Status is null || !_filterStatusesSet.Contains(r.Status)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    // --- Lifecycle ---
+
+    protected override async Task OnInitializedAsync()
+    {
+        _canEdit = UserPageAccess.TryGetValue("StrategicObjectives", out var access) && access == AccessLevel.Edit;
+
+        try
+        {
+            _userName = await WindowsAuth.GetUserName();
+            if (_userName is not null && JiraAuth.IsConfigured)
+            {
+                _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+            }
+
+            var departments = await DepartmentService.GetAllAsync();
+            _cpToDept = departments
+                .SelectMany(d => d.CapitalProjects.Select(cp => (cp.Id, d.Name)))
+                .ToDictionary(x => x.Id, x => x.Name);
+
+            _allCapitalProjects = await CapitalProjectService.GetAllAsync();
+            _capitalProjectByJiraKey = _allCapitalProjects
+                .Where(cp => !string.IsNullOrWhiteSpace(cp.JiraKey))
+                .GroupBy(cp => cp.JiraKey!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    g => g.Key,
+                    g => new CapitalProjectRef(g.First().Id, g.First().Name, g.First().Description),
+                    StringComparer.OrdinalIgnoreCase);
+
+            _permissions = await PermissionGuard.GetPermissionsAsync();
+            _jiraKeyMap = await TrainResolver.GetJiraKeyMapAsync();
+
+            var items = FilterVisibleObjectives(await ProgramService.GetAllWithHierarchyAsync());
+            _rows = items.Select(pp =>
+            {
+                var resolvedCp = ArtHelper.ResolveArtByJiraId(pp.ProjectKey, pp.JiraId, _capitalProjectByJiraKey);
+
+                return new ProgramRow(
+                    Id: pp.Id,
+                    JiraId: pp.JiraId,
+                    Summary: pp.Summary,
+                    CapitalProjects: resolvedCp is not null
+                        ? new List<CapitalProjectRef> { resolvedCp }
+                        : new List<CapitalProjectRef>(),
+                    Epics: pp.StrategicObjectivePortfolioEpics
+                        .Select(ppe => new EpicRef(ppe.PortfolioEpicId, ppe.PortfolioEpic.JiraId, ppe.PortfolioEpic.Summary))
+                        .ToList(),
+                    FeaturePis: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .SelectMany(bo => bo.Features)
+                        .Where(f => f.Pi is not null)
+                        .Select(f => new FeaturePiRef(f.Pi!.Name, f.Pi.StartDate))
+                        .DistinctBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                    BoArts: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .Select(bo => new { Item = bo, ArtName = ArtHelper.ResolveArtByJiraId(bo.ProjectKey, bo.JiraId, _capitalProjectByJiraKey)?.Name })
+                        .Where(x => !string.IsNullOrEmpty(x.ArtName))
+                        .Select(x => new ArtItemRef(x.Item.Id, x.Item.JiraId, x.Item.Summary, x.ArtName!, x.Item.Labels))
+                        .ToList(),
+                    Features: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .SelectMany(bo => bo.Features)
+                        .Select(f => new FeatureRef(f.Id, f.JiraId, f.Summary,
+                            ArtHelper.ResolveArtByJiraId(f.ProjectKey, f.JiraId, _capitalProjectByJiraKey)?.Name,
+                            f.Labels, f.Pi?.Name))
+                        .ToList(),
+                    Labels: pp.Labels,
+                    FeatureLabels: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .SelectMany(bo => bo.Features)
+                        .Where(f => !string.IsNullOrEmpty(f.Labels))
+                        .SelectMany(f => f.Labels!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    Status: pp.Status
+                );
+            }).ToList();
+
+            PopulateAvailableFilterValues();
+
+            ReadUrlParams();
+            RecomputeFilteredRows();
+        }
+        finally { _loading = false; _suppressUrlUpdate = false; }
+    }
+
+    /// <summary>
+    /// Profile-based visibility: strategic objectives whose child features belong to Solution
+    /// Trains the user cannot view are excluded entirely (rows, filter dropdowns and search
+    /// all derive from this list).
+    /// </summary>
+    private List<StrategicObjective> FilterVisibleObjectives(List<StrategicObjective> items) =>
+        _permissions.IsAdmin
+            ? items
+            : items.Where(pp => _permissions.CanView("StrategicObjectives", GetObjectiveScope(pp))).ToList();
+
+    private TrainScope GetObjectiveScope(StrategicObjective pp) =>
+        TrainResolver.ResolveForChildren(
+            pp.StrategicObjectivePortfolioEpics
+                .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                .SelectMany(bo => bo.Features)
+                .Select(f => (f.ProjectKey, f.JiraId)),
+            _jiraKeyMap);
+
+    private async Task ConfirmDeleteAsync(ProgramRow row)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {row.Summary} ?"))
+            {
+                await ProgramService.DeleteAsync(row.Id);
+                _rows.RemoveAll(r => r.Id == row.Id);
+                RecomputeFilteredRows();
+                UpdateUrl();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    // --- Jira sync ---
+
+    private async Task OpenSyncDialogAsync()
+    {
+        if (_allCapitalProjects.Count == 0)
+        {
+            _allCapitalProjects = await CapitalProjectService.GetAllAsync();
+        }
+
+        var projectsWithKey = _allCapitalProjects
+            .Where(cp => !string.IsNullOrWhiteSpace(cp.JiraKey))
+            .ToList();
+
+        if (projectsWithKey.Count == 0)
+        {
+            Snackbar.Add("No ART Level records have a Jira Key configured.", Severity.Warning);
+            return;
+        }
+
+        var existingJiraIds = await ProgramService.GetExistingJiraIdsAsync();
+
+        var parameters = new DialogParameters<JiraSyncDialog>
+        {
+            { x => x.Projects, projectsWithKey.Select(cp => new JiraSyncDialog.ProjectOption(cp.Id, cp.JiraKey!, cp.Name)).ToList() },
+            { x => x.IssueType, JiraIssueTypes.StrategicObjective },
+            { x => x.UserName, _userName! },
+            { x => x.ExistingJiraIds, existingJiraIds }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<JiraSyncDialog>("Find new Strategic Objectives in Jira", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled)
+        {
+            return;
+        }
+
+        var syncResult = (JiraSyncDialog.JiraSyncDialogResult)result.Data!;
+        await RunSyncAsync(syncResult.ProjectId, syncResult.ProjectKey, syncResult.Issues);
+    }
+
+    private async Task RunSyncAsync(int capitalProjectId, string projectKey, List<JiraIssueResponse> jiraIssues, Dictionary<string, HashSet<string>>? propertyMaskByJiraKey = null)
+    {
+        _syncing = true;
+        StateHasChanged();
+
+        try
+        {
+            if (jiraIssues.Count == 0)
+            {
+                Snackbar.Add($"No Strategic Objectives found in Jira project {projectKey}.", Severity.Info);
+                return;
+            }
+
+            var syncItems = jiraIssues
+                .Select(ji => ji.ToStrategicObjectiveSyncItem(propertyMaskByJiraKey?.GetValueOrDefault(ji.Key)))
+                .ToList();
+
+            var syncResult = await ProgramService.SyncFromJiraAsync(capitalProjectId, projectKey, syncItems);
+
+            Snackbar.Add(
+                $"Sync complete: {syncResult.Created} created, {syncResult.Updated} updated, {syncResult.Linked} linked.",
+                Severity.Success);
+
+            // Reload data
+            var items = FilterVisibleObjectives(await ProgramService.GetAllWithHierarchyAsync());
+            _rows = items.Select(pp =>
+            {
+                var resolvedCp = ArtHelper.ResolveArtByJiraId(pp.ProjectKey, pp.JiraId, _capitalProjectByJiraKey);
+
+                return new ProgramRow(
+                    Id: pp.Id,
+                    JiraId: pp.JiraId,
+                    Summary: pp.Summary,
+                    CapitalProjects: resolvedCp is not null
+                        ? new List<CapitalProjectRef> { resolvedCp }
+                        : new List<CapitalProjectRef>(),
+                    Epics: pp.StrategicObjectivePortfolioEpics
+                        .Select(ppe => new EpicRef(ppe.PortfolioEpicId, ppe.PortfolioEpic.JiraId, ppe.PortfolioEpic.Summary))
+                        .ToList(),
+                    FeaturePis: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .SelectMany(bo => bo.Features)
+                        .Where(f => f.Pi is not null)
+                        .Select(f => new FeaturePiRef(f.Pi!.Name, f.Pi.StartDate))
+                        .DistinctBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                    BoArts: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .Select(bo => new { Item = bo, ArtName = ArtHelper.ResolveArtByJiraId(bo.ProjectKey, bo.JiraId, _capitalProjectByJiraKey)?.Name })
+                        .Where(x => !string.IsNullOrEmpty(x.ArtName))
+                        .Select(x => new ArtItemRef(x.Item.Id, x.Item.JiraId, x.Item.Summary, x.ArtName!, x.Item.Labels))
+                        .ToList(),
+                    Features: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .SelectMany(bo => bo.Features)
+                        .Select(f => new FeatureRef(f.Id, f.JiraId, f.Summary,
+                            ArtHelper.ResolveArtByJiraId(f.ProjectKey, f.JiraId, _capitalProjectByJiraKey)?.Name,
+                            f.Labels, f.Pi?.Name))
+                        .ToList(),
+                    Labels: pp.Labels,
+                    FeatureLabels: pp.StrategicObjectivePortfolioEpics
+                        .SelectMany(ppe => ppe.PortfolioEpic.BusinessOutcomes)
+                        .SelectMany(bo => bo.Features)
+                        .Where(f => !string.IsNullOrEmpty(f.Labels))
+                        .SelectMany(f => f.Labels!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    Status: pp.Status
+                );
+            }).ToList();
+            PopulateAvailableFilterValues();
+            RecomputeFilteredRows();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Jira sync failed");
+            Snackbar.Add($"Sync failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
+    private void ToggleSort(string sortKey)
+    {
+        if (_sortColumn == sortKey)
+        {
+            if (_sortDescending)
+            {
+                _sortColumn = null;
+                _sortDescending = false;
+            }
+            else
+            {
+                _sortDescending = true;
+            }
+        }
+        else
+        {
+            _sortColumn = sortKey;
+            _sortDescending = false;
+        }
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private void ReadUrlParams()
+    {
+        var uri = Nav.ToAbsoluteUri(Nav.Uri);
+        var q = QueryHelpers.ParseQuery(uri.Query);
+        if (q.TryGetValue("search", out var search) && !string.IsNullOrWhiteSpace(search))
+        {
+            _filterSearchBacking = search.ToString();
+        }
+        if (q.TryGetValue("label", out var label) && !string.IsNullOrWhiteSpace(label))
+        {
+            _filterLabelBacking = label.ToString();
+        }
+        if (q.TryGetValue("fLabel", out var fLabel) && !string.IsNullOrWhiteSpace(fLabel))
+        {
+            _filterFeatureLabelBacking = fLabel.ToString();
+        }
+        if (q.TryGetValue("dept", out var dept) && !string.IsNullOrWhiteSpace(dept))
+        {
+            var vals = dept.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterDepartmentNamesBacking = vals;
+            _filterDepartmentNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+        if (q.TryGetValue("cp", out var cp) && !string.IsNullOrWhiteSpace(cp))
+        {
+            var vals = cp.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterCapitalProjectNamesBacking = vals;
+            _filterCapitalProjectNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+        if (q.TryGetValue("boArt", out var boArt) && !string.IsNullOrWhiteSpace(boArt))
+        {
+            var vals = boArt.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterBoArtNamesBacking = vals;
+            _filterBoArtNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+        if (q.TryGetValue("artLogic", out var artLogic) && !string.IsNullOrWhiteSpace(artLogic))
+        {
+            if (string.Equals(artLogic, "and", StringComparison.OrdinalIgnoreCase))
+            {
+                _filterArtLogicBacking = ArtFilterLogic.And;
+            }
+            else if (string.Equals(artLogic, "or", StringComparison.OrdinalIgnoreCase))
+            {
+                _filterArtLogicBacking = ArtFilterLogic.Or;
+            }
+        }
+        if (q.TryGetValue("epic", out var epic) && !string.IsNullOrWhiteSpace(epic))
+        {
+            var vals = epic.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterEpicNamesBacking = vals;
+            _filterEpicNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+        if (q.TryGetValue("piNot", out var piNot)
+            && string.Equals(piNot, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            _filterPiNotBacking = true;
+        }
+        if (q.TryGetValue("pi", out var pi) && !string.IsNullOrWhiteSpace(pi))
+        {
+            var vals = pi.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterPiNamesBacking = vals;
+            _filterPiNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+        if (q.TryGetValue("status", out var status) && !string.IsNullOrWhiteSpace(status))
+        {
+            var vals = status.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterStatusesBacking = vals;
+            _filterStatusesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+        if (q.TryGetValue("sortBy", out var sortBy) && !string.IsNullOrWhiteSpace(sortBy))
+        {
+            _sortColumn = sortBy.ToString();
+            _sortDescending = q.TryGetValue("sortDesc", out var sortDesc)
+                && string.Equals(sortDesc, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("page", out var pageStr)
+            && int.TryParse(pageStr, out var pageVal) && pageVal >= 0)
+        {
+            _currentPageBacking = pageVal;
+        }
+
+        if (q.TryGetValue("pageSize", out var pageSizeStr)
+            && int.TryParse(pageSizeStr, out var pageSizeVal) && pageSizeVal > 0)
+        {
+            _pageSizeBacking = pageSizeVal;
+            _initialPageSizeFromUrl = pageSizeVal;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_initialPageSizeFromUrl.HasValue && _grid is not null)
+        {
+            var size = _initialPageSizeFromUrl.Value;
+            _initialPageSizeFromUrl = null;
+            await _grid.SetRowsPerPageAsync(size, false);
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        if (_suppressUrlUpdate)
+        {
+            return;
+        }
+        var query = new Dictionary<string, object?>();
+        query["search"] = string.IsNullOrWhiteSpace(_filterSearchBacking) ? null : _filterSearchBacking;
+        query["label"] = string.IsNullOrWhiteSpace(_filterLabelBacking) ? null : _filterLabelBacking;
+        query["fLabel"] = string.IsNullOrWhiteSpace(_filterFeatureLabelBacking) ? null : _filterFeatureLabelBacking;
+        query["dept"] = _filterDepartmentNamesSet.Count > 0 ? string.Join(",", _filterDepartmentNamesBacking) : null;
+        query["cp"] = _filterCapitalProjectNamesSet.Count > 0 ? string.Join(",", _filterCapitalProjectNamesBacking) : null;
+        query["boArt"] = _filterBoArtNamesSet.Count > 0 ? string.Join(",", _filterBoArtNamesBacking) : null;
+        query["artLogic"] = _filterArtLogicBacking switch
+        {
+            ArtFilterLogic.And => "and",
+            ArtFilterLogic.Or => "or",
+            _ => null
+        };
+        query["epic"] = _filterEpicNamesSet.Count > 0 ? string.Join(",", _filterEpicNamesBacking) : null;
+        query["piNot"] = _filterPiNotBacking ? (object?)true : null;
+        query["pi"] = _filterPiNamesSet.Count > 0 ? string.Join(",", _filterPiNamesBacking) : null;
+        query["status"] = _filterStatusesSet.Count > 0 ? string.Join(",", _filterStatusesBacking) : null;
+        query["sortBy"] = _sortColumn;
+        query["sortDesc"] = _sortDescending && _sortColumn is not null ? (object?)true : null;
+        query["page"] = _currentPageBacking > 0 ? (object?)_currentPageBacking : null;
+        query["pageSize"] = _pageSizeBacking != 10 ? (object?)_pageSizeBacking : null;
+        var uri = Nav.GetUriWithQueryParameters(query);
+        Nav.NavigateTo(uri, replace: true);
+    }
+
+    private void NavigateToEdit(int id)
+    {
+        var currentUri = new Uri(Nav.Uri);
+        var returnUrl = currentUri.PathAndQuery;
+        var editUri = Nav.GetUriWithQueryParameters(
+            $"{RoutingPath.StrategicObjectives}/{id}",
+            new Dictionary<string, object?> { ["returnUrl"] = returnUrl });
+        Nav.NavigateTo(editUri);
+    }
+
+    private async Task SyncFilteredAsync()
+    {
+        var jiraKeys = _filteredRows
+            .Where(r => !string.IsNullOrWhiteSpace(r.JiraId))
+            .Select(r => r.JiraId!)
+            .Distinct().ToList();
+
+        if (jiraKeys.Count == 0)
+        {
+            Snackbar.Add("No filtered records have a Jira ID.", Severity.Warning);
+            return;
+        }
+
+        var confirmed = await MessageService.Confirm(
+            $"This will search Jira for the {jiraKeys.Count} filtered Strategic Objective(s) that have a Jira ID " +
+            "and compare them with the database. You will then see the differences and choose which " +
+            "records to update from Jira. No new records are created. Continue?",
+            "Update filtered from Jira", "Continue");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _syncing = true;
+        StateHasChanged();
+
+        try
+        {
+            var jiraIssues = await JiraIssueService.GetIssuesByKeysAsync(_userName!, jiraKeys);
+
+            var dbItems = (await ProgramService.GetAllAsync())
+                .Where(so => jiraKeys.Contains(so.JiraId!))
+                .ToDictionary(so => so.JiraId!);
+
+            var diffs = JiraDiffService.DiffJiraIssues(jiraIssues, dbItems)
+                .Select(d => new JiraFilteredSyncDiffDialog.DiffItem(d.JiraKey, d.PropertyName, d.DbValue, d.JiraValue))
+                .ToList();
+
+            var parameters = new DialogParameters<JiraFilteredSyncDiffDialog>
+            {
+                { x => x.Diffs, diffs },
+                { x => x.JiraIssues, jiraIssues }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<JiraFilteredSyncDiffDialog>(
+                "Jira Differences — Strategic Objectives", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is not null && !result.Canceled)
+            {
+                var selection = (JiraFilteredSyncDiffDialog.SyncSelection)result.Data!;
+                await RunSyncAsync(0, string.Empty, selection.Issues, selection.PropertyMaskByJiraKey);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Sync filtered strategic objectives failed");
+            Snackbar.Add($"Sync failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _syncing = false;
+        }
+    }
+
+    private async Task ExportFilteredAsync()
+    {
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var exportRows = _filteredRows.Select(r => new StrategicObjectiveExportRow
+            {
+                JiraId = r.JiraId,
+                Summary = r.Summary,
+                Epics = string.Join(", ", r.Epics.Select(e => e.Summary).Where(s => !string.IsNullOrEmpty(s))),
+                Labels = r.Labels
+            }).ToList();
+
+            var bytes = StrategicObjectiveExportService.Generate(exportRows);
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='StrategicObjectives.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export strategic objectives");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private void PopulateAvailableFilterValues()
+    {
+        _availableDepartments = _rows
+            .SelectMany(r => r.CapitalProjects)
+            .Where(cp => _cpToDept.ContainsKey(cp.Id))
+            .Select(cp => _cpToDept[cp.Id])
+            .Distinct().OrderBy(n => n).ToList();
+        _availableCapitalProjects = _rows
+            .SelectMany(r => r.Features.Select(f => f.ArtName))
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+        _availableBoArts = _rows
+            .SelectMany(r => r.BoArts.Select(b => b.ArtName))
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+        _availableEpics = _rows
+            .SelectMany(r => r.Epics)
+            .Where(e => !string.IsNullOrEmpty(e.JiraId))
+            .Select(e => (e.JiraId!, e.Summary))
+            .DistinctBy(e => e.Item1, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(e => e.Item1).ToList();
+        _availablePis = _rows
+            .SelectMany(r => r.FeaturePis)
+            .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new { Name = g.Key, StartDate = g.Max(p => p.StartDate) })
+            .OrderByDescending(p => p.StartDate ?? DateTime.MinValue)
+            .ThenBy(p => p.Name)
+            .Select(p => p.Name).ToList();
+        _availableStatuses = _rows
+            .Where(r => !string.IsNullOrEmpty(r.Status))
+            .Select(r => r.Status!)
+            .Distinct().OrderBy(n => n).ToList();
+    }
+
+    // --- Matched ART items dialogs ---
+
+    private List<ArtItemRef> GetMatchedBos(ProgramRow r) =>
+        r.BoArts
+            .Where(b => _filterBoArtNamesSet.Contains(b.ArtName))
+            .DistinctBy(b => b.Id)
+            .OrderBy(b => b.JiraId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private List<FeatureRef> GetMatchedFeatures(ProgramRow r)
+    {
+        var featureLabelFilter = string.IsNullOrWhiteSpace(_filterFeatureLabelBacking)
+            ? null
+            : _filterFeatureLabelBacking.Trim();
+        var hasFeaturePiFilter = !_filterPiNotBacking && _filterPiNamesSet.Count > 0;
+        return r.Features
+            .Where(f => f.ArtName is not null && _filterCapitalProjectNamesSet.Contains(f.ArtName)
+                && (featureLabelFilter is null || HasLabel(f.Labels, featureLabelFilter))
+                && (!hasFeaturePiFilter || (f.PiName is not null && _filterPiNamesSet.Contains(f.PiName))))
+            .DistinctBy(f => f.Id)
+            .OrderBy(f => f.JiraId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool HasLabel(string? labels, string labelFilter) =>
+        !string.IsNullOrEmpty(labels)
+        && labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(l => l.Contains(labelFilter, StringComparison.OrdinalIgnoreCase));
+
+    private Task ShowMatchedBosAsync(ProgramRow r) =>
+        ShowMatchedItemsAsync(
+            GetMatchedBos(r).Select(b => new MatchedItemsDialog.ItemRow(b.Id, b.JiraId, b.Summary)).ToList(),
+            RoutingPath.BusinessOutcomes,
+            $"Business Outcomes matching selected ARTs — {r.JiraId}");
+
+    private Task ShowMatchedFeaturesAsync(ProgramRow r) =>
+        ShowMatchedItemsAsync(
+            GetMatchedFeatures(r).Select(f => new MatchedItemsDialog.ItemRow(f.Id, f.JiraId, f.Summary)).ToList(),
+            RoutingPath.Features,
+            $"Features matching selected ARTs — {r.JiraId}");
+
+    private async Task ShowMatchedItemsAsync(List<MatchedItemsDialog.ItemRow> rows, string itemRoute, string title)
+    {
+        var parameters = new DialogParameters<MatchedItemsDialog>
+        {
+            { x => x.Items, rows },
+            { x => x.ItemRoute, itemRoute },
+            { x => x.JiraTaskUrl, Configuration["JiraTaskUrl"] }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<MatchedItemsDialog>(title, parameters, options);
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record EpicRef(int Id, string? JiraId, string? Summary);
+    private record FeaturePiRef(string Name, DateTime? StartDate);
+    private record ArtItemRef(int Id, string? JiraId, string? Summary, string ArtName, string? Labels);
+    private record FeatureRef(int Id, string? JiraId, string? Summary, string? ArtName, string? Labels, string? PiName);
+
+    private record ProgramRow(
+        int Id,
+        string? JiraId,
+        string Summary,
+        List<CapitalProjectRef> CapitalProjects,
+        List<EpicRef> Epics,
+        List<FeaturePiRef> FeaturePis,
+        List<ArtItemRef> BoArts,
+        List<FeatureRef> Features,
+        string? Labels,
+        List<string> FeatureLabels,
+        string? Status
+    );
+}

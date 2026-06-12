@@ -1,0 +1,269 @@
+@using Estimation.Components.ModalDialog
+@using Estimation.Core.JiraLogic
+@inject IModalDialogService MessageService
+
+<MudDialog Style="@_dialogStyle" Class="@_dialogClass">
+    <TitleContent>
+        <div class="d-flex align-center" style="width:100%; gap:8px;">
+            <MudIcon Icon="@Icons.Material.Filled.CompareArrows" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Jira Differences</MudText>
+            <MudSpacer />
+            <MudTooltip Text="@(_fullscreen ? "Exit fullscreen" : "Fullscreen")">
+                <MudIconButton
+                    Icon="@(_fullscreen ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)"
+                    Size="Size.Small"
+                    OnClick="ToggleFullscreen" />
+            </MudTooltip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div class="d-flex flex-column" style="@_contentStyle">
+            <MudAlert Severity="Severity.Info" Class="mb-2" Dense>
+                This dialog compares the filtered records in the database with their current values
+                in Jira. Review the differences below and choose which records to update — updating
+                overwrites the database values with the Jira values. No new records are created here.
+            </MudAlert>
+
+            @if (TeamsNotFound.Count > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2" Dense>
+                    <MudText Typo="Typo.body2" Class="font-weight-bold">
+                        Teams from Jira with no match in DB (will be ignored):
+                    </MudText>
+                    <MudText Typo="Typo.body2">@string.Join(", ", TeamsNotFound)</MudText>
+                </MudAlert>
+            }
+
+            @if (PisToCreate.Count > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-2" Dense>
+                    <MudText Typo="Typo.body2" Class="font-weight-bold">
+                        PIs that don't exist in DB and will be created:
+                    </MudText>
+                    <MudText Typo="Typo.body2">@string.Join(", ", PisToCreate)</MudText>
+                </MudAlert>
+            }
+
+            @if (Diffs.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info">No differences found. All filtered records are up to date with Jira.</MudAlert>
+            }
+            else
+            {
+                <div class="d-flex align-center mb-2" style="gap:12px; flex-wrap:wrap;">
+                    <MudText Typo="Typo.subtitle2">
+                        @Diffs.Count difference(s) across @TotalFeatureCount record(s)
+                    </MudText>
+                    @if (SelectedFeatureCount > 0)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">
+                            @SelectedFeatureCount selected
+                        </MudChip>
+                    }
+                    <MudSpacer />
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Tip: selecting a row updates only that property of the record; other properties keep their database values.
+                    </MudText>
+                </div>
+
+                <MudDataGrid T="DiffItem" Items="Diffs"
+                             MultiSelection="true"
+                             SelectOnRowClick="false"
+                             @bind-SelectedItems="_selectedItems"
+                             Dense Hover Striped
+                             Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterRow"
+                             Style="@_gridStyle"
+                             Class="jira-diff-grid"
+                             Bordered="true">
+                    <Columns>
+                        <SelectColumn T="DiffItem" />
+                        <PropertyColumn Property="x => x.JiraKey" Title="Jira Key" />
+                        <PropertyColumn Property="x => x.PropertyName" Title="Property" />
+                        <PropertyColumn Property="x => x.DbValue" Title="Database Value">
+                            <CellTemplate>
+                                <MudText Style="@_cellTextStyle"
+                                         title="@context.Item.DbValue">
+                                    @(context.Item.DbValue ?? "—")
+                                </MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.JiraValue" Title="Jira Value">
+                            <CellTemplate>
+                                <MudText Style="@_cellTextStyle"
+                                         title="@context.Item.JiraValue" Color="Color.Info">
+                                    @(context.Item.JiraValue ?? "—")
+                                </MudText>
+                            </CellTemplate>
+                        </PropertyColumn>
+                    </Columns>
+                </MudDataGrid>
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        @if (Diffs.Count > 0 || TeamsNotFound.Count > 0 || PisToCreate.Count > 0)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.PlaylistAddCheck"
+                       Disabled="@(SelectedFeatureCount == 0)"
+                       OnClick="ApplySelected">
+                Update selected@(SelectedFeatureCount > 0 ? $" ({SelectedFeatureCount})" : "")
+            </MudButton>
+            <MudButton Color="Color.Warning" Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.Sync"
+                       OnClick="ApplyAll">
+                Update all
+            </MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+<style>
+    /* Default mode: dialog stretches to viewport-width minus a small margin. */
+    .mud-dialog-container:has(.jira-diff-dialog) {
+        max-width: calc(100vw - 25px) !important;
+        width: calc(100vw - 25px) !important;
+    }
+    .jira-diff-dialog {
+        margin: 15px;
+        max-width: calc(100vw - 25px) !important;
+        width: calc(100vw - 25px) !important;
+    }
+
+    /* Fullscreen mode: stretch the parent dialog container so the MudDialog fills the viewport.
+       Uses :has() to detect when our dialog is in fullscreen state. */
+    .mud-dialog-container:has(.jira-diff-dialog-fullscreen) {
+        max-width: 100vw !important;
+        width: 100vw !important;
+        max-height: 100vh !important;
+        height: 100vh !important;
+        margin: 0 !important;
+    }
+    .jira-diff-dialog-fullscreen {
+        max-width: 100vw !important;
+        width: 100vw !important;
+        max-height: 100vh !important;
+        height: 100vh !important;
+        margin: 0 !important;
+        border-radius: 0 !important;
+    }
+
+    /* Compact column filter row */
+    .jira-diff-grid .mud-table-cell.filter-header-cell {
+        padding: 2px 6px !important;
+    }
+    .jira-diff-grid .mud-table-cell.filter-header-cell .mud-input-control {
+        margin-top: 0 !important;
+    }
+    .jira-diff-grid .mud-table-cell.filter-header-cell .mud-input-control .mud-input-slot {
+        padding-top: 2px !important;
+        padding-bottom: 2px !important;
+        font-size: 0.8rem !important;
+    }
+    .jira-diff-grid .mud-table-cell.filter-header-cell .mud-input-control .mud-input-label {
+        font-size: 0.8rem !important;
+    }
+    /* Tighter header row */
+    .jira-diff-grid .mud-table-head .mud-table-cell {
+        padding: 6px 10px !important;
+    }
+</style>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public List<DiffItem> Diffs { get; set; } = new();
+    [Parameter] public List<JiraIssueResponse> JiraIssues { get; set; } = new();
+    [Parameter] public List<string> TeamsNotFound { get; set; } = new();
+    [Parameter] public List<string> PisToCreate { get; set; } = new();
+
+    private HashSet<DiffItem> _selectedItems = new();
+    private bool _fullscreen;
+
+    private string _dialogClass => _fullscreen ? "jira-diff-dialog jira-diff-dialog-fullscreen" : "jira-diff-dialog";
+
+    private string _dialogStyle => _fullscreen ? "" : "max-width: calc(100vw - 25px); width: calc(100vw - 25px);";
+
+    private string _contentStyle => _fullscreen
+        ? "height: calc(100vh - 180px);"
+        : "min-height: 520px;";
+
+    private string _gridStyle => _fullscreen
+        ? "height: calc(100vh - 320px); overflow-y:auto;"
+        : "max-height: 65vh; min-height: 420px; overflow-y:auto;";
+
+    private string _cellTextStyle => _fullscreen
+        ? "max-width:480px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+        : "max-width:320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+
+    private int TotalFeatureCount => Diffs.Select(d => d.JiraKey).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
+    private int SelectedFeatureCount => _selectedItems.Select(d => d.JiraKey).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+
+    private void ToggleFullscreen()
+    {
+        _fullscreen = !_fullscreen;
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task ApplyAll()
+    {
+        var confirmed = await MessageService.Confirm(
+            $"Update all {JiraIssues.Count} record(s) with their current values from Jira? " +
+            "Every property is overwritten with the Jira value, including properties without " +
+            "differences shown here. This cannot be undone.",
+            "Confirm update from Jira", "Update");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        // PropertyMaskByJiraKey == null signals "sync every property" to RunSyncAsync.
+        MudDialog.Close(DialogResult.Ok(new SyncSelection(JiraIssues, PropertyMaskByJiraKey: null)));
+    }
+
+    private async Task ApplySelected()
+    {
+        if (_selectedItems.Count == 0)
+        {
+            return;
+        }
+
+        var confirmed = await MessageService.Confirm(
+            $"Update {SelectedFeatureCount} record(s) with their current values from Jira? " +
+            "Only the selected properties are overwritten; other properties keep their " +
+            "database values. This cannot be undone.",
+            "Confirm update from Jira", "Update");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        var maskByKey = _selectedItems
+            .GroupBy(d => d.JiraKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(d => d.PropertyName).ToHashSet(StringComparer.Ordinal),
+                StringComparer.OrdinalIgnoreCase);
+
+        var issuesToApply = JiraIssues
+            .Where(j => maskByKey.ContainsKey(j.Key))
+            .ToList();
+        MudDialog.Close(DialogResult.Ok(new SyncSelection(issuesToApply, maskByKey)));
+    }
+
+    public record DiffItem(string JiraKey, string PropertyName, string? DbValue, string? JiraValue);
+
+    /// <summary>
+    /// Result returned from the dialog. <paramref name="PropertyMaskByJiraKey"/> is null when the
+    /// user clicked "Synchronize all" (write every property); otherwise it maps each issue's
+    /// Jira key to the set of property names (canonical keys from <c>JiraSyncProperties</c>)
+    /// the user explicitly picked.
+    /// </summary>
+    public record SyncSelection(List<JiraIssueResponse> Issues, Dictionary<string, HashSet<string>>? PropertyMaskByJiraKey);
+}
