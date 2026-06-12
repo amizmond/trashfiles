@@ -1,0 +1,128 @@
+@attribute [Route(RoutingPath.PublicHolidaysUploadPreview)]
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Estimation.Services
+@using Serilog
+
+@inject IPublicHolidayUploadService UploadService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+<PageTitle>Public Holidays - Upload Preview</PageTitle>
+
+<AdminOnly>
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack"
+                           OnClick="@(() => Navigation.NavigateTo(RoutingPath.HolidaysSetup))" />
+            <MudText Typo="Typo.h6">Public Holidays - Upload Preview</MudText>
+            <MudSpacer />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Save"
+                       Disabled="_saving || _rows is null || !_rows.Any(r => r.IsValid)"
+                       OnClick="CommitAsync">
+                Commit
+            </MudButton>
+        </div>
+
+        @if (_saving)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+        }
+
+        @if (_rows is null || !_rows.Any())
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-4">
+                No data to preview. Go back and upload a file.
+            </MudAlert>
+        }
+        else
+        {
+            var newCount = _rows.Count(r => r.IsNew);
+            var updateCount = _rows.Count(r => r.IsUpdate);
+            var errorCount = _rows.Count(r => !r.IsValid);
+
+            <MudAlert Severity="Severity.Info" Class="mb-3">
+                @_rows.Count row(s) parsed: @newCount new, @updateCount update, @errorCount with errors.
+            </MudAlert>
+
+            <MudTable T="PublicHolidayUploadRow" Items="_rows" Dense Bordered Hover Striped Elevation="0">
+                <HeaderContent>
+                    <MudTh>Row</MudTh>
+                    <MudTh>Date</MudTh>
+                    <MudTh>Name</MudTh>
+                    <MudTh>Country</MudTh>
+                    <MudTh>City</MudTh>
+                    <MudTh>Description</MudTh>
+                    <MudTh>Status</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>@context.RowNumber</MudTd>
+                    <MudTd>@(context.ParsedDate?.ToString("yyyy-MM-dd") ?? context.RawDate)</MudTd>
+                    <MudTd>@context.Name</MudTd>
+                    <MudTd>@context.CountryName</MudTd>
+                    <MudTd>@context.CityName</MudTd>
+                    <MudTd>@context.Description</MudTd>
+                    <MudTd>
+                        @if (context.IsNew)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success">New</MudChip>
+                        }
+                        else if (context.IsUpdate)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info">Update</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Error">@context.Error</MudChip>
+                        }
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </MudPaper>
+</div>
+</AdminOnly>
+
+@code {
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private List<PublicHolidayUploadRow>? _rows;
+    private bool _saving;
+
+    protected override void OnInitialized()
+    {
+        if (!IsAdmin)
+        {
+            return;
+        }
+        _rows = PublicHolidayUploadPreviewState.PendingUpload;
+    }
+
+    private async Task CommitAsync()
+    {
+        if (_saving || _rows is null)
+        {
+            return;
+        }
+        try
+        {
+            _saving = true;
+            var count = await UploadService.SaveAsync(_rows);
+            Snackbar.Add($"Saved {count} record(s).", Severity.Success);
+            PublicHolidayUploadPreviewState.Clear();
+            Navigation.NavigateTo(RoutingPath.HolidaysSetup);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to commit public holidays");
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

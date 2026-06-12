@@ -1,0 +1,797 @@
+@attribute [Route(RoutingPath.FeaturesUploadPreview)]
+
+@using Estimation.Core.JiraLogic
+@using Estimation.Core.Models
+@using Estimation.Core.Services
+@using Estimation.Services
+@using Serilog
+
+@inject IFeatureService FeatureService
+@inject ITeamService TeamService
+@inject IBusinessOutcomeService BusinessOutcomeService
+@inject IJiraAuthService JiraAuth
+@inject IWindowsAuthService WindowsAuth
+@inject IJiraIssueService JiraIssueService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+
+<AccessGuard PageKey="Features" RequireEdit="true">
+<PageTitle>Features Upload Preview</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.Features))" />
+            <MudText Typo="Typo.h6">Features Upload Preview</MudText>
+        </div>
+
+        @if (_rows is null || _rows.Count == 0)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-4">
+                No data to preview. Please go back and upload a file.
+            </MudAlert>
+        }
+        else
+        {
+            @* ── Settings panel: issue type / status defaults + Jira toggle ── *@
+            <MudPaper Elevation="0" Class="pa-3 mb-3 rounded-lg" Style="border:1px solid var(--mud-palette-lines-default)">
+                <MudGrid Spacing="2" Class="align-center">
+                    <MudItem xs="12" sm="5">
+                        <div class="d-flex flex-column gap-1">
+                            <MudText Typo="Typo.body2">
+                                <b>Issue type:</b> Feature <span class="mud-text-secondary">(default for uploaded issues)</span>
+                            </MudText>
+                            <MudText Typo="Typo.body2">
+                                <b>Default status:</b> Backlog <span class="mud-text-secondary">(applied when feature has no status)</span>
+                            </MudText>
+                        </div>
+                    </MudItem>
+                    <MudItem xs="12" sm="4">
+                        <MudCheckBox T="bool" Value="_connectToJira" ValueChanged="OnConnectToJiraChanged"
+                                     Label="Connect to Jira" Dense="true"
+                                     Disabled="!JiraAuth.IsConfigured || _isBusy" />
+                    </MudItem>
+                </MudGrid>
+
+                @if (_jiraLoginRequired)
+                {
+                    <MudAlert Severity="Severity.Warning" Class="mt-3" Dense="true">
+                        You are not logged in to Jira. Please log in via the Jira icon in the top bar before uploading.
+                    </MudAlert>
+                }
+            </MudPaper>
+
+            @if (_isBusy)
+            {
+                <div class="d-flex align-center gap-2 mb-3">
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                    <MudText Typo="Typo.body2">@(_statusMessage ?? "Working...")</MudText>
+                </div>
+            }
+
+            <MudAlert Severity="Severity.Info" Class="mb-3">
+                @_rows.Count row(s) parsed.
+                @_rows.Count(r => r.IsNew) new feature(s) will be created.
+                @_rows.Count(r => !r.IsNew && r.HasDbChanges) existing feature(s) will be updated.
+                @_rows.Count(r => !r.IsNew && !r.HasDbChanges) unchanged.
+            </MudAlert>
+
+            @if (InvalidRowCount > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-3" Dense="true">
+                    @InvalidRowCount row(s) have issues and will be skipped. Hover the red cells for details.
+                </MudAlert>
+            }
+
+            <div class="mb-3 d-flex flex-wrap gap-2">
+                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">New value / Changed</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Cleared / Invalid</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">Not changed</MudChip>
+            </div>
+
+            <div style="@(_isBusy ? "pointer-events:none;opacity:0.6" : "")">
+                <MudTable T="FeatureUploadRow" Items="_rows" Hover Striped Dense Bordered="true"
+                          HorizontalScrollbar Elevation="0">
+                    <HeaderContent>
+                        <MudTh Style="min-width:50px">#</MudTh>
+                        <MudTh Style="min-width:110px">Status</MudTh>
+                        @foreach (var col in AppliedFixedColumns)
+                        {
+                            <MudTh Style="min-width:150px">@FeatureExcelExportService.Headers[col]</MudTh>
+                        }
+                        @if (ShowTechStacks)
+                        {
+                            @foreach (var ts in _techStackNames)
+                            {
+                                <MudTh Style="text-align:center; min-width:90px">
+                                    <MudText Typo="Typo.body2" Class="font-weight-bold">@ts</MudText>
+                                </MudTh>
+                            }
+                        }
+                        @if (_connectToJira)
+                        {
+                            <MudTh Style="min-width:50px"></MudTh>
+                        }
+                        <MudTh Style="min-width:160px">Error</MudTh>
+                    </HeaderContent>
+
+                    <RowTemplate>
+                        <MudTd>@(_rows.IndexOf(context) + 1)</MudTd>
+                        <MudTd>
+                            @if (!CanUpload(context))
+                            {
+                                <MudTooltip Text="@(context.IsNew ? "This feature will not be created." : "This feature will not be updated.")">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Skipped</MudChip>
+                                </MudTooltip>
+                            }
+                            else if (context.IsNew)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">New</MudChip>
+                            }
+                            else if (context.HasDbChanges)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Update</MudChip>
+                            }
+                            else if (RowJiraState(context).PushToJira)
+                            {
+                                <MudTooltip Text="No database changes — will be updated in Jira only.">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">Jira only</MudChip>
+                                </MudTooltip>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">No change</MudChip>
+                            }
+                        </MudTd>
+                        @foreach (var col in AppliedFixedColumns)
+                        {
+                            <MudTd>
+                                @if (col == FeatureUploadColumn.ProjectKey && context.ProjectKeyLocked)
+                                {
+                                    <MudTooltip Text="Project is already set in the database and cannot be changed from the upload.">
+                                        <span class="d-inline-flex align-center gap-1">
+                                            <MudIcon Icon="@Icons.Material.Filled.Lock" Size="Size.Small" Class="mud-text-secondary" />
+                                            <MudText Typo="Typo.body2">@context.CurrentProjectKey</MudText>
+                                        </span>
+                                    </MudTooltip>
+                                }
+                                else
+                                {
+                                    @ChangeCell(ColumnChange(context, col))
+                                }
+                            </MudTd>
+                        }
+                        @if (ShowTechStacks)
+                        {
+                            @foreach (var ts in _techStackNames)
+                            {
+                                var item = context.TechStacks.FirstOrDefault(t => t.TechStackName == ts);
+                                <MudTd Style="text-align:center">
+                                    @if (item is not null)
+                                    {
+                                        @if (!string.IsNullOrEmpty(item.Error))
+                                        {
+                                            <MudTooltip Text="@item.Error" Placement="Placement.Top">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">@(item.RawValue ?? "?")</MudChip>
+                                            </MudTooltip>
+                                        }
+                                        else if (context.IsNew)
+                                        {
+                                            @if (item.NewEffort.HasValue)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">@item.NewEffort</MudChip>
+                                            }
+                                        }
+                                        else if (item.IsRemoved)
+                                        {
+                                            <MudTooltip Text="@($"Was: {item.OldEffort}")" Placement="Placement.Top">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Remove</MudChip>
+                                            </MudTooltip>
+                                        }
+                                        else if (item.IsChanged)
+                                        {
+                                            <MudTooltip Text="@($"Was: {(item.OldEffort.HasValue ? item.OldEffort.ToString() : "none")}")" Placement="Placement.Top">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">@item.NewEffort</MudChip>
+                                            </MudTooltip>
+                                        }
+                                        else if (item.NewEffort.HasValue)
+                                        {
+                                            <MudText Typo="Typo.body2">@item.NewEffort</MudText>
+                                        }
+                                    }
+                                </MudTd>
+                            }
+                        }
+                        @if (_connectToJira)
+                        {
+                            <MudTd>
+                                @if (RowJiraState(context).Diffs.Count > 0)
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.CompareArrows"
+                                                   Size="Size.Small" Color="Color.Warning"
+                                                   OnClick="() => ShowJiraDiffDialog(context)" />
+                                }
+                            </MudTd>
+                        }
+                        <MudTd>
+                            @{
+                                var err = RowError(context);
+                            }
+                            @if (!string.IsNullOrEmpty(err))
+                            {
+                                <div style="color: var(--mud-palette-error); cursor: pointer;"
+                                     title="Double-click for details"
+                                     @ondblclick="() => ShowErrorDetail(context)">
+                                    @err
+                                </div>
+                            }
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+
+                <div class="d-flex gap-2 mt-4">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Save"
+                               OnClick="ConfirmAsync" Disabled="_uploadDisabled">
+                        Confirm & Save (@UploadableCount)
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Default"
+                               StartIcon="@Icons.Material.Filled.Cancel"
+                               OnClick="Cancel" Disabled="_isBusy">
+                        Cancel
+                    </MudButton>
+                </div>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    private List<FeatureUploadRow>? _rows;
+    private FeatureUploadColumnSelection? _columns;
+    private List<string> _techStackNames = new();
+
+    private bool _connectToJira;
+    private bool _isBusy;
+    private string? _statusMessage;
+
+    private string? _userName;
+    private bool _jiraConnected;
+
+    // Lookups needed when pushing to Jira.
+    private Dictionary<int, Team> _teamById = new();
+    private Dictionary<int, string?> _boJiraIdById = new();
+
+    // Per-row Jira resolution state (action, diffs, blocking error). Reset whenever the toggle flips.
+    private sealed class RowJira
+    {
+        public bool PushToJira { get; set; }
+        public bool CreateJira { get; set; }
+        public string? BlockError { get; set; }
+        public Dictionary<string, JiraDiffInfo> Diffs { get; } = new();
+    }
+
+    private record JiraDiffInfo(string PropertyName, string? JiraValue, string? ExcelValue);
+
+    private readonly Dictionary<FeatureUploadRow, RowJira> _jira = new();
+
+    private RowJira RowJiraState(FeatureUploadRow row)
+    {
+        if (!_jira.TryGetValue(row, out var state))
+        {
+            state = new RowJira();
+            _jira[row] = state;
+        }
+        return state;
+    }
+
+    private bool _jiraLoginRequired => _connectToJira && !_jiraConnected;
+
+    private IEnumerable<FeatureUploadColumn> AppliedFixedColumns =>
+        FeatureExcelExportService.ColumnOrder.Where(c => _columns?.Includes(c) ?? false);
+
+    private bool ShowTechStacks => (_columns?.Includes(FeatureUploadColumn.TechStack) ?? false) && _techStackNames.Count > 0;
+
+    private int InvalidRowCount => _rows?.Count(r => !CanUpload(r)) ?? 0;
+
+    // A row is uploadable when it has DB changes to write or it will be pushed to Jira.
+    private bool WillProcess(FeatureUploadRow row) => row.HasDbChanges || RowJiraState(row).PushToJira;
+    private int UploadableCount => _rows?.Count(r => CanUpload(r) && WillProcess(r)) ?? 0;
+
+    private bool _uploadDisabled => _isBusy || _jiraLoginRequired || UploadableCount == 0;
+
+    private bool CanUpload(FeatureUploadRow row) => row.IsValid && RowJiraState(row).BlockError is null;
+
+    private string? RowError(FeatureUploadRow row)
+    {
+        if (!string.IsNullOrEmpty(row.Error))
+        {
+            return row.Error;
+        }
+        var block = RowJiraState(row).BlockError;
+        if (!string.IsNullOrEmpty(block))
+        {
+            return block;
+        }
+        return row.ValidationErrors.Count > 0 ? string.Join("; ", row.ValidationErrors.Values) : null;
+    }
+
+    // ── Lifecycle ──
+
+    protected override async Task OnInitializedAsync()
+    {
+        _rows = FeatureUploadPreviewState.PendingUpload;
+        _columns = FeatureUploadPreviewState.ImportedColumns;
+        _techStackNames = FeatureUploadPreviewState.TechStackNames ?? new();
+
+        if (_rows is null)
+        {
+            return;
+        }
+
+        _userName = await WindowsAuth.GetUserName();
+        if (_userName is not null && JiraAuth.IsConfigured)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && _rows is null)
+        {
+            Nav.NavigateTo(RoutingPath.Features);
+        }
+    }
+
+    // ── Jira toggle / resolution ──
+
+    private async Task OnConnectToJiraChanged(bool value)
+    {
+        _connectToJira = value;
+        _jira.Clear();
+
+        if (value)
+        {
+            _userName = await WindowsAuth.GetUserName();
+            _jiraConnected = _userName is not null && JiraAuth.IsConfigured
+                && await JiraAuth.IsAuthenticatedAsync(_userName);
+
+            await EnsureJiraLookupsAsync();
+            await ResolveJiraActionsAsync();
+        }
+    }
+
+    private async Task EnsureJiraLookupsAsync()
+    {
+        if (_teamById.Count == 0)
+        {
+            var teams = await TeamService.GetAllNamesAsync();
+            _teamById = teams.ToDictionary(t => t.Id, t => t);
+        }
+        if (_boJiraIdById.Count == 0)
+        {
+            var bos = await BusinessOutcomeService.GetAllAsync();
+            _boJiraIdById = bos.ToDictionary(b => b.Id, b => b.JiraId);
+        }
+    }
+
+    private async Task ResolveJiraActionsAsync()
+    {
+        if (_rows is null || !_connectToJira || !_jiraConnected)
+        {
+            return;
+        }
+
+        _isBusy = true;
+        StateHasChanged();
+
+        try
+        {
+            for (var i = 0; i < _rows.Count; i++)
+            {
+                var row = _rows[i];
+                var state = RowJiraState(row);
+                state.Diffs.Clear();
+                state.BlockError = null;
+                state.PushToJira = false;
+                state.CreateJira = false;
+
+                if (!string.IsNullOrWhiteSpace(row.JiraId))
+                {
+                    _statusMessage = $"Checking Jira ({i + 1}/{_rows.Count})...";
+                    StateHasChanged();
+                    await Task.Yield();
+
+                    JiraIssueResponse? jiraIssue = null;
+                    try
+                    {
+                        jiraIssue = await JiraIssueService.GetIssueAsync(_userName!, row.JiraId.Trim());
+                    }
+                    catch (Exception ex)
+                    {
+                        state.BlockError = "Jira check failed";
+                        row.DetailedError = ex.Message;
+                        continue;
+                    }
+
+                    var inDb = !row.IsNew;
+                    var inJira = jiraIssue is not null;
+
+                    if (inJira)
+                    {
+                        state.PushToJira = true;
+                        state.CreateJira = false;
+                        CompareWithJira(row, jiraIssue!);
+                    }
+                    else if (inDb)
+                    {
+                        // Exists in DB but not in Jira: recreate the Jira issue.
+                        state.PushToJira = true;
+                        state.CreateJira = true;
+                    }
+                    else
+                    {
+                        state.BlockError = "Not found in Jira or DB";
+                        row.DetailedError = $"Issue '{row.JiraId}' does not exist in Jira or the local database.";
+                    }
+                }
+                else
+                {
+                    // No Jira ID: create both the Jira issue and the DB record.
+                    state.PushToJira = true;
+                    state.CreateJira = true;
+                }
+
+                if (state.PushToJira && state.CreateJira)
+                {
+                    if (string.IsNullOrWhiteSpace(row.ProjectKey))
+                    {
+                        state.BlockError = "Project Key is required to create a Jira issue";
+                    }
+                    else if (string.IsNullOrWhiteSpace(row.Summary) && string.IsNullOrWhiteSpace(row.CurrentSummary))
+                    {
+                        state.BlockError = "Summary is required to create a Jira issue";
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to resolve Jira actions");
+            Snackbar.Add($"Jira check failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isBusy = false;
+            _statusMessage = null;
+            StateHasChanged();
+        }
+    }
+
+    private void CompareWithJira(FeatureUploadRow row, JiraIssueResponse jira)
+    {
+        var state = RowJiraState(row);
+
+        void Diff(string label, string? excel, string? jiraVal)
+        {
+            if (!string.Equals(Trim(excel), Trim(jiraVal), StringComparison.Ordinal))
+            {
+                state.Diffs[label] = new JiraDiffInfo(label, jiraVal, excel);
+            }
+        }
+
+        // Only compare fields that were part of the upload.
+        if (row.AppliedColumns.Includes(FeatureUploadColumn.Summary))
+        {
+            Diff("Summary", row.Summary, jira.Summary);
+        }
+        if (row.AppliedColumns.Includes(FeatureUploadColumn.Description))
+        {
+            Diff("Description", row.Description, jira.Description);
+        }
+        if (row.AppliedColumns.Includes(FeatureUploadColumn.AcceptanceCriteria))
+        {
+            Diff("Acceptance Criteria", row.AcceptanceCriteria, jira.AcceptanceCriteria);
+        }
+    }
+
+    private static string Trim(string? s) => (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Trim();
+
+    // ── Cell rendering ──
+
+    private record CellChange(bool IsNew, bool Changed, string? Uploaded, string? Current);
+
+    private CellChange ColumnChange(FeatureUploadRow row, FeatureUploadColumn col) => col switch
+    {
+        FeatureUploadColumn.ProjectKey => new(row.IsNew, row.ProjectKeyChanged, row.ProjectKey, row.CurrentProjectKey),
+        FeatureUploadColumn.JiraId => new(row.IsNew, false, row.JiraId, row.CurrentJiraId),
+        FeatureUploadColumn.FeatureName => new(row.IsNew, row.FeatureNameChanged, row.FeatureName, row.CurrentFeatureName),
+        FeatureUploadColumn.Summary => new(row.IsNew, row.SummaryChanged, row.Summary, row.CurrentSummary),
+        FeatureUploadColumn.Ranking => new(row.IsNew, row.RankingChanged, row.Ranking?.ToString(), row.CurrentRanking?.ToString()),
+        FeatureUploadColumn.Description => new(row.IsNew, row.DescriptionChanged, row.Description, row.CurrentDescription),
+        FeatureUploadColumn.AcceptanceCriteria => new(row.IsNew, row.AcceptanceCriteriaChanged, row.AcceptanceCriteria, row.CurrentAcceptanceCriteria),
+        FeatureUploadColumn.BusinessOutcome => new(row.IsNew, row.BusinessOutcomeChanged, row.BusinessOutcome, row.CurrentBusinessOutcome),
+        FeatureUploadColumn.Labels => new(row.IsNew, row.LabelsChanged, row.Labels, row.CurrentLabels),
+        FeatureUploadColumn.Team => new(row.IsNew, row.TeamChanged, row.Team, row.CurrentTeam),
+        FeatureUploadColumn.Status => new(row.IsNew, row.StatusChanged, row.IsNew ? (row.Status ?? FeatureUploadData.DefaultStatus) : row.Status, row.CurrentStatus),
+        FeatureUploadColumn.RequirementStatus => new(row.IsNew, row.RequirementStatusChanged, row.RequirementStatus, row.CurrentRequirementStatus),
+        FeatureUploadColumn.Comments => new(row.IsNew, row.CommentsChanged, row.Comments, row.CurrentComments),
+        FeatureUploadColumn.TargetStart => new(row.IsNew, row.TargetStartChanged, FmtDate(row.TargetStart), FmtDate(row.CurrentTargetStart)),
+        FeatureUploadColumn.TargetEnd => new(row.IsNew, row.TargetEndChanged, FmtDate(row.TargetEnd), FmtDate(row.CurrentTargetEnd)),
+        FeatureUploadColumn.DateExpected => new(row.IsNew, row.DateExpectedChanged, FmtDate(row.DateExpected), FmtDate(row.CurrentDateExpected)),
+        FeatureUploadColumn.StoryPoints => new(row.IsNew, row.StoryPointsChanged, row.StoryPoints?.ToString(), row.CurrentStoryPoints?.ToString()),
+        FeatureUploadColumn.RagExplain => new(row.IsNew, row.RagExplainChanged, row.RagExplain, row.CurrentRagExplain),
+        FeatureUploadColumn.Dependencies => new(row.IsNew, row.DependenciesChanged, row.Dependencies, row.CurrentDependencies),
+        _ => new(row.IsNew, false, null, null)
+    };
+
+    private static string? FmtDate(DateTime? d) => d?.ToString(FeatureExcelExportService.DateFormat);
+
+    private RenderFragment<CellChange> ChangeCell => ctx => @<text>
+        @if (ctx.IsNew)
+        {
+            @if (!string.IsNullOrWhiteSpace(ctx.Uploaded))
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">@Shorten(ctx.Uploaded)</MudChip>
+            }
+        }
+        else if (ctx.Changed)
+        {
+            <MudTooltip Text="@($"Was: {(string.IsNullOrWhiteSpace(ctx.Current) ? "none" : ctx.Current)}")" Placement="Placement.Top">
+                @if (string.IsNullOrWhiteSpace(ctx.Uploaded))
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Cleared</MudChip>
+                }
+                else
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">@Shorten(ctx.Uploaded)</MudChip>
+                }
+            </MudTooltip>
+        }
+        else if (!string.IsNullOrWhiteSpace(ctx.Current))
+        {
+            <MudText Typo="Typo.body2">@Shorten(ctx.Current)</MudText>
+        }
+    </text>;
+
+    private static string Shorten(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "";
+        }
+        var single = value.Replace("\r\n", " ").Replace("\n", " ").Trim();
+        return single.Length > 60 ? single[..60] + "…" : single;
+    }
+
+    // ── Dialogs ──
+
+    private async Task ShowErrorDetail(FeatureUploadRow row)
+    {
+        var message = row.DetailedError ?? RowError(row);
+        if (string.IsNullOrEmpty(message))
+        {
+            return;
+        }
+        var parameters = new DialogParameters<FeatureUploadErrorDialog>
+        {
+            { x => x.ErrorMessage, message }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<FeatureUploadErrorDialog>("Error Details", parameters, options);
+    }
+
+    private async Task ShowJiraDiffDialog(FeatureUploadRow row)
+    {
+        var state = RowJiraState(row);
+        if (state.Diffs.Count == 0)
+        {
+            return;
+        }
+
+        var diffs = state.Diffs.Values
+            .Select(d => new FeatureUploadJiraDiffDialog.DiffItem(d.PropertyName, d.JiraValue, d.ExcelValue))
+            .ToList();
+
+        var parameters = new DialogParameters<FeatureUploadJiraDiffDialog>
+        {
+            { x => x.Diffs, diffs }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true };
+        await DialogService.ShowAsync<FeatureUploadJiraDiffDialog>("Jira vs Excel", parameters, options);
+    }
+
+    // ── Save ──
+
+    private async Task ConfirmAsync()
+    {
+        if (_rows is null)
+        {
+            return;
+        }
+
+        if (_connectToJira)
+        {
+            await EnsureJiraLookupsAsync();
+        }
+
+        _isBusy = true;
+        StateHasChanged();
+
+        var toProcess = _rows.Where(r => CanUpload(r) && WillProcess(r)).ToList();
+        var processed = 0;
+        var failed = 0;
+
+        try
+        {
+            for (var i = 0; i < toProcess.Count; i++)
+            {
+                var row = toProcess[i];
+                _statusMessage = $"Saving ({i + 1}/{toProcess.Count})...";
+                StateHasChanged();
+                await Task.Yield();
+
+                try
+                {
+                    var state = RowJiraState(row);
+
+                    // ── Jira first ──
+                    if (_connectToJira && state.PushToJira)
+                    {
+                        await PushToJiraAsync(row, state);
+                    }
+
+                    // ── DB upsert (skip rows with no DB changes) ──
+                    if (row.HasDbChanges)
+                    {
+                        await FeatureService.UpsertFromUploadAsync(BuildUploadData(row));
+                    }
+
+                    processed++;
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    row.Error = ex.Message.Length > 80 ? ex.Message[..80] + "..." : ex.Message;
+                    row.DetailedError = ex.Message;
+                    Log.Error(ex, "Failed to upload feature row");
+                }
+            }
+
+            if (failed == 0)
+            {
+                FeatureUploadPreviewState.Clear();
+                Snackbar.Add($"Uploaded {processed} feature(s) successfully.", Severity.Success);
+                Nav.NavigateTo(RoutingPath.Features, true);
+            }
+            else
+            {
+                Snackbar.Add($"Processed {processed} feature(s); {failed} failed. See the Error column.", Severity.Warning);
+            }
+        }
+        finally
+        {
+            _isBusy = false;
+            _statusMessage = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PushToJiraAsync(FeatureUploadRow row, RowJira state)
+    {
+        var labels = ParseLabels(row.Labels);
+
+        string? boJiraKey = null;
+        if (row.BusinessOutcomeId.HasValue
+            && _boJiraIdById.TryGetValue(row.BusinessOutcomeId.Value, out var bj)
+            && !string.IsNullOrWhiteSpace(bj))
+        {
+            boJiraKey = bj.Trim();
+        }
+
+        List<string> rowTeams = new();
+        foreach (var teamId in row.TeamIds)
+        {
+            if (_teamById.TryGetValue(teamId, out var teamEntity))
+            {
+                rowTeams.Add(JiraTeamMatcher.CanonicalName(teamEntity));
+            }
+        }
+
+        var summary = row.Summary ?? row.CurrentSummary ?? "";
+
+        if (state.CreateJira)
+        {
+            var jiraKey = await JiraIssueService.CreateIssueAsync(_userName!, new JiraCreateIssueRequest
+            {
+                ProjectKey = row.ProjectKey!.Trim(),
+                IssueType = JiraIssueTypes.Feature,
+                Summary = summary,
+                Description = row.Description,
+                AcceptanceCriteria = row.AcceptanceCriteria,
+                FeatureName = row.FeatureName,
+                Labels = labels,
+                ParentJiraKey = boJiraKey,
+                GfedTeams = rowTeams.Count > 0 ? rowTeams : null,
+            });
+            if (string.IsNullOrWhiteSpace(row.JiraId))
+            {
+                row.JiraId = jiraKey;
+            }
+        }
+        else
+        {
+            await JiraIssueService.UpdateIssueAsync(_userName!, row.JiraId!.Trim(), new JiraUpdateIssueRequest
+            {
+                Summary = summary,
+                Description = row.Description,
+                AcceptanceCriteria = row.AcceptanceCriteria,
+                Labels = labels,
+                ParentJiraKey = boJiraKey,
+                GfedTeams = rowTeams,
+                // Excel declares each row's full feature state; opt-in to write the GfedTeam field so
+                // an empty Team cell clears it on Jira.
+                FieldsToUpdate = new HashSet<string> { JiraUpdateFields.GfedTeam },
+            });
+        }
+    }
+
+    private FeatureUploadData BuildUploadData(FeatureUploadRow row)
+    {
+        var techEfforts = new Dictionary<int, int?>();
+        foreach (var ts in row.TechStacks)
+        {
+            techEfforts[ts.TechStackId] = ts.NewEffort;
+        }
+
+        return new FeatureUploadData
+        {
+            ExistingFeatureId = row.ExistingFeatureId,
+            JiraId = row.JiraId,
+            ProjectKey = row.ProjectKey,
+            FeatureName = row.FeatureName,
+            Summary = row.Summary,
+            Ranking = row.Ranking,
+            Description = row.Description,
+            AcceptanceCriteria = row.AcceptanceCriteria,
+            BusinessOutcomeId = row.BusinessOutcomeId,
+            Labels = row.Labels,
+            TeamIds = row.TeamIds,
+            Status = row.Status,
+            RequirementStatus = row.RequirementStatus,
+            Comments = row.Comments,
+            TargetStart = row.TargetStart,
+            TargetEnd = row.TargetEnd,
+            DateExpected = row.DateExpected,
+            StoryPoints = row.StoryPoints,
+            RagExplain = row.RagExplain,
+            Dependencies = row.Dependencies,
+            ConnectToJira = _connectToJira,
+            AppliedColumns = row.AppliedColumns,
+            TechStackEfforts = techEfforts
+        };
+    }
+
+    private static List<string> ParseLabels(string? labels)
+    {
+        if (string.IsNullOrWhiteSpace(labels))
+        {
+            return new List<string>();
+        }
+        return labels.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0)
+            .ToList();
+    }
+
+    private void Cancel()
+    {
+        FeatureUploadPreviewState.Clear();
+        Nav.NavigateTo(RoutingPath.Features);
+    }
+}
