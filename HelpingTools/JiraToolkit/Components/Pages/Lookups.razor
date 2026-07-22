@@ -1,115 +1,195 @@
 @page "/lookups"
-@using JiraToolkit.Models
-@using JiraToolkit.Services
+@inject JiraSessionService Session
 @inject JiraService JiraService
 @inject LocalStorageService LocalStorage
 @inject ISnackbar Snackbar
+@inject ILogger<Lookups> Logger
+@implements IDisposable
 @rendermode InteractiveServer
 
 <PageTitle>Jira Lookups</PageTitle>
 
 <MudText Typo="Typo.h5" Class="mb-4">Jira Lookups</MudText>
 
-<MudPaper Class="pa-4 mb-4" Elevation="1">
-    <MudGrid>
-        <MudItem xs="12" sm="4">
-            <MudTextField @bind-Value="_jiraUrl" Label="Jira URL" Placeholder="https://jira.example.com"
-                          Variant="Variant.Outlined" Adornment="Adornment.Start"
-                          AdornmentIcon="@Icons.Material.Filled.Link" />
-        </MudItem>
-        <MudItem xs="12" sm="3">
-            <MudTextField @bind-Value="_username" Label="Username" Variant="Variant.Outlined"
-                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Person" />
-        </MudItem>
-        <MudItem xs="12" sm="3">
-            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
-                          InputType="InputType.Password" Adornment="Adornment.Start"
-                          AdornmentIcon="@Icons.Material.Filled.Lock" />
-        </MudItem>
-        <MudItem xs="12" sm="2" Class="d-flex align-end">
-            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="LoadAll"
-                       Disabled="@_loading" FullWidth="true" StartIcon="@Icons.Material.Filled.Refresh">
-                @if (_loading)
-                {
-                    <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
-                    <span>Loading...</span>
-                }
-                else
-                {
-                    <span>Load All</span>
-                }
-            </MudButton>
-        </MudItem>
-    </MudGrid>
+@if (!Session.HasCredentials)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">Please connect to Jira using the credentials bar above.</MudAlert>
+}
+
+@* Projects bar at the top *@
+<MudPaper Class="pa-3 mb-4" Elevation="1">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+        <MudIcon Icon="@Icons.Material.Filled.Folder" Color="Color.Primary" />
+        <MudText Typo="Typo.subtitle1"><b>Projects</b></MudText>
+        <MudChip T="string" Size="Size.Small" Color="Color.Primary">@Session.Projects.Count</MudChip>
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                   OnClick="RefreshProjects" Disabled="@(!Session.HasCredentials || _projectsLoading)"
+                   StartIcon="@Icons.Material.Filled.Refresh">
+            @if (_projectsLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+            Refresh
+        </MudButton>
+        @if (_selectedProject != null)
+        {
+            <MudChip T="string" Icon="@Icons.Material.Filled.FilterAlt" Color="Color.Primary"
+                     Size="Size.Small" OnClose="ClearSelectedProject">
+                Selected: @_selectedProject.Key — @_selectedProject.Name
+            </MudChip>
+        }
+        <MudSpacer />
+        @if (Session.Projects.Count > 0)
+        {
+            <MudTextField @bind-Value="_projectSearch" Placeholder="Search projects..."
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Immediate="true" DebounceInterval="300" Clearable="true"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 300px;" />
+        }
+    </MudStack>
+    @if (_projectsLoading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mt-2" />
+    }
+    else if (Session.Projects.Count > 0)
+    {
+        <MudDataGrid T="JiraProject" Items="@FilteredProjects" Dense="true" Striped="true" Hover="true" Bordered="true"
+                     FixedHeader="true" Height="200px" Class="mt-2"
+                     SelectedItem="_selectedProject" SelectedItemChanged="@((JiraProject? p) => OnProjectSelected(p))"
+                     SelectOnRowClick="true" RowStyleFunc="@ProjectRowStyle">
+            <Columns>
+                <PropertyColumn Property="x => x!.Key" Title="Key" />
+                <PropertyColumn Property="x => x!.Name" Title="Name" />
+                <PropertyColumn Property="x => x!.Id" Title="Id" />
+            </Columns>
+        </MudDataGrid>
+    }
 </MudPaper>
 
+@* Issue Types *@
+<MudPaper Class="pa-3 mb-4" Elevation="1">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+        <MudIcon Icon="@Icons.Material.Filled.Category" Color="Color.Secondary" />
+        <MudText Typo="Typo.subtitle1"><b>Issue Types</b></MudText>
+        <MudChip T="string" Size="Size.Small" Color="Color.Secondary">@_projectIssueTypes.Count</MudChip>
+        <MudCheckBox @bind-Value="_useSelectedProject" Label="Use selected Project" Color="Color.Secondary"
+                     Dense="true" Disabled="@(_selectedProject == null)" />
+        <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                   OnClick="LoadIssueTypesClick" Disabled="@(!Session.HasCredentials || _projectIssueTypesLoading || (_useSelectedProject && _selectedProject == null))"
+                   StartIcon="@Icons.Material.Filled.Search">
+            @if (_projectIssueTypesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+            Load Issue Types
+        </MudButton>
+        @if (_useSelectedProject && _selectedProject != null)
+        {
+            <MudChip T="string" Icon="@Icons.Material.Filled.FilterAlt" Color="Color.Secondary" Size="Size.Small">
+                Project: @_selectedProject.Key
+            </MudChip>
+        }
+        @if (_selectedIssueType != null)
+        {
+            <MudChip T="string" Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Secondary"
+                     Size="Size.Small" OnClose="ClearSelectedIssueType">
+                Selected: @_selectedIssueType.Name
+            </MudChip>
+        }
+    </MudStack>
+    @if (_projectIssueTypesLoading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Secondary" Class="mt-2" />
+    }
+    else if (_projectIssueTypes.Count > 0)
+    {
+        <MudDataGrid T="JiraIssueType" Items="@_projectIssueTypes" Dense="true" Striped="true" Hover="true" Bordered="true"
+                     FixedHeader="true" Height="180px" Class="mt-2"
+                     SelectedItem="_selectedIssueType" SelectedItemChanged="@((JiraIssueType? t) => OnIssueTypeSelected(t))"
+                     SelectOnRowClick="true" RowStyleFunc="@IssueTypeRowStyle">
+            <Columns>
+                <PropertyColumn Property="x => x!.Id" Title="Id" />
+                <PropertyColumn Property="x => x!.Name" Title="Name" />
+                <PropertyColumn Property="x => x!.Description" Title="Description" />
+                <TemplateColumn Title="Subtask">
+                    <CellTemplate>
+                        <MudIcon Icon="@(context.Item!.Subtask ? Icons.Material.Filled.Check : Icons.Material.Filled.Close)"
+                                 Color="@(context.Item.Subtask ? Color.Success : Color.Default)" Size="Size.Small" />
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+        </MudDataGrid>
+    }
+</MudPaper>
+
+@* Project Issues *@
+@if (_selectedProject != null && _selectedIssueType != null)
+{
+    <MudPaper Class="pa-3 mb-4" Elevation="1">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3">
+            <MudIcon Icon="@Icons.Material.Filled.List" Color="Color.Info" />
+            <MudText Typo="Typo.subtitle1">
+                <b>Issues</b> — @_selectedProject.Key / @_selectedIssueType.Name
+            </MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Info">@_projectIssues.Count</MudChip>
+            <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small"
+                       OnClick="LoadProjectIssuesClick" Disabled="@_projectIssuesLoading"
+                       StartIcon="@Icons.Material.Filled.Search">
+                @if (_projectIssuesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Issues
+            </MudButton>
+            <MudSpacer />
+            @if (_projectIssues.Count > 0)
+            {
+                <MudTextField @bind-Value="_projectIssueSearch" Placeholder="Search issues..."
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              Immediate="true" DebounceInterval="300" Clearable="true"
+                              Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 300px;" />
+            }
+        </MudStack>
+        @if (_projectIssuesLoading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Info" Class="mt-2" />
+        }
+        else if (_projectIssues.Count > 0)
+        {
+            <MudDataGrid Items="@_projectIssues" Dense="true" Striped="true" Hover="true" Bordered="true"
+                         FixedHeader="true" Height="300px" Class="mt-2" QuickFilter="@ProjectIssueFilter">
+                <Columns>
+                    <PropertyColumn Property="x => x.Key" Title="Jira ID" />
+                    <PropertyColumn Property="x => x.Summary" Title="Name" />
+                    <PropertyColumn Property="x => x.IssueType" Title="Issue Type" />
+                    <PropertyColumn Property="x => x.Labels" Title="Labels" />
+                </Columns>
+            </MudDataGrid>
+        }
+        else if (_projectIssuesSearched)
+        {
+            <MudAlert Severity="Severity.Info" Class="mt-2">
+                No issues found for @_selectedProject.Key / @_selectedIssueType.Name.
+            </MudAlert>
+        }
+    </MudPaper>
+}
+
+@* Lookup tabs *@
 <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" Class="pa-4">
-    <MudTabPanel Text="Projects" Icon="@Icons.Material.Filled.Folder" BadgeData="@_projects.Count"
-                 BadgeColor="Color.Primary">
-        @if (_projectsLoading)
-        {
-            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
-        }
-        else if (_projects.Count > 0)
-        {
-            <MudDataGrid Items="@_projects" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)" QuickFilter="@ProjectFilter">
-                <ToolBarContent>
-                    <MudTextField @bind-Value="_projectSearch" Placeholder="Search projects..."
-                                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
-                                  Immediate="true" DebounceInterval="300" Clearable="true"
-                                  Variant="Variant.Outlined" Margin="Margin.Dense" />
-                </ToolBarContent>
-                <Columns>
-                    <PropertyColumn Property="x => x.Key" Title="Key" />
-                    <PropertyColumn Property="x => x.Name" Title="Name" />
-                    <PropertyColumn Property="x => x.Id" Title="Id" />
-                </Columns>
-            </MudDataGrid>
-        }
-        else
-        {
-            <MudAlert Severity="Severity.Info">No projects loaded. Click "Load All" to fetch data.</MudAlert>
-        }
-    </MudTabPanel>
-
-    <MudTabPanel Text="Issue Types" Icon="@Icons.Material.Filled.Category" BadgeData="@_issueTypes.Count"
-                 BadgeColor="Color.Secondary">
-        @if (_issueTypesLoading)
-        {
-            <MudProgressLinear Indeterminate="true" Color="Color.Secondary" />
-        }
-        else if (_issueTypes.Count > 0)
-        {
-            <MudDataGrid Items="@_issueTypes" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)" QuickFilter="@IssueTypeFilter">
-                <ToolBarContent>
-                    <MudTextField @bind-Value="_issueTypeSearch" Placeholder="Search issue types..."
-                                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
-                                  Immediate="true" DebounceInterval="300" Clearable="true"
-                                  Variant="Variant.Outlined" Margin="Margin.Dense" />
-                </ToolBarContent>
-                <Columns>
-                    <PropertyColumn Property="x => x.Id" Title="Id" />
-                    <PropertyColumn Property="x => x.Name" Title="Name" />
-                    <PropertyColumn Property="x => x.Description" Title="Description" />
-                    <TemplateColumn Title="Subtask">
-                        <CellTemplate>
-                            <MudIcon Icon="@(context.Item.Subtask ? Icons.Material.Filled.Check : Icons.Material.Filled.Close)"
-                                     Color="@(context.Item.Subtask ? Color.Success : Color.Default)" Size="Size.Small" />
-                        </CellTemplate>
-                    </TemplateColumn>
-                </Columns>
-            </MudDataGrid>
-        }
-        else
-        {
-            <MudAlert Severity="Severity.Info">No issue types loaded. Click "Load All" to fetch data.</MudAlert>
-        }
-    </MudTabPanel>
-
     <MudTabPanel Text="Labels" Icon="@Icons.Material.Filled.Label" BadgeData="@_labels.Count"
                  BadgeColor="Color.Tertiary">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            @if (_selectedProject != null)
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.FilterAlt" Color="Color.Tertiary" Size="Size.Small">
+                    Project: @_selectedProject.Key
+                </MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.Public" Color="Color.Default" Size="Size.Small">
+                    All projects
+                </MudChip>
+            }
+            <MudButton Variant="Variant.Outlined" Color="Color.Tertiary" Size="Size.Small"
+                       OnClick="LoadLabelsClick" Disabled="@(!Session.HasCredentials || _labelsLoading)"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_labelsLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Labels
+            </MudButton>
+        </MudStack>
         @if (_labelsLoading)
         {
             <MudProgressLinear Indeterminate="true" Color="Color.Tertiary" />
@@ -117,7 +197,7 @@
         else if (_labels.Count > 0)
         {
             <MudDataGrid Items="@_labels" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)" QuickFilter="@LabelFilter">
+                         FixedHeader="true" Height="calc(100vh - 520px)" QuickFilter="@LabelFilter">
                 <ToolBarContent>
                     <MudTextField @bind-Value="_labelSearch" Placeholder="Search labels..."
                                   Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
@@ -131,12 +211,22 @@
         }
         else
         {
-            <MudAlert Severity="Severity.Info">No labels loaded. Click "Load All" to fetch data.</MudAlert>
+            <MudAlert Severity="Severity.Info">No labels loaded. Click "Load Labels" to fetch data.</MudAlert>
         }
     </MudTabPanel>
 
     <MudTabPanel Text="Parent Link" Icon="@Icons.Material.Filled.AccountTree" BadgeData="@_parentLinks.Count"
                  BadgeColor="Color.Info">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudTextField @bind-Value="_parentLinkFieldId" Label="Custom Field ID" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" Style="max-width: 250px;" />
+            <MudButton Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small"
+                       OnClick="LoadParentLinksClick" Disabled="@(!Session.HasCredentials || _parentLinksLoading)"
+                       StartIcon="@Icons.Material.Filled.Refresh">
+                @if (_parentLinksLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Load Parent Links
+            </MudButton>
+        </MudStack>
         @if (_parentLinksLoading)
         {
             <MudProgressLinear Indeterminate="true" Color="Color.Info" />
@@ -144,7 +234,7 @@
         else if (_parentLinks.Count > 0)
         {
             <MudDataGrid Items="@_parentLinks" Dense="true" Striped="true" Hover="true" Bordered="true"
-                         FixedHeader="true" Height="calc(100vh - 380px)">
+                         FixedHeader="true" Height="calc(100vh - 520px)">
                 <Columns>
                     <PropertyColumn Property="x => x.FieldId" Title="Field Id" />
                     <PropertyColumn Property="x => x.Value" Title="Value" />
@@ -154,49 +244,113 @@
         else
         {
             <MudAlert Severity="Severity.Info">
-                No Parent Link data loaded. This field (customfield_19001) may not exist or have values on this server.
+                No Parent Link data loaded. Click "Load Parent Links" to fetch data.
+            </MudAlert>
+        }
+    </MudTabPanel>
+
+    <MudTabPanel Text="Child Issues" Icon="@Icons.Material.Filled.AccountTree" BadgeData="@_childIssues.Count"
+                 BadgeColor="Color.Success">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
+            <MudTextField @bind-Value="_parentIssueKey" Label="Parent Issue Key" Placeholder="PROJ-123"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 250px;"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.ConfirmationNumber" />
+            <MudButton Variant="Variant.Outlined" Color="Color.Success" Size="Size.Small"
+                       OnClick="LoadChildIssuesClick" Disabled="@(!Session.HasCredentials || _childIssuesLoading || string.IsNullOrWhiteSpace(_parentIssueKey))"
+                       StartIcon="@Icons.Material.Filled.Search">
+                @if (_childIssuesLoading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-1" /> }
+                Find Children
+            </MudButton>
+            <MudChip T="string" Icon="@Icons.Material.Filled.Info" Color="Color.Default" Size="Size.Small">
+                parent + @_parentLinkFieldId
+            </MudChip>
+        </MudStack>
+        @if (_childIssuesLoading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Success" />
+        }
+        else if (_childIssues.Count > 0)
+        {
+            <MudDataGrid Items="@_childIssues" Dense="true" Striped="true" Hover="true" Bordered="true"
+                         FixedHeader="true" Height="calc(100vh - 520px)" QuickFilter="@ChildIssueFilter">
+                <ToolBarContent>
+                    <MudTextField @bind-Value="_childIssueSearch" Placeholder="Search child issues..."
+                                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                                  Immediate="true" DebounceInterval="300" Clearable="true"
+                                  Variant="Variant.Outlined" Margin="Margin.Dense" />
+                    <MudSpacer />
+                    <MudText Typo="Typo.body2" Color="Color.Tertiary">
+                        @_childIssues.Count children of @_parentIssueKey
+                    </MudText>
+                </ToolBarContent>
+                <Columns>
+                    <PropertyColumn Property="x => x.Key" Title="Key" />
+                    <PropertyColumn Property="x => x.Summary" Title="Summary" />
+                    <PropertyColumn Property="x => x.IssueType" Title="Type" />
+                    <PropertyColumn Property="x => x.Status" Title="Status" />
+                    <PropertyColumn Property="x => x.Priority" Title="Priority" />
+                    <PropertyColumn Property="x => x.Assignee" Title="Assignee" />
+                </Columns>
+            </MudDataGrid>
+        }
+        else if (!string.IsNullOrWhiteSpace(_parentIssueKey) && _childIssuesSearched)
+        {
+            <MudAlert Severity="Severity.Info">
+                No child issues found for @_parentIssueKey.
+            </MudAlert>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info">
+                Enter a parent issue key (e.g. PROJ-123) and click "Find Children" to list all child/sub-task issues.
             </MudAlert>
         }
     </MudTabPanel>
 </MudTabs>
 
 @code {
-    private string _jiraUrl = string.Empty;
-    private string _username = string.Empty;
-    private string _password = string.Empty;
-    private bool _loading;
+    private string _parentLinkFieldId = "customfield_19001";
 
     private bool _projectsLoading;
-    private bool _issueTypesLoading;
+    private bool _projectIssueTypesLoading;
+    private bool _projectIssuesLoading;
+    private bool _projectIssuesSearched;
     private bool _labelsLoading;
     private bool _parentLinksLoading;
+    private bool _childIssuesLoading;
+    private bool _childIssuesSearched;
 
     private string _projectSearch = string.Empty;
-    private string _issueTypeSearch = string.Empty;
     private string _labelSearch = string.Empty;
+    private string _parentIssueKey = string.Empty;
+    private string _childIssueSearch = string.Empty;
+    private string _projectIssueSearch = string.Empty;
 
-    private List<JiraProject> _projects = new();
-    private List<JiraIssueType> _issueTypes = new();
+    private JiraProject? _selectedProject;
+    private JiraIssueType? _selectedIssueType;
+    private bool _useSelectedProject = true;
+
+    private List<JiraIssueType> _projectIssueTypes = new();
+    private List<JiraProjectIssue> _projectIssues = new();
     private List<JiraLabel> _labels = new();
     private List<JiraFieldRow> _parentLinks = new();
+    private List<JiraChildIssue> _childIssues = new();
 
-    private Func<JiraProject, bool> ProjectFilter => p =>
+    private CancellationTokenSource _projectsCts = new();
+    private CancellationTokenSource _projectIssueTypesCts = new();
+    private CancellationTokenSource _projectIssuesCts = new();
+    private CancellationTokenSource _labelsCts = new();
+    private CancellationTokenSource _parentLinksCts = new();
+    private CancellationTokenSource _childIssuesCts = new();
+
+    private IEnumerable<JiraProject> FilteredProjects => Session.Projects.Where((JiraProject p) =>
     {
         if (string.IsNullOrWhiteSpace(_projectSearch)) return true;
-        var s = _projectSearch.Trim();
+        var s = _projectSearch!.Trim();
         return p.Key.Contains(s, StringComparison.OrdinalIgnoreCase)
             || p.Name.Contains(s, StringComparison.OrdinalIgnoreCase)
             || p.Id.Contains(s, StringComparison.OrdinalIgnoreCase);
-    };
-
-    private Func<JiraIssueType, bool> IssueTypeFilter => t =>
-    {
-        if (string.IsNullOrWhiteSpace(_issueTypeSearch)) return true;
-        var s = _issueTypeSearch.Trim();
-        return t.Id.Contains(s, StringComparison.OrdinalIgnoreCase)
-            || t.Name.Contains(s, StringComparison.OrdinalIgnoreCase)
-            || t.Description.Contains(s, StringComparison.OrdinalIgnoreCase);
-    };
+    });
 
     private Func<JiraLabel, bool> LabelFilter => l =>
     {
@@ -204,137 +358,266 @@
         return l.Name.Contains(_labelSearch.Trim(), StringComparison.OrdinalIgnoreCase);
     };
 
+    private Func<JiraProjectIssue, bool> ProjectIssueFilter => i =>
+    {
+        if (string.IsNullOrWhiteSpace(_projectIssueSearch)) return true;
+        var s = _projectIssueSearch.Trim();
+        return i.Key.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || i.Summary.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || i.IssueType.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || i.Labels.Contains(s, StringComparison.OrdinalIgnoreCase);
+    };
+
+    private Func<JiraChildIssue, bool> ChildIssueFilter => c =>
+    {
+        if (string.IsNullOrWhiteSpace(_childIssueSearch)) return true;
+        var s = _childIssueSearch.Trim();
+        return c.Key.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || c.Summary.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || c.Status.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || c.IssueType.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || c.Assignee.Contains(s, StringComparison.OrdinalIgnoreCase);
+    };
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            var savedUrl = await LocalStorage.GetItemAsync("jiraUrl");
-            if (!string.IsNullOrEmpty(savedUrl))
+            var savedFieldId = await LocalStorage.GetItemAsync("parentLinkFieldId");
+            if (!string.IsNullOrEmpty(savedFieldId))
             {
-                _jiraUrl = savedUrl;
-                StateHasChanged();
-            }
-
-            var savedUsername = await LocalStorage.GetItemAsync("jiraUsername");
-            if (!string.IsNullOrEmpty(savedUsername))
-            {
-                _username = savedUsername;
+                _parentLinkFieldId = savedFieldId;
                 StateHasChanged();
             }
         }
     }
 
-    private JiraCredentials GetCredentials() => new()
+    protected override void OnInitialized()
     {
-        BaseUrl = _jiraUrl,
-        Username = _username,
-        Password = _password
-    };
-
-    private async Task LoadAll()
-    {
-        if (string.IsNullOrWhiteSpace(_jiraUrl) || string.IsNullOrWhiteSpace(_username)
-            || string.IsNullOrWhiteSpace(_password))
-        {
-            Snackbar.Add("Please fill in Jira URL, Username and Password", Severity.Warning);
-            return;
-        }
-
-        _loading = true;
-        await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
-        await LocalStorage.SetItemAsync("jiraUsername", _username);
-
-        var credentials = GetCredentials();
-
-        // Load all data in parallel
-        _projectsLoading = _issueTypesLoading = _labelsLoading = _parentLinksLoading = true;
-        StateHasChanged();
-
-        var tasks = new List<Task>
-        {
-            LoadProjects(credentials),
-            LoadIssueTypes(credentials),
-            LoadLabels(credentials),
-            LoadParentLinks(credentials)
-        };
-
-        await Task.WhenAll(tasks);
-
-        _loading = false;
+        Session.OnChange += HandleSessionChange;
     }
 
-    private async Task LoadProjects(JiraCredentials credentials)
+    private void HandleSessionChange()
     {
+        InvokeAsync(StateHasChanged);
+    }
+
+    private CancellationToken ResetCts(ref CancellationTokenSource cts)
+    {
+        cts.Cancel();
+        cts.Dispose();
+        cts = new CancellationTokenSource();
+        return cts.Token;
+    }
+
+    private void OnProjectSelected(JiraProject? project)
+    {
+        _selectedProject = _selectedProject == project ? null : project;
+        _selectedIssueType = null;
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private void ClearSelectedProject()
+    {
+        _selectedProject = null;
+        _selectedIssueType = null;
+        _projectIssueTypes.Clear();
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private void OnIssueTypeSelected(JiraIssueType? issueType)
+    {
+        _selectedIssueType = _selectedIssueType == issueType ? null : issueType;
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private void ClearSelectedIssueType()
+    {
+        _selectedIssueType = null;
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+    }
+
+    private string ProjectRowStyle(JiraProject? project, int _)
+    {
+        if (_selectedProject != null && project != null && project.Key == _selectedProject.Key)
+            return "background-color: var(--mud-palette-primary-lighten); font-weight: bold;";
+        return string.Empty;
+    }
+
+    private string IssueTypeRowStyle(JiraIssueType? issueType, int _)
+    {
+        if (_selectedIssueType != null && issueType != null && issueType.Id == _selectedIssueType.Id)
+            return "background-color: var(--mud-palette-secondary-lighten); font-weight: bold;";
+        return string.Empty;
+    }
+
+    private async Task LoadProjectIssuesClick()
+    {
+        if (_selectedProject == null || _selectedIssueType == null) return;
+        _projectIssuesLoading = true;
+        _projectIssuesSearched = false;
+        var ct = ResetCts(ref _projectIssuesCts);
         try
         {
-            _projects = await JiraService.GetProjectsAsync(credentials);
-            Snackbar.Add($"Loaded {_projects.Count} projects", Severity.Success);
+            _projectIssues = await JiraService.GetProjectIssuesAsync(
+                Session.GetCredentials(), _selectedProject.Key, _selectedIssueType.Name, ct);
+            _projectIssuesSearched = true;
+            Snackbar.Add($"Found {_projectIssues.Count} issues ({_selectedProject.Key} / {_selectedIssueType.Name})", Severity.Success);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load project issues");
+            Snackbar.Add($"Issues error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _projectIssuesLoading = false;
+        }
+    }
+
+    private async Task RefreshProjects()
+    {
+        _projectsLoading = true;
+        var ct = ResetCts(ref _projectsCts);
+        try
+        {
+            var projects = await JiraService.GetProjectsAsync(Session.GetCredentials(), ct);
+            Session.SetProjects(projects);
+            Snackbar.Add($"Refreshed {projects.Count} projects", Severity.Success);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to refresh projects");
             Snackbar.Add($"Projects error: {ex.Message}", Severity.Error);
         }
         finally
         {
             _projectsLoading = false;
-            await InvokeAsync(StateHasChanged);
         }
     }
 
-    private async Task LoadIssueTypes(JiraCredentials credentials)
+    private async Task LoadIssueTypesClick()
     {
+        _projectIssueTypesLoading = true;
+        _selectedIssueType = null;
+        _projectIssues.Clear();
+        _projectIssuesSearched = false;
+        var ct = ResetCts(ref _projectIssueTypesCts);
         try
         {
-            _issueTypes = await JiraService.GetIssueTypesAsync(credentials);
-            Snackbar.Add($"Loaded {_issueTypes.Count} issue types", Severity.Success);
+            if (_useSelectedProject && _selectedProject != null)
+            {
+                _projectIssueTypes = await JiraService.GetProjectIssueTypesAsync(
+                    Session.GetCredentials(), _selectedProject.Key, ct);
+                Snackbar.Add($"Loaded {_projectIssueTypes.Count} issue types for {_selectedProject.Key}", Severity.Success);
+            }
+            else
+            {
+                _projectIssueTypes = await JiraService.GetIssueTypesAsync(Session.GetCredentials(), ct);
+                Snackbar.Add($"Loaded {_projectIssueTypes.Count} issue types (all)", Severity.Success);
+            }
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load issue types");
             Snackbar.Add($"Issue types error: {ex.Message}", Severity.Error);
         }
         finally
         {
-            _issueTypesLoading = false;
-            await InvokeAsync(StateHasChanged);
+            _projectIssueTypesLoading = false;
         }
     }
 
-    private async Task LoadLabels(JiraCredentials credentials)
+    private async Task LoadLabelsClick()
     {
+        _labelsLoading = true;
+        var ct = ResetCts(ref _labelsCts);
         try
         {
-            _labels = await JiraService.GetLabelsAsync(credentials);
-            Snackbar.Add($"Loaded {_labels.Count} labels", Severity.Success);
+            var projectFilter = _selectedProject?.Key;
+            _labels = await JiraService.GetLabelsAsync(Session.GetCredentials(), projectFilter, ct);
+            var scope = string.IsNullOrWhiteSpace(projectFilter) ? "all" : projectFilter;
+            Snackbar.Add($"Loaded {_labels.Count} labels ({scope})", Severity.Success);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load labels");
             Snackbar.Add($"Labels error: {ex.Message}", Severity.Error);
         }
         finally
         {
             _labelsLoading = false;
-            await InvokeAsync(StateHasChanged);
         }
     }
 
-    private async Task LoadParentLinks(JiraCredentials credentials)
+    private async Task LoadParentLinksClick()
     {
+        await LocalStorage.SetItemAsync("parentLinkFieldId", _parentLinkFieldId);
+        _parentLinksLoading = true;
+        var ct = ResetCts(ref _parentLinksCts);
         try
         {
-            _parentLinks = await JiraService.GetCustomFieldOptionsAsync(credentials, "customfield_19001");
+            _parentLinks = await JiraService.GetCustomFieldOptionsAsync(Session.GetCredentials(), _parentLinkFieldId, ct);
             if (_parentLinks.Count > 0)
                 Snackbar.Add($"Loaded {_parentLinks.Count} parent link values", Severity.Success);
             else
-                Snackbar.Add("No Parent Link data found (customfield_19001)", Severity.Info);
+                Snackbar.Add($"No data found for {_parentLinkFieldId}", Severity.Info);
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            Logger.LogError(ex, "Failed to load parent links");
             Snackbar.Add($"Parent Link error: {ex.Message}", Severity.Error);
         }
         finally
         {
             _parentLinksLoading = false;
-            await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private async Task LoadChildIssuesClick()
+    {
+        if (string.IsNullOrWhiteSpace(_parentIssueKey)) return;
+        _childIssuesLoading = true;
+        _childIssuesSearched = false;
+        var ct = ResetCts(ref _childIssuesCts);
+        try
+        {
+            _childIssues = await JiraService.GetChildIssuesAsync(Session.GetCredentials(), _parentIssueKey.Trim(), _parentLinkFieldId, ct);
+            _childIssuesSearched = true;
+            if (_childIssues.Count > 0)
+                Snackbar.Add($"Found {_childIssues.Count} child issues for {_parentIssueKey}", Severity.Success);
+            else
+                Snackbar.Add($"No child issues found for {_parentIssueKey}", Severity.Info);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load child issues for {ParentKey}", _parentIssueKey);
+            Snackbar.Add($"Child issues error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _childIssuesLoading = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Session.OnChange -= HandleSessionChange;
+        _projectsCts.Cancel(); _projectsCts.Dispose();
+        _projectIssueTypesCts.Cancel(); _projectIssueTypesCts.Dispose();
+        _projectIssuesCts.Cancel(); _projectIssuesCts.Dispose();
+        _labelsCts.Cancel(); _labelsCts.Dispose();
+        _parentLinksCts.Cancel(); _parentLinksCts.Dispose();
+        _childIssuesCts.Cancel(); _childIssuesCts.Dispose();
     }
 }

@@ -1,0 +1,137 @@
+@using JiraToolkit.Models
+@using JiraToolkit.Services
+@inject JiraSessionService Session
+@inject JiraService JiraService
+@inject LocalStorageService LocalStorage
+@inject ISnackbar Snackbar
+@inject ILogger<AuthBar> Logger
+@implements IDisposable
+
+<MudPaper Class="pa-3 mb-4" Elevation="1">
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="3">
+            <MudTextField @bind-Value="_jiraUrl" Label="Jira URL" Placeholder="https://jira.example.com"
+                          Variant="Variant.Outlined" Margin="Margin.Dense" Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Link" Disabled="@_connecting" />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudTextField @bind-Value="_username" Label="Username" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Person" Disabled="@_connecting" />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudTextField @bind-Value="_password" Label="Password" Variant="Variant.Outlined"
+                          Margin="Margin.Dense" InputType="InputType.Password" Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Lock" Disabled="@_connecting" />
+        </MudItem>
+        <MudItem xs="12" sm="2" Class="d-flex align-end">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Connect"
+                       Disabled="@_connecting" FullWidth="true" Size="Size.Medium"
+                       StartIcon="@(_connecting ? null : Icons.Material.Filled.Login)">
+                @if (_connecting)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    <span>Connecting...</span>
+                }
+                else
+                {
+                    <span>Connect</span>
+                }
+            </MudButton>
+        </MudItem>
+        <MudItem xs="12" sm="3" Class="d-flex align-center">
+            @if (Session.IsConnected)
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.CheckCircle" Color="Color.Success" Size="Size.Small">
+                    Connected — @Session.Projects.Count projects
+                </MudChip>
+            }
+            else if (Session.HasCredentials)
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" Size="Size.Small">
+                    Not connected
+                </MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Icon="@Icons.Material.Filled.Info" Color="Color.Default" Size="Size.Small">
+                    Enter credentials to connect
+                </MudChip>
+            }
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+@code {
+    private string _jiraUrl = string.Empty;
+    private string _username = string.Empty;
+    private string _password = string.Empty;
+    private bool _connecting;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var savedUrl = await LocalStorage.GetItemAsync("jiraUrl");
+            var savedUsername = await LocalStorage.GetItemAsync("jiraUsername");
+
+            if (!string.IsNullOrEmpty(savedUrl))
+                _jiraUrl = savedUrl;
+            if (!string.IsNullOrEmpty(savedUsername))
+                _username = savedUsername;
+
+            if (!string.IsNullOrEmpty(_jiraUrl) || !string.IsNullOrEmpty(_username))
+                StateHasChanged();
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Session.OnChange += HandleSessionChange;
+    }
+
+    private void HandleSessionChange()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task Connect()
+    {
+        if (string.IsNullOrWhiteSpace(_jiraUrl) || string.IsNullOrWhiteSpace(_username)
+            || string.IsNullOrWhiteSpace(_password))
+        {
+            Snackbar.Add("Please fill in Jira URL, Username and Password", Severity.Warning);
+            return;
+        }
+
+        _connecting = true;
+
+        try
+        {
+            await LocalStorage.SetItemAsync("jiraUrl", _jiraUrl);
+            await LocalStorage.SetItemAsync("jiraUsername", _username);
+
+            Session.SetCredentials(_jiraUrl, _username, _password);
+            var credentials = Session.GetCredentials();
+
+            var projects = await JiraService.GetProjectsAsync(credentials);
+            Session.SetProjects(projects);
+
+            Snackbar.Add($"Connected — loaded {projects.Count} projects", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to connect to Jira");
+            Snackbar.Add($"Connection failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _connecting = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Session.OnChange -= HandleSessionChange;
+    }
+}

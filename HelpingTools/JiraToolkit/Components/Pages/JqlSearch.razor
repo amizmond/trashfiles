@@ -1,0 +1,224 @@
+@page "/jql"
+@inject JiraSessionService Session
+@inject JiraService JiraService
+@inject ISnackbar Snackbar
+@inject ILogger<JqlSearch> Logger
+@inject IJSRuntime JS
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>JQL Search</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-4">JQL Search</MudText>
+
+@if (!Session.HasCredentials)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">Please connect to Jira using the credentials bar above.</MudAlert>
+}
+
+<MudPaper Class="pa-4 mb-4" Elevation="1">
+    <MudTextField @bind-Value="_jql" Label="JQL" Immediate="true"
+                  Placeholder='project = "PROJ" AND status = "Open" ORDER BY created DESC'
+                  Variant="Variant.Outlined" Lines="3" Class="mb-3"
+                  HelperText="Enter a JQL query and press Run (Ctrl+Enter) to see the raw JSON response."
+                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Code"
+                  OnKeyDown="HandleKeyDown" />
+
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3" Wrap="Wrap.Wrap">
+        <MudNumericField @bind-Value="_maxResults" Label="Max Results" Variant="Variant.Outlined"
+                         Margin="Margin.Dense" Min="1" Max="1000" Style="max-width: 140px;" />
+        <MudNumericField @bind-Value="_startAt" Label="Start At" Variant="Variant.Outlined"
+                         Margin="Margin.Dense" Min="0" Style="max-width: 140px;" />
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="RunSearch"
+                   Disabled="@(_loading || !Session.HasCredentials || string.IsNullOrWhiteSpace(_jql))"
+                   StartIcon="@Icons.Material.Filled.PlayArrow">
+            @if (_loading)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>Running...</span>
+            }
+            else
+            {
+                <span>Run</span>
+            }
+        </MudButton>
+        <MudSpacer />
+        @if (!string.IsNullOrEmpty(_jsonResult))
+        {
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" OnClick="CopyJson"
+                       StartIcon="@Icons.Material.Filled.ContentCopy">
+                Copy
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" OnClick="DownloadJson"
+                       StartIcon="@Icons.Material.Filled.FileDownload">
+                Download
+            </MudButton>
+        }
+    </MudStack>
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mt-3" />
+    }
+</MudPaper>
+
+@if (!string.IsNullOrEmpty(_jsonResult))
+{
+    <MudPaper Class="pa-4" Elevation="1">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-2">
+            <MudIcon Icon="@Icons.Material.Filled.DataObject" Color="Color.Primary" />
+            <MudText Typo="Typo.subtitle1"><b>Response</b></MudText>
+            @if (_total.HasValue)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Icon="@Icons.Material.Filled.Numbers">
+                    total: @_total
+                </MudChip>
+            }
+            @if (_returned.HasValue)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Info" Icon="@Icons.Material.Filled.List">
+                    returned: @_returned
+                </MudChip>
+            }
+        </MudStack>
+        <pre style="white-space: pre-wrap; word-break: break-word; max-height: calc(100vh - 380px); overflow: auto; margin: 0; padding: 12px; background-color: var(--mud-palette-background-grey); border-radius: 4px; font-family: monospace; font-size: 0.8rem;">@_jsonResult</pre>
+    </MudPaper>
+}
+
+@code {
+    private string _jql = string.Empty;
+    private int _maxResults = 50;
+    private int _startAt = 0;
+    private bool _loading;
+    private string _jsonResult = string.Empty;
+    private int? _total;
+    private int? _returned;
+
+    private CancellationTokenSource _cts = new();
+
+    protected override void OnInitialized()
+    {
+        Session.OnChange += HandleSessionChange;
+    }
+
+    private void HandleSessionChange() => InvokeAsync(StateHasChanged);
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && (e.CtrlKey || e.MetaKey))
+        {
+            await RunSearch();
+        }
+    }
+
+    private async Task RunSearch()
+    {
+        if (string.IsNullOrWhiteSpace(_jql))
+        {
+            Snackbar.Add("Please enter a JQL query", Severity.Warning);
+            return;
+        }
+
+        _loading = true;
+        _jsonResult = string.Empty;
+        _total = null;
+        _returned = null;
+
+        _cts.Cancel();
+        _cts.Dispose();
+        _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
+
+        try
+        {
+            _jsonResult = await JiraService.RunJqlSearchAsync(
+                Session.GetCredentials(), _jql.Trim(), _maxResults, _startAt, ct);
+            ParseSummary(_jsonResult);
+            Snackbar.Add(_total.HasValue
+                ? $"Query matched {_total} issue(s), returned {_returned ?? 0}"
+                : "Query completed", Severity.Success);
+        }
+        catch (OperationCanceledException) { }
+        catch (HttpRequestException ex)
+        {
+            Logger.LogError(ex, "JQL search failed for query: {Jql}", _jql);
+            Snackbar.Add($"HTTP Error: {ex.Message}", Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "JQL search failed for query: {Jql}", _jql);
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ParseSummary(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("total", out var total)
+                && total.ValueKind == System.Text.Json.JsonValueKind.Number)
+                _total = total.GetInt32();
+            if (doc.RootElement.TryGetProperty("issues", out var issues)
+                && issues.ValueKind == System.Text.Json.JsonValueKind.Array)
+                _returned = issues.GetArrayLength();
+        }
+        catch
+        {
+            // Summary is best-effort; the raw JSON is still shown.
+        }
+    }
+
+    private async Task CopyJson()
+    {
+        if (string.IsNullOrEmpty(_jsonResult)) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _jsonResult);
+            Snackbar.Add("Copied JSON to clipboard", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to copy JSON to clipboard");
+            Snackbar.Add($"Copy failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DownloadJson()
+    {
+        if (string.IsNullOrEmpty(_jsonResult)) return;
+        try
+        {
+            const string fileName = "jql-search-result.json";
+            await JS.InvokeVoidAsync("eval", $@"
+                (function() {{
+                    var blob = new Blob([{System.Text.Json.JsonSerializer.Serialize(_jsonResult)}], {{ type: 'application/json' }});
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = {System.Text.Json.JsonSerializer.Serialize(fileName)};
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }})();
+            ");
+            Snackbar.Add("Downloaded JSON", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to download JSON");
+            Snackbar.Add($"Download failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    public void Dispose()
+    {
+        Session.OnChange -= HandleSessionChange;
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}
