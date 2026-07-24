@@ -1,0 +1,734 @@
+@attribute [Route(RoutingPath.JiraSync)]
+
+@inject IJiraSyncService SyncService
+@inject IJiraMetadataService Metadata
+@inject ICapitalProjectService CapitalProjects
+@inject IWindowsAuthService WindowsAuth
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject IDialogService DialogService
+@inject IJSRuntime JS
+
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.JiraIntegration.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<PageTitle>Jira Sync</PageTitle>
+
+<AdminOnly>
+<div class="container-fluid mt-3 mb-5">
+
+    <MudPaper Class="p-3 rounded-lg mb-3" Elevation="2">
+        <MudText Typo="Typo.h5" Class="mb-4">Jira Background Sync</MudText>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_settings is not null)
+        {
+            @if (!_serviceConnected)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-4">
+                    The Jira service account is not connected. Connect it below; the background sync
+                    cannot run without it.
+                </MudAlert>
+            }
+
+            <MudGrid>
+                <MudItem xs="12" md="12">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudIcon Icon="@(_serviceConnected ? Icons.Material.Filled.CloudDone : Icons.Material.Filled.CloudOff)"
+                                 Color="@(_serviceConnected ? Color.Success : Color.Warning)" />
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.body1">
+                                Service account: <strong>@_settings.ServiceAccountUserName</strong>
+                            </MudText>
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                @(_serviceConnected ? "Connected" : "Not connected")
+                            </MudText>
+                        </MudStack>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Link"
+                                   OnClick="ConnectServiceAccountAsync">
+                            @(_serviceConnected ? "Reconnect" : "Connect")
+                        </MudButton>
+                    </MudStack>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudNumericField @bind-Value="_settings.CycleCooldownMinutes"
+                                     Label="Cooldown after each cycle (minutes)"
+                                     Variant="Variant.Outlined"
+                                     Min="1" Max="1440"
+                                     Disabled="_settings.Enabled"
+                                     HelperText="@(_settings.Enabled ? "Stop the sync to edit." : "Minimum 1; saved when you press Start.")" />
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <SearchableDropdown T="string"
+                                        Label="Jira server timezone"
+                                        Items="@_timeZoneIds"
+                                        Value="@(_settings.JiraTimeZoneId ?? _serverTimeZoneId)"
+                                        ValueChanged="OnJiraTimeZoneChanged"
+                                        ToStringFunc="TimeZoneDisplay"
+                                        Clearable="false"
+                                        HelperText="Timezone Jira interprets query dates in. Defaults to the app server timezone; saved immediately." />
+                </MudItem>
+            </MudGrid>
+
+            <MudStack Row="true" Class="mt-4" Spacing="2" AlignItems="AlignItems.Center">
+                @if (_settings.Enabled)
+                {
+                    <MudButton Variant="Variant.Filled" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.Stop"
+                               OnClick="StopSyncAsync"
+                               Disabled="_busy">
+                        Stop
+                    </MudButton>
+                }
+                else
+                {
+                    <MudButton Variant="Variant.Filled" Color="Color.Success"
+                               StartIcon="@Icons.Material.Filled.PlayArrow"
+                               OnClick="StartSyncAsync"
+                               Disabled="_busy || !_serviceConnected">
+                        Start
+                    </MudButton>
+                }
+                <MudTooltip Text="@(_settings.Enabled ? "Stop the scheduled sync to run manually." : "Run one sync cycle now")">
+                    <MudButton Variant="Variant.Filled" Color="Color.Secondary"
+                               StartIcon="@Icons.Material.Filled.Sync"
+                               OnClick="RunSyncNowAsync"
+                               Disabled="_running || !_serviceConnected || _settings.Enabled">
+                        @if (_running)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                            <span>Running…</span>
+                        }
+                        else
+                        {
+                            <span>Run sync now</span>
+                        }
+                    </MudButton>
+                </MudTooltip>
+                <MudSpacer />
+                <MudStack Spacing="0" Class="align-end">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Status: <strong>@(_settings.Enabled ? "Running" : "Stopped")</strong>
+                    </MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Last run: @(_settings.LastRunAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+                    </MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Next cycle: @(_settings.Enabled ? (_settings.NextRunAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "pending") : "—")
+                    </MudText>
+                </MudStack>
+            </MudStack>
+        }
+    </MudPaper>
+
+    <MudPaper Class="p-3 rounded-lg mb-3" Elevation="2">
+        <MudText Typo="Typo.h6" Class="mb-1">Projects</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3 mud-text-secondary">
+            One row per Solution Train that has a Jira key. A project is synced only when "Create not existed"
+            and/or "Update existed" is on. Jira data overwrites the synced fields in the database.
+        </MudText>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_rows.Count == 0)
+        {
+            <MudText Class="pa-2 mud-text-secondary">No Solution Trains with a Jira key were found.</MudText>
+        }
+        else
+        {
+            <MudExpansionPanels MultiExpansion="true">
+                @foreach (var row in _rows)
+                {
+                    <MudExpansionPanel ExpandedChanged="@((bool expanded) => OnPanelExpandedAsync(row, expanded))">
+                        <TitleContent>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.Folder" Size="Size.Small" />
+                                <MudText><strong>@row.Project.Name</strong> (@row.Project.JiraKey)</MudText>
+                                @if (row.CreateNotExisted || row.UpdateExisted)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">active</MudChip>
+                                }
+                                else
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">off</MudChip>
+                                }
+                            </MudStack>
+                        </TitleContent>
+                        <ChildContent>
+                            <MudGrid>
+                                <MudItem xs="6" md="3">
+                                    <MudSwitch @bind-Value="row.CreateNotExisted" Color="Color.Primary" T="bool" Label="Create not existed" />
+                                </MudItem>
+                                <MudItem xs="6" md="3">
+                                    <MudSwitch @bind-Value="row.UpdateExisted" Color="Color.Primary" T="bool" Label="Update existed" />
+                                </MudItem>
+                                <MudItem xs="12" md="6">
+                                    <MudSelect T="string" Label="Issue types" MultiSelection="true"
+                                               @bind-SelectedValues="row.IssueTypes" Variant="Variant.Outlined"
+                                               MultiSelectionTextFunc="@(v => string.Join(", ", v))">
+                                        @foreach (var t in IssueTypeOptions)
+                                        {
+                                            <MudSelectItem T="string" Value="@t">@t</MudSelectItem>
+                                        }
+                                    </MudSelect>
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <MudSelect T="JiraSyncDateFilterMode" @bind-Value="row.DateFilterMode"
+                                               Label="Date filter / watermark" Variant="Variant.Outlined">
+                                        <MudSelectItem Value="JiraSyncDateFilterMode.Updated">Last updated date</MudSelectItem>
+                                        <MudSelectItem Value="JiraSyncDateFilterMode.Created">Created date</MudSelectItem>
+                                    </MudSelect>
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <SearchableDropdown T="string" MultiSelect="true" Label="Labels"
+                                                        Items="@row.AvailableLabels"
+                                                        @bind-Values="row.Labels"
+                                                        SelectAll="true"
+                                                        Disabled="row.Loading"
+                                                        SearchPlaceholder="Search labels…"
+                                                        Placeholder="@(row.Loading ? "Loading…" : "Select labels")"
+                                                        NoItemsText="@(row.Loading ? "Loading…" : "No labels in this project")" />
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <SearchableDropdown T="string" MultiSelect="true" Label="Statuses"
+                                                        Items="@row.AvailableStatuses"
+                                                        @bind-Values="row.Statuses"
+                                                        SelectAll="true"
+                                                        Disabled="row.Loading"
+                                                        SearchPlaceholder="Search statuses…"
+                                                        Placeholder="@(row.Loading ? "Loading…" : "Select statuses")"
+                                                        NoItemsText="@(row.Loading ? "Loading…" : "No statuses in this project")" />
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <SearchableDropdown T="string" MultiSelect="true" Label="Don't create with status"
+                                                        Items="@row.AvailableStatuses"
+                                                        @bind-Values="row.ExcludeCreateStatuses"
+                                                        SelectAll="true"
+                                                        Disabled="row.Loading"
+                                                        SearchPlaceholder="Search statuses…"
+                                                        Placeholder="@(row.Loading ? "Loading…" : "Select statuses")"
+                                                        HelperText="New issues with these statuses are skipped; existing ones are still updated."
+                                                        NoItemsText="@(row.Loading ? "Loading…" : "No statuses in this project")" />
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <MudDatePicker @bind-Date="row.SinceFloorUtc"
+                                                   Label="Only issues since (optional floor)"
+                                                   Variant="Variant.Outlined" Clearable="true" />
+                                </MudItem>
+
+                                <MudItem xs="12" md="6">
+                                    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+                                        <MudTextField T="string" Label="Last synced (watermark)" ReadOnly="true"
+                                                      Variant="Variant.Outlined"
+                                                      Value="@(row.Watermark?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never")"
+                                                      HelperText="@($"Shown in app server time ({_serverTimeZoneId}).")" />
+                                        <MudTooltip Text="Clear the watermark so the next sync re-fetches from the floor (or everything if no floor).">
+                                            <MudButton Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small"
+                                                       StartIcon="@Icons.Material.Filled.Restore"
+                                                       OnClick="@(() => ResetWatermarkAsync(row))"
+                                                       Disabled="row.Watermark is null || row.ResettingWatermark">
+                                                Reset
+                                            </MudButton>
+                                        </MudTooltip>
+                                    </MudStack>
+                                </MudItem>
+                            </MudGrid>
+
+                            <MudStack Row="true" Class="mt-2" Spacing="2">
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Save"
+                                           OnClick="@(() => SaveProjectAsync(row))"
+                                           Disabled="row.Saving">
+                                    Save project
+                                </MudButton>
+                            </MudStack>
+                        </ChildContent>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+        }
+    </MudPaper>
+
+    <SprintMetricsSetup />
+
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudStack Row="true" Class="mb-3" AlignItems="AlignItems.Center">
+            <MudText Typo="Typo.h6">History</MudText>
+            <MudSpacer />
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="ReloadHistoryAsync" />
+        </MudStack>
+
+        <MudDataGrid T="JiraSyncHistory" Items="_history" Dense Hover Striped Bordered="true" RowsPerPage="25">
+            <Columns>
+                <PropertyColumn Property="x => x.StartedAt" Title="Started" InitialDirection="SortDirection.Descending">
+                    <CellTemplate>
+                        @FormatUserTime(context.Item.StartedAt)
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.Status" Title="Status">
+                    <CellTemplate>
+                        @switch (context.Item.Status)
+                        {
+                            case "Success":
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Success</MudChip>
+                                break;
+                            case "Failed":
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Failed</MudChip>
+                                break;
+                            case "Running":
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Running</MudChip>
+                                break;
+                            default:
+                                <MudText>@context.Item.Status</MudText>
+                                break;
+                        }
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.FinishedAt" Title="Ended">
+                    <CellTemplate>
+                        @FormatUserTime(context.Item.FinishedAt)
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.TriggeredBy" Title="Triggered by" />
+                <PropertyColumn Property="x => x.Created" Title="Created" />
+                <PropertyColumn Property="x => x.Updated" Title="Updated" />
+                <PropertyColumn Property="x => x.IssuesFetched" Title="Fetched" />
+                <PropertyColumn Property="x => x.Failed" Title="Failed" />
+                <PropertyColumn Property="x => x.Message" Title="Message" Sortable="false">
+                    <CellTemplate>
+                        <div class="d-flex align-center" style="gap:4px;">
+                            <MudText Style="max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                                @(context.Item.Message ?? "—")
+                            </MudText>
+                            @if (!string.IsNullOrEmpty(context.Item.Message))
+                            {
+                                <MudTooltip Text="View full message">
+                                    <MudIconButton Icon="@Icons.Material.Filled.OpenInFull" Size="Size.Small"
+                                                   OnClick="@(() => ShowMessageAsync(context.Item.Message))" />
+                                </MudTooltip>
+                            }
+                        </div>
+                    </CellTemplate>
+                </PropertyColumn>
+            </Columns>
+            <NoRecordsContent>
+                <MudText Class="pa-4 mud-text-secondary">No sync runs yet.</MudText>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudDataGridPager T="JiraSyncHistory" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+</AdminOnly>
+
+@code {
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private static readonly string[] IssueTypeOptions =
+        { "Feature", "Business Outcome", "Portfolio Epic", "Strategic Objective" };
+
+    private JiraSyncSettings? _settings;
+    private bool _serviceConnected;
+    private List<ProjectRow> _rows = new();
+    private List<JiraSyncHistory> _history = new();
+    private bool _loading = true;
+    private bool _busy;
+    private bool _running;
+
+    private List<string> _timeZoneIds = new();
+    private Dictionary<string, string> _timeZoneDisplay = new();
+    private readonly string _serverTimeZoneId = TimeZoneInfo.Local.Id;
+    private TimeZoneInfo? _userTimeZone;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!IsAdmin)
+        {
+            return;
+        }
+
+        var zones = TimeZoneInfo.GetSystemTimeZones();
+        _timeZoneIds = zones.Select(z => z.Id).ToList();
+        _timeZoneDisplay = zones.ToDictionary(z => z.Id, z => z.DisplayName);
+
+        await ReloadAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && IsAdmin)
+        {
+            try
+            {
+                var tz = await JS.InvokeAsync<string>("getBrowserTimeZone");
+                if (!string.IsNullOrWhiteSpace(tz))
+                {
+                    _userTimeZone = TimeZoneInfo.FindSystemTimeZoneById(tz);
+                    StateHasChanged();
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _settings = await SyncService.GetSettingsAsync();
+            _serviceConnected = await SyncService.IsServiceAccountConnectedAsync();
+
+            var projects = (await CapitalProjects.GetAllAsync())
+                .Where(p => !string.IsNullOrWhiteSpace(p.JiraKey))
+                .OrderBy(p => p.Name)
+                .ToList();
+
+            var existing = (await SyncService.GetProjectSettingsAsync())
+                .ToDictionary(s => s.CapitalProjectId);
+
+            _rows = projects.Select(p =>
+            {
+                existing.TryGetValue(p.Id, out var s);
+                var issueTypes = SplitCsv(s?.IssueTypesCsv);
+                var labels = SplitCsv(s?.LabelsCsv);
+                var statuses = SplitCsv(s?.StatusesCsv);
+                var excludeCreateStatuses = SplitCsv(s?.ExcludeCreateStatusesCsv);
+                return new ProjectRow
+                {
+                    Project = p,
+                    Id = s?.Id ?? 0,
+                    CreateNotExisted = s?.CreateNotExisted ?? false,
+                    UpdateExisted = s?.UpdateExisted ?? false,
+                    IssueTypes = issueTypes,
+                    Labels = labels,
+                    Statuses = statuses,
+                    ExcludeCreateStatuses = excludeCreateStatuses,
+                    DateFilterMode = s?.DateFilterMode ?? JiraSyncDateFilterMode.Updated,
+                    SinceFloorUtc = s?.SinceFloorUtc,
+                    Watermark = s?.LastSyncedWatermarkUtc,
+                    AvailableLabels = new List<string>(labels),
+                    AvailableStatuses = statuses.Union(excludeCreateStatuses, StringComparer.OrdinalIgnoreCase).ToList(),
+                };
+            }).ToList();
+
+            _history = await SyncService.GetHistoryAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ReloadHistoryAsync()
+    {
+        _history = await SyncService.GetHistoryAsync();
+    }
+
+    private async Task OnJiraTimeZoneChanged(string? timeZoneId)
+    {
+        if (_settings is null || string.IsNullOrWhiteSpace(timeZoneId))
+        {
+            return;
+        }
+
+        _settings.JiraTimeZoneId = timeZoneId;
+        try
+        {
+            await SyncService.UpdateJiraTimeZoneAsync(timeZoneId);
+            Snackbar.Add("Jira timezone updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private string TimeZoneDisplay(string? id)
+    {
+        if (string.IsNullOrEmpty(id))
+        {
+            return string.Empty;
+        }
+        return _timeZoneDisplay.TryGetValue(id, out var display) ? display : id;
+    }
+
+    private string FormatUserTime(DateTime? utc)
+    {
+        if (utc is null)
+        {
+            return "—";
+        }
+        var value = DateTime.SpecifyKind(utc.Value, DateTimeKind.Utc);
+        var tz = _userTimeZone ?? TimeZoneInfo.Local;
+        return TimeZoneInfo.ConvertTimeFromUtc(value, tz).ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    private async Task ShowMessageAsync(string? message)
+    {
+        var parameters = new DialogParameters<JiraSyncMessageDialog>
+        {
+            { x => x.Message, message }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await DialogService.ShowAsync<JiraSyncMessageDialog>("Sync run details", parameters, options);
+    }
+
+    private async Task StartSyncAsync()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _settings = await SyncService.StartAsync(_settings.CycleCooldownMinutes);
+            Snackbar.Add("Sync started.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task StopSyncAsync()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _settings = await SyncService.StopAsync();
+            Snackbar.Add("Sync stopped.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RunSyncNowAsync()
+    {
+        if (!await MessageService.Confirm("Run a Jira sync now?"))
+        {
+            return;
+        }
+
+        _running = true;
+        try
+        {
+            var userName = await WindowsAuth.GetUserName() ?? "Manual";
+            var result = await SyncService.RunSyncAsync(userName);
+
+            if (result.Status == "Success")
+            {
+                Snackbar.Add($"Sync complete: {result.Created} created, {result.Updated} updated.", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"Sync failed: {result.Message}", Severity.Error);
+            }
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private async Task ConnectServiceAccountAsync()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var parameters = new DialogParameters<JiraLoginDialog>
+        {
+            { x => x.ConnectAsUserName, _settings.ServiceAccountUserName }
+        };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>(
+            "Connect Jira service account", parameters, options);
+        await dialogRef.Result;
+
+        _serviceConnected = await SyncService.IsServiceAccountConnectedAsync();
+        StateHasChanged();
+    }
+
+    private async Task OnPanelExpandedAsync(ProjectRow row, bool expanded)
+    {
+        if (!expanded || row.OptionsLoaded || row.Loading || !_serviceConnected)
+        {
+            return;
+        }
+        await LoadOptionsAsync(row);
+    }
+
+    private async Task ResetWatermarkAsync(ProjectRow row)
+    {
+        if (row.Watermark is null)
+        {
+            return;
+        }
+
+        row.ResettingWatermark = true;
+        try
+        {
+            await SyncService.ResetWatermarkAsync(row.Project.Id);
+            row.Watermark = null;
+            Snackbar.Add($"Watermark reset for {row.Project.Name}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            row.ResettingWatermark = false;
+        }
+    }
+
+    private async Task LoadOptionsAsync(ProjectRow row)
+    {
+        if (_settings is null || string.IsNullOrWhiteSpace(row.Project.JiraKey))
+        {
+            return;
+        }
+
+        row.Loading = true;
+        StateHasChanged();
+        try
+        {
+            var serviceUser = _settings.ServiceAccountUserName;
+            var projectKey = row.Project.JiraKey!;
+
+            var labels = await Metadata.GetLabelsAsync(serviceUser, projectKey);
+            var statuses = await Metadata.GetStatusesAsync(serviceUser, projectKey);
+
+            row.AvailableLabels = labels.Select(l => l.Name)
+                .Union(row.Labels, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x).ToList();
+            row.AvailableStatuses = statuses.Select(s => s.Name)
+                .Union(row.Statuses, StringComparer.OrdinalIgnoreCase)
+                .Union(row.ExcludeCreateStatuses, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x).ToList();
+            row.OptionsLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load Jira options: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            row.Loading = false;
+        }
+    }
+
+    private async Task SaveProjectAsync(ProjectRow row)
+    {
+        row.Saving = true;
+        try
+        {
+            var settings = new JiraSyncProjectSettings
+            {
+                Id = row.Id,
+                CapitalProjectId = row.Project.Id,
+                CreateNotExisted = row.CreateNotExisted,
+                UpdateExisted = row.UpdateExisted,
+                IssueTypesCsv = JoinCsv(row.IssueTypes),
+                LabelsCsv = JoinCsv(row.Labels),
+                StatusesCsv = JoinCsv(row.Statuses),
+                ExcludeCreateStatusesCsv = JoinCsv(row.ExcludeCreateStatuses),
+                DateFilterMode = row.DateFilterMode,
+                SinceFloorUtc = row.SinceFloorUtc,
+            };
+
+            var saved = await SyncService.UpsertProjectSettingsAsync(settings);
+            row.Id = saved.Id;
+            Snackbar.Add($"Saved sync settings for {row.Project.Name}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            row.Saving = false;
+        }
+    }
+
+    private static List<string> SplitCsv(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv))
+        {
+            return new List<string>();
+        }
+        return csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    }
+
+    private static string? JoinCsv(IEnumerable<string> values)
+    {
+        var list = values?.Where(v => !string.IsNullOrWhiteSpace(v)).ToList() ?? new List<string>();
+        return list.Count == 0 ? null : string.Join(",", list);
+    }
+
+    public class ProjectRow
+    {
+        public CapitalProject Project { get; set; } = null!;
+        public int Id { get; set; }
+        public bool CreateNotExisted { get; set; }
+        public bool UpdateExisted { get; set; }
+        public IReadOnlyCollection<string> IssueTypes { get; set; } = Array.Empty<string>();
+        public IReadOnlyCollection<string> Labels { get; set; } = Array.Empty<string>();
+        public IReadOnlyCollection<string> Statuses { get; set; } = Array.Empty<string>();
+        public IReadOnlyCollection<string> ExcludeCreateStatuses { get; set; } = Array.Empty<string>();
+        public JiraSyncDateFilterMode DateFilterMode { get; set; } = JiraSyncDateFilterMode.Updated;
+        public DateTime? SinceFloorUtc { get; set; }
+        public DateTime? Watermark { get; set; }
+        public List<string> AvailableLabels { get; set; } = new();
+        public List<string> AvailableStatuses { get; set; } = new();
+        public bool OptionsLoaded { get; set; }
+        public bool Loading { get; set; }
+        public bool Saving { get; set; }
+        public bool ResettingWatermark { get; set; }
+    }
+}

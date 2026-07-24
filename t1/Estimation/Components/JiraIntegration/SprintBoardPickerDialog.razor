@@ -1,0 +1,84 @@
+@inject ISprintMetricsAdminService AdminService
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Services
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">Loading boards from Jira…</MudText>
+        }
+        else
+        {
+            <MudTextField @bind-Value="_filter" Placeholder="Filter boards…" Immediate="true"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                          Class="mb-2" Clearable="true" />
+            @if (FilteredBoards.Count == 0)
+            {
+                <MudText Class="pa-2 mud-text-secondary">No scrum boards found.</MudText>
+            }
+            else
+            {
+                <MudList T="int" Style="max-height: 50vh; overflow-y: auto;">
+                    @foreach (var board in FilteredBoards)
+                    {
+                        <MudListItem T="int" OnClick="@(() => Select(board))">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                <MudIcon Icon="@Icons.Material.Filled.Dashboard" Size="Size.Small" />
+                                <MudText>@board.Name</MudText>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">id @board.Id</MudText>
+                            </MudStack>
+                        </MudListItem>
+                    }
+                </MudList>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public int TeamId { get; set; }
+
+    private List<JiraBoard> _boards = new();
+    private bool _loading = true;
+    private string? _filter;
+
+    private List<JiraBoard> FilteredBoards => string.IsNullOrWhiteSpace(_filter)
+        ? _boards
+        : _boards.Where(b => b.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _boards = await AdminService.GetBoardsForTeamAsync(TeamId);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load Jira boards: {ex.Message}", Severity.Error);
+            MudDialog.Cancel();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Select(JiraBoard board)
+    {
+        MudDialog.Close(DialogResult.Ok(board));
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

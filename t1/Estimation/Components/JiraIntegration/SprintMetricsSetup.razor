@@ -1,0 +1,275 @@
+@inject ISprintMetricsAdminService AdminService
+@inject IJiraSyncService SyncService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.JiraIntegration.Services
+
+<MudPaper Class="p-3 rounded-lg mb-3" Elevation="2">
+    <MudText Typo="Typo.h6" Class="mb-1">Sprint Metrics</MudText>
+    <MudText Typo="Typo.body2" Class="mb-3 mud-text-secondary">
+        Foundations for the sprint report: map each team to its Jira scrum board so sprints get
+        unambiguous Jira sprint IDs, and verify which Jira Agile APIs this server offers. All calls
+        run under the Jira sync service account above.
+    </MudText>
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate Color="Color.Primary" />
+    }
+    else if (_settings is not null)
+    {
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-3">
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.NetworkCheck"
+                       OnClick="RunProbeAsync"
+                       Disabled="_probing || !_serviceConnected">
+                @(_probing ? "Testing…" : "Test Jira Agile API")
+            </MudButton>
+            @CapabilityChip("Agile API", _settings.AgileApiAvailable)
+            @CapabilityChip("Sprint report", _settings.SprintReportAvailable)
+            @if (_settings.LastProbedAt is not null)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Last tested: @_settings.LastProbedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                </MudText>
+            }
+        </MudStack>
+        @if (!string.IsNullOrEmpty(_settings.LastProbeMessage))
+        {
+            <MudText Typo="Typo.caption" Class="mb-3 mud-text-secondary d-block">@_settings.LastProbeMessage</MudText>
+        }
+
+        <MudGrid Class="mb-2">
+            <MudItem xs="6" md="3">
+                <MudNumericField @bind-Value="_settings.CycleCooldownMinutes"
+                                 Label="Cycle cooldown (minutes)" Variant="Variant.Outlined"
+                                 Min="1" Max="1440"
+                                 HelperText="Pause between snapshot cycles." />
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudNumericField @bind-Value="_settings.BackfillBatchSize"
+                                 Label="Backfill batch size" Variant="Variant.Outlined"
+                                 Min="1" Max="500"
+                                 HelperText="Historical sprints per cycle, newest first." />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudTextField @bind-Value="_settings.IssueTypesCsv"
+                              Label="Issue types" Variant="Variant.Outlined"
+                              HelperText="Comma-separated; counted in sprint metrics." />
+            </MudItem>
+            <MudItem xs="12" md="3">
+                <MudTextField @bind-Value="_settings.DoneStatusesCsv"
+                              Label="Done statuses (optional)" Variant="Variant.Outlined"
+                              HelperText="Empty = Jira status category 'done'." />
+            </MudItem>
+        </MudGrid>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.Save"
+                   OnClick="SaveSettingsAsync" Disabled="_saving" Class="mb-4">
+            Save settings
+        </MudButton>
+
+        <MudText Typo="Typo.subtitle1" Class="mb-1">Team boards</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2 mud-text-secondary">
+            "Discover" matches the board's Jira sprints to this app's sprints by name (then by date
+            overlap) and stamps their Jira sprint IDs, states, and actual start/complete times.
+        </MudText>
+        <MudTable Items="_teams" Dense="true" Hover="true" Striped="true">
+            <HeaderContent>
+                <MudTh>Team</MudTh>
+                <MudTh>Solution Trains</MudTh>
+                <MudTh>Jira board</MudTh>
+                <MudTh>Sprints mapped</MudTh>
+                <MudTh></MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Team">@context.TeamName</MudTd>
+                <MudTd DataLabel="Solution Trains">@context.Trains</MudTd>
+                <MudTd DataLabel="Jira board">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        @if (context.JiraBoardId is null)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">not mapped</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">board @context.JiraBoardId</MudChip>
+                        }
+                        <MudTooltip Text="Pick the team's Jira scrum board">
+                            <MudIconButton Icon="@Icons.Material.Filled.Dashboard" Size="Size.Small"
+                                           OnClick="@(() => PickBoardAsync(context))"
+                                           Disabled="!_serviceConnected" />
+                        </MudTooltip>
+                        @if (context.JiraBoardId is not null)
+                        {
+                            <MudTooltip Text="Clear the board mapping">
+                                <MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small"
+                                               OnClick="@(() => ClearBoardAsync(context))" />
+                            </MudTooltip>
+                        }
+                    </MudStack>
+                </MudTd>
+                <MudTd DataLabel="Sprints mapped">@context.MappedSprintCount / @context.SprintCount</MudTd>
+                <MudTd>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.TravelExplore"
+                               OnClick="@(() => DiscoverAsync(context))"
+                               Disabled="@(context.JiraBoardId is null || !_serviceConnected || _discoveringTeamId == context.TeamId)">
+                        @(_discoveringTeamId == context.TeamId ? "Discovering…" : "Discover")
+                    </MudButton>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-2 mud-text-secondary">No teams found.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    }
+</MudPaper>
+
+@code {
+    private SprintMetricsSyncSettings? _settings;
+    private List<TeamBoardMappingRow> _teams = new();
+    private bool _loading = true;
+    private bool _saving;
+    private bool _probing;
+    private bool _serviceConnected;
+    private int? _discoveringTeamId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _settings = await AdminService.GetSettingsAsync();
+            _teams = await AdminService.GetTeamBoardMappingsAsync();
+            _serviceConnected = await SyncService.IsServiceAccountConnectedAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load sprint metrics setup: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private RenderFragment CapabilityChip(string label, bool? state) => @<MudChip T="string" Size="Size.Small"
+        Color="@(state == true ? Color.Success : state == false ? Color.Error : Color.Default)"
+        Variant="Variant.Filled">
+        @label: @(state == true ? "yes" : state == false ? "no" : "unknown")
+    </MudChip>;
+
+    private async Task RunProbeAsync()
+    {
+        _probing = true;
+        try
+        {
+            var result = await AdminService.RunProbeAsync();
+            _settings = await AdminService.GetSettingsAsync();
+            Snackbar.Add(result.Message, result.AgileApiAvailable ? Severity.Success : Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Probe failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _probing = false;
+        }
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            _settings = await AdminService.UpdateSettingsAsync(_settings);
+            Snackbar.Add("Sprint metrics settings saved.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task PickBoardAsync(TeamBoardMappingRow row)
+    {
+        var parameters = new DialogParameters<SprintBoardPickerDialog>
+        {
+            { x => x.TeamId, row.TeamId }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<SprintBoardPickerDialog>(
+            $"Jira board for {row.TeamName}", parameters, options);
+        var result = await dialogRef.Result;
+        if (result is null || result.Canceled || result.Data is not JiraBoard board)
+        {
+            return;
+        }
+
+        try
+        {
+            await AdminService.SetTeamBoardAsync(row.TeamId, board.Id);
+            row.JiraBoardId = board.Id;
+            Snackbar.Add($"{row.TeamName} mapped to board \"{board.Name}\".", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task ClearBoardAsync(TeamBoardMappingRow row)
+    {
+        try
+        {
+            await AdminService.SetTeamBoardAsync(row.TeamId, null);
+            row.JiraBoardId = null;
+            Snackbar.Add($"Board mapping cleared for {row.TeamName}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task DiscoverAsync(TeamBoardMappingRow row)
+    {
+        _discoveringTeamId = row.TeamId;
+        try
+        {
+            var result = await AdminService.DiscoverTeamSprintsAsync(row.TeamId);
+            if (result.Error is not null)
+            {
+                Snackbar.Add($"{row.TeamName}: {result.Error}", Severity.Error);
+            }
+            else
+            {
+                row.MappedSprintCount = result.MatchedByName + result.MatchedByDates;
+                var message = $"{row.TeamName}: {result.MatchedByName} matched by name, "
+                              + $"{result.MatchedByDates} by dates, {result.Unmatched.Count} unmatched.";
+                Snackbar.Add(message, result.Unmatched.Count == 0 ? Severity.Success : Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _discoveringTeamId = null;
+        }
+    }
+}
