@@ -1,0 +1,94 @@
+@page "/boards"
+@using JiraToolkit.Components.Shared
+@inject JiraSessionService Session
+@inject LocalStorageService LocalStorage
+@implements IDisposable
+@rendermode InteractiveServer
+
+<PageTitle>Boards</PageTitle>
+
+<MudText Typo="Typo.h5" Class="mb-4">Boards</MudText>
+
+@if (!Session.HasCredentials)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">Please connect to Jira using the credentials bar above.</MudAlert>
+}
+
+<MudPaper Class="pa-3 mb-4" Elevation="1">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3" Wrap="Wrap.Wrap">
+        <MudIcon Icon="@Icons.Material.Filled.ViewKanban" Color="Color.Primary" />
+        <MudText Typo="Typo.subtitle1"><b>Jira Agile board APIs</b></MudText>
+        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Class="ma-0">
+            @FilteredApis.Count() / @JiraBoardApiCatalog.All.Count
+        </MudChip>
+        <MudTextField T="string" Value="@_boardId" ValueChanged="OnBoardIdChanged" Label="Board ID" Placeholder="123"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" DebounceInterval="250"
+                      Clearable="true" Style="max-width: 180px;"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Dashboard"
+                      HelperText="Fills boardId in every section" HelperTextOnFocus="false" />
+        <MudSpacer />
+        <MudTextField @bind-Value="_search" Placeholder="Filter APIs..."
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Immediate="true" DebounceInterval="250" Clearable="true"
+                      Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width: 300px;" />
+    </MudStack>
+    <MudText Typo="Typo.caption" Class="mt-2">
+        Each section calls the Jira REST API directly with the credentials from the bar above and shows the raw
+        JSON response. Parameters left blank are not sent, so Jira applies its own defaults.
+    </MudText>
+</MudPaper>
+
+@if (!FilteredApis.Any())
+{
+    <MudAlert Severity="Severity.Info">No API matches "@_search".</MudAlert>
+}
+else
+{
+    <MudExpansionPanels MultiExpansion="true" Outlined="true">
+        @foreach (var definition in FilteredApis)
+        {
+            <JiraApiSection @key="definition.Id" Definition="definition" SharedBoardId="@_boardId" />
+        }
+    </MudExpansionPanels>
+}
+
+@code {
+    private string _boardId = string.Empty;
+    private string _search = string.Empty;
+
+    private IEnumerable<JiraApiDefinition> FilteredApis => JiraBoardApiCatalog.All.Where(d =>
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return true;
+        var s = _search.Trim();
+        return d.Name.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || d.PathTemplate.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || d.Description.Contains(s, StringComparison.OrdinalIgnoreCase);
+    });
+
+    protected override void OnInitialized()
+    {
+        Session.OnChange += HandleSessionChange;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        var savedBoardId = await LocalStorage.GetItemAsync("boardId");
+        if (!string.IsNullOrEmpty(savedBoardId))
+        {
+            _boardId = savedBoardId;
+            StateHasChanged();
+        }
+    }
+
+    private void HandleSessionChange() => InvokeAsync(StateHasChanged);
+
+    private async Task OnBoardIdChanged(string? value)
+    {
+        _boardId = value ?? string.Empty;
+        await LocalStorage.SetItemAsync("boardId", _boardId);
+    }
+
+    public void Dispose() => Session.OnChange -= HandleSessionChange;
+}

@@ -1,0 +1,331 @@
+@using JiraToolkit.Models
+@using JiraToolkit.Services
+@inject JiraSessionService Session
+@inject JiraService JiraService
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@inject ILogger<JiraApiSection> Logger
+@implements IDisposable
+
+<MudExpansionPanel @bind-Expanded="_expanded">
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Wrap="Wrap.Wrap">
+            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled" Class="ma-0">
+                @Definition.Method
+            </MudChip>
+            <MudText Typo="Typo.subtitle1"><b>@Definition.Name</b></MudText>
+            <MudText Typo="Typo.caption" Style="font-family: monospace; opacity: 0.75;">
+                /@Definition.PathTemplate
+            </MudText>
+            @if (_response != null)
+            {
+                <MudChip T="string" Size="Size.Small" Class="ma-0"
+                         Color="@(_response.IsSuccess ? Color.Info : Color.Error)">
+                    @_response.StatusCode @_response.ReasonPhrase
+                </MudChip>
+            }
+        </MudStack>
+    </TitleContent>
+    <ChildContent>
+        <MudText Typo="Typo.body2" Class="mb-2">@Definition.Description</MudText>
+
+        @if (!string.IsNullOrWhiteSpace(Definition.Note))
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-3">@Definition.Note</MudAlert>
+        }
+
+        @* --- API URL --- *@
+        <MudText Typo="Typo.overline" Color="Color.Primary">API URL</MudText>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mb-4">
+            <pre style="@UrlStyle">@PreviewUrl</pre>
+            <MudTooltip Text="Copy URL">
+                <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small"
+                               OnClick="@(() => CopyToClipboard(PreviewUrl, "URL"))" />
+            </MudTooltip>
+        </MudStack>
+
+        @* --- Parameters --- *@
+        <MudText Typo="Typo.overline" Color="Color.Primary">Parameters</MudText>
+        <MudGrid Spacing="2" Class="mb-3 mt-0">
+            @foreach (var parameter in Definition.Parameters)
+            {
+                <MudItem xs="12" sm="6" md="4" @key="parameter.Name">
+                    @switch (parameter.Type)
+                    {
+                        case JiraApiParamType.Boolean:
+                            <MudSelect T="string" Label="@Label(parameter)" Value="@GetValue(parameter.Name)"
+                                       ValueChanged="@(v => SetValue(parameter.Name, v))"
+                                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                                       HelperText="@parameter.Description" HelperTextOnFocus="false"
+                                       Clearable="true">
+                                <MudSelectItem T="string" Value="@("")">(not sent)</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("true")">true</MudSelectItem>
+                                <MudSelectItem T="string" Value="@("false")">false</MudSelectItem>
+                            </MudSelect>
+                            break;
+
+                        case JiraApiParamType.Select:
+                            <MudSelect T="string" Label="@Label(parameter)" Value="@GetValue(parameter.Name)"
+                                       ValueChanged="@(v => SetValue(parameter.Name, v))"
+                                       Variant="Variant.Outlined" Margin="Margin.Dense"
+                                       HelperText="@parameter.Description" HelperTextOnFocus="false"
+                                       Clearable="true">
+                                <MudSelectItem T="string" Value="@("")">(not sent)</MudSelectItem>
+                                @foreach (var option in parameter.Options)
+                                {
+                                    <MudSelectItem T="string" Value="@option">@option</MudSelectItem>
+                                }
+                            </MudSelect>
+                            break;
+
+                        default:
+                            <MudTextField T="string" Label="@Label(parameter)" Value="@GetValue(parameter.Name)"
+                                          ValueChanged="@(v => SetValue(parameter.Name, v))"
+                                          Variant="Variant.Outlined" Margin="Margin.Dense"
+                                          Immediate="true" DebounceInterval="250" Clearable="true"
+                                          Placeholder="@parameter.Placeholder"
+                                          HelperText="@parameter.Description" HelperTextOnFocus="false"
+                                          InputMode="@(parameter.Type == JiraApiParamType.Number ? InputMode.numeric : InputMode.text)"
+                                          Adornment="@(parameter.Kind == JiraApiParamKind.Path ? Adornment.Start : Adornment.None)"
+                                          AdornmentIcon="@Icons.Material.Filled.Link" />
+                            break;
+                    }
+                </MudItem>
+            }
+        </MudGrid>
+
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Wrap="Wrap.Wrap" Class="mb-2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Execute"
+                       Disabled="@(_loading || !Session.HasCredentials)"
+                       StartIcon="@(_loading ? null : Icons.Material.Filled.PlayArrow)">
+                @if (_loading)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    <span>Executing...</span>
+                }
+                else
+                {
+                    <span>Execute</span>
+                }
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Default" OnClick="ResetParameters"
+                       Disabled="@_loading" StartIcon="@Icons.Material.Filled.RestartAlt">
+                Reset
+            </MudButton>
+            <MudSpacer />
+            @if (_response != null)
+            {
+                <MudChip T="string" Size="Size.Small" Icon="@Icons.Material.Filled.Timer" Class="ma-0">
+                    @_response.ElapsedMs ms
+                </MudChip>
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                           OnClick="@(() => CopyToClipboard(_response.Body, "JSON"))"
+                           StartIcon="@Icons.Material.Filled.ContentCopy">
+                    Copy
+                </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                           OnClick="DownloadJson" StartIcon="@Icons.Material.Filled.FileDownload">
+                    Download
+                </MudButton>
+            }
+        </MudStack>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mb-2" />
+        }
+
+        @* --- Response --- *@
+        <MudText Typo="Typo.overline" Color="Color.Primary">Response</MudText>
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mt-1">@_error</MudAlert>
+        }
+        else if (_response == null)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mt-1">
+                Fill in the parameters and click Execute to see the raw JSON returned by Jira.
+            </MudAlert>
+        }
+        else
+        {
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="mt-1 mb-1">
+                <MudChip T="string" Size="Size.Small" Class="ma-0"
+                         Color="@(_response.IsSuccess ? Color.Success : Color.Error)"
+                         Icon="@(_response.IsSuccess ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Error)">
+                    HTTP @_response.StatusCode @_response.ReasonPhrase
+                </MudChip>
+                <MudText Typo="Typo.caption" Style="font-family: monospace; word-break: break-all;">
+                    @_response.Url
+                </MudText>
+            </MudStack>
+            <pre style="@ResponseStyle">@(string.IsNullOrEmpty(_response.Body) ? "(empty response body)" : _response.Body)</pre>
+        }
+    </ChildContent>
+</MudExpansionPanel>
+
+@code {
+    [Parameter, EditorRequired] public JiraApiDefinition Definition { get; set; } = default!;
+
+    /// <summary>Board id pushed down from the page; applied to this section whenever it changes.</summary>
+    [Parameter] public string SharedBoardId { get; set; } = string.Empty;
+
+    private const string UrlStyle =
+        "flex: 1 1 auto; white-space: pre-wrap; word-break: break-all; margin: 0; padding: 8px 12px; " +
+        "background-color: var(--mud-palette-background-grey); border-radius: 4px; " +
+        "font-family: monospace; font-size: 0.8rem;";
+
+    private const string ResponseStyle =
+        "white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow: auto; margin: 0; " +
+        "padding: 12px; background-color: var(--mud-palette-background-grey); border-radius: 4px; " +
+        "font-family: monospace; font-size: 0.8rem;";
+
+    private Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
+    private string? _lastSharedBoardId;
+    private bool _expanded;
+    private bool _loading;
+    private string _error = string.Empty;
+    private JiraApiResponse? _response;
+
+    private CancellationTokenSource _cts = new();
+
+    private string PreviewUrl
+    {
+        get
+        {
+            var relative = Definition.BuildRelativeUrl(_values);
+            var baseUrl = Session.JiraUrl.TrimEnd('/');
+            return string.IsNullOrWhiteSpace(baseUrl) ? $"/{relative}" : $"{baseUrl}/{relative}";
+        }
+    }
+
+    protected override void OnInitialized() => _values = Definition.CreateDefaultValues();
+
+    protected override void OnParametersSet()
+    {
+        // The page-level "Board ID" box feeds every section that takes one.
+        if (_lastSharedBoardId == SharedBoardId)
+            return;
+
+        _lastSharedBoardId = SharedBoardId;
+        if (_values.ContainsKey("boardId"))
+            _values["boardId"] = SharedBoardId ?? string.Empty;
+    }
+
+    private static string Label(JiraApiParameter parameter) =>
+        parameter.Required ? $"{parameter.Name} *" : parameter.Name;
+
+    private string GetValue(string name) => _values.TryGetValue(name, out var v) ? v : string.Empty;
+
+    private void SetValue(string name, string? value) => _values[name] = value ?? string.Empty;
+
+    private void ResetParameters()
+    {
+        _values = Definition.CreateDefaultValues();
+        if (_values.ContainsKey("boardId"))
+            _values["boardId"] = SharedBoardId ?? string.Empty;
+        _response = null;
+        _error = string.Empty;
+    }
+
+    private async Task Execute()
+    {
+        if (!Session.HasCredentials)
+        {
+            Snackbar.Add("Please connect to Jira using the credentials bar above", Severity.Warning);
+            return;
+        }
+
+        var missing = Definition.GetMissingRequired(_values);
+        if (missing.Count > 0)
+        {
+            Snackbar.Add($"{Definition.Name}: missing required parameter(s) {string.Join(", ", missing)}", Severity.Warning);
+            return;
+        }
+
+        _loading = true;
+        _error = string.Empty;
+        _response = null;
+
+        _cts.Cancel();
+        _cts.Dispose();
+        _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
+
+        try
+        {
+            _response = await JiraService.ExecuteGetAsync(Session.GetCredentials(), Definition.BuildRelativeUrl(_values), ct);
+            _expanded = true;
+
+            Snackbar.Add(
+                $"{Definition.Name}: HTTP {_response.StatusCode} in {_response.ElapsedMs} ms",
+                _response.IsSuccess ? Severity.Success : Severity.Error);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Superseded by a newer Execute on this section.
+        }
+        catch (Exception ex)
+        {
+            // A HttpClient timeout also surfaces as TaskCanceledException, hence the guard above.
+            Logger.LogError(ex, "Board API call failed: {Api}", Definition.Name);
+            _error = ex is OperationCanceledException
+                ? "Request timed out after 30 seconds."
+                : $"{ex.GetType().Name}: {ex.Message}";
+            Snackbar.Add($"{Definition.Name}: {_error}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task CopyToClipboard(string text, string what)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            Snackbar.Add($"Copied {what} to clipboard", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to copy {What} to clipboard", what);
+            Snackbar.Add($"Copy failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DownloadJson()
+    {
+        if (_response == null || string.IsNullOrEmpty(_response.Body)) return;
+        try
+        {
+            var fileName = $"{Definition.Id}.json";
+            await JS.InvokeVoidAsync("eval", $@"
+                (function() {{
+                    var blob = new Blob([{System.Text.Json.JsonSerializer.Serialize(_response.Body)}], {{ type: 'application/json' }});
+                    var url = URL.createObjectURL(blob);
+                    var a = document.createElement('a');
+                    a.href = url;
+                    a.download = {System.Text.Json.JsonSerializer.Serialize(fileName)};
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }})();
+            ");
+            Snackbar.Add($"Downloaded {fileName}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to download JSON for {Api}", Definition.Name);
+            Snackbar.Add($"Download failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}

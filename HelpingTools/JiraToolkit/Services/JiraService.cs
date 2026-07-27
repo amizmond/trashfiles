@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -63,6 +64,52 @@ public class JiraService
         }
 
         throw new HttpRequestException(message, null, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Runs an arbitrary GET against the Jira instance and returns the raw response — status included —
+    /// without throwing on error statuses, so callers can show whatever Jira replied with.
+    /// </summary>
+    public async Task<JiraApiResponse> ExecuteGetAsync(JiraCredentials credentials, string relativeUrl, CancellationToken ct = default)
+    {
+        using var client = CreateClient(credentials);
+        // AbsoluteUri (not ToString) so the echoed URL keeps its percent-encoding.
+        var absoluteUrl = new Uri(client.BaseAddress!, relativeUrl).AbsoluteUri;
+
+        var stopwatch = Stopwatch.StartNew();
+        using var response = await client.GetAsync(relativeUrl, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        stopwatch.Stop();
+
+        _logger.LogInformation("Jira API {StatusCode} in {ElapsedMs}ms: {Url}",
+            (int)response.StatusCode, stopwatch.ElapsedMilliseconds, absoluteUrl);
+
+        return new JiraApiResponse
+        {
+            Url = absoluteUrl,
+            StatusCode = (int)response.StatusCode,
+            ReasonPhrase = response.ReasonPhrase ?? string.Empty,
+            IsSuccess = response.IsSuccessStatusCode,
+            Body = FormatJsonIfPossible(body),
+            ElapsedMs = stopwatch.ElapsedMilliseconds
+        };
+    }
+
+    private static string FormatJsonIfPossible(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return string.Empty;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (JsonException)
+        {
+            // Jira occasionally answers with HTML (login redirects, proxy errors) — show it as-is.
+            return body;
+        }
     }
 
     public async Task<string> GetIssueRawJsonAsync(JiraCredentials credentials, string issueKey, CancellationToken ct = default)
