@@ -1,0 +1,56 @@
+@attribute [Route(RoutingPath.Base)]
+
+@inject IDashboardService DashboardService
+
+@using Estimation.Core.Dashboard.Services
+@using Serilog
+
+<PageTitle>Dashboard</PageTitle>
+
+<div class="container-fluid mt-4 mb-5">
+    <MudText Typo="Typo.h5" Class="mt-6 mb-3">Planning Statistics</MudText>
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+    }
+    else if (_loadError is not null)
+    {
+        <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
+    }
+    else
+    {
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <PiTimelineCard Data="@_piTimeline" />
+            </MudItem>
+        </MudGrid>
+    }
+
+    <div class="mt-6">
+        <PokerDashboardPanel />
+    </div>
+</div>
+
+@code {
+    private bool _loading = true;
+    private string? _loadError;
+    private List<PiTimelineItem> _piTimeline = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _piTimeline = await DashboardService.GetPiTimelineAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the PI timeline");
+            _loadError = "Could not load the PI timeline.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+}
