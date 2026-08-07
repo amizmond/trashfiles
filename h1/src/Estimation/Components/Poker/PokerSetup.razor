@@ -1,0 +1,535 @@
+@attribute [Route(RoutingPath.PokerNew)]
+
+@implements IDisposable
+
+@inject IPokerGameRegistry Registry
+@inject ISelfServiceResolver SelfResolver
+@inject ISprintService SprintService
+@inject IJiraSprintIssuesService SprintIssuesService
+@inject IJiraIssueService JiraIssueService
+@inject IJiraAuthService JiraAuth
+@inject IWindowsAuthService WindowsAuth
+@inject IAppAuthorizationService AppAuthService
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Poker.Models
+@using Estimation.Core.Poker.Services
+@using Serilog
+
+<PageTitle>New Poker Game</PageTitle>
+
+<style>
+    .ps-card {
+        width: 52px;
+        height: 74px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.05rem;
+        font-weight: 600;
+        cursor: pointer;
+        user-select: none;
+        border: 1px solid var(--mud-palette-lines-default);
+        background: var(--mud-palette-surface);
+        transition: transform .12s ease, border-color .12s ease;
+    }
+
+    .ps-card:hover {
+        transform: translateY(-4px);
+        border-color: var(--mud-palette-primary);
+    }
+
+    .ps-card.ps-selected {
+        border-color: var(--mud-palette-primary);
+        background: var(--mud-palette-primary);
+        color: var(--mud-palette-primary-text);
+    }
+</style>
+
+<div class="container-fluid mt-4 mb-5" style="max-width: 900px;">
+    <MudPaper Class="p-4 rounded-lg" Elevation="2">
+        <div class="d-flex align-center mb-4">
+            <MudIcon Icon="@Icons.Material.Filled.Style" Color="Color.Primary" Class="mr-2" />
+            <MudText Typo="Typo.h5">New Estimation Poker Game</MudText>
+            <MudSpacer />
+            <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack"
+                       OnClick="@(() => Navigation.NavigateTo(RoutingPath.Base))">
+                Back to dashboard
+            </MudButton>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+        }
+        else
+        {
+            <MudText Typo="Typo.subtitle1" Class="mb-2">Game cards</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2 mud-text-secondary">
+                Players estimate with these cards. Click a card to include or exclude it.
+            </MudText>
+            <div class="d-flex flex-wrap gap-2 mb-1">
+                @foreach (var card in PokerDeck.Default)
+                {
+                    <div class="ps-card @(_selectedCards.Contains(card) ? "ps-selected" : null)"
+                         @onclick="@(() => ToggleCardAsync(card))">
+                        @card
+                    </div>
+                }
+            </div>
+            @if (_selectedCards.Count < 2)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Error">Select at least two cards.</MudText>
+            }
+
+            <MudDivider Class="my-4" />
+
+            <MudSwitch T="bool" Value="_withJira" ValueChanged="OnWithJiraChanged" Color="Color.Primary"
+                       Disabled="@(!JiraAuth.IsConfigured)" Label="Estimation with Jira" />
+            @if (!JiraAuth.IsConfigured)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Jira integration is not configured, so only a simple poker game is available.
+                </MudText>
+            }
+
+            @if (_withJira)
+            {
+                <MudDivider Class="my-4" />
+                <MudText Typo="Typo.subtitle1" Class="mb-2">Room setup</MudText>
+
+                <MudTextField T="string" @bind-Value="_roomName" Label="Room name" Variant="Variant.Outlined"
+                              MaxLength="100" Class="mb-2" />
+
+                <MudCheckBox T="bool" @bind-Value="_allowVolunteers" Color="Color.Primary" Dense="true"
+                             Label="Allow volunteers" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-3">
+                    Players can raise a hand for the issue being estimated; the presenter assigns the issue
+                    to a volunteer with one click.
+                </MudText>
+
+                <MudRadioGroup T="PokerIssueSource" @bind-Value="_source">
+                    <MudRadio T="PokerIssueSource" Value="PokerIssueSource.Sprint" Color="Color.Primary"
+                              Disabled="@(_sprintOptions.Count == 0)">
+                        Sprint
+                    </MudRadio>
+                    <MudRadio T="PokerIssueSource" Value="PokerIssueSource.Jql" Color="Color.Primary">
+                        JQL query
+                    </MudRadio>
+                </MudRadioGroup>
+                @if (_sprintOptions.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                        The sprint selector is available only for team members with current or future sprints; use a JQL query instead.
+                    </MudText>
+                }
+
+                @if (_source == PokerIssueSource.Sprint)
+                {
+                    <MudSelect T="SprintOption" @bind-Value="_selectedSprint" Label="Sprint"
+                               Variant="Variant.Outlined" Class="mb-2" Clearable="true">
+                        @foreach (var option in _sprintOptions)
+                        {
+                            <MudSelectItem T="SprintOption" Value="@option">@option.Label</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Current and future sprints of your teams. Issues are loaded from the Jira sprint with the same name.
+                    </MudText>
+                }
+                else
+                {
+                    <MudTextField T="string" @bind-Value="_jql" Label="JQL query" Variant="Variant.Outlined"
+                                  Lines="3" Class="mb-2"
+                                  Placeholder="project = ABC AND sprint in openSprints() AND issuetype = Story" />
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        The first @MaxJqlIssues matching issues are loaded.
+                    </MudText>
+                }
+
+                @if (!_jiraConnected)
+                {
+                    <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mt-4 mb-2">
+                        Connect to Jira to load issues for the game.
+                    </MudAlert>
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectJiraAsync">
+                        Connect to Jira
+                    </MudButton>
+                }
+            }
+
+            @if (_error is not null)
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mt-4">@_error</MudAlert>
+            }
+            @if (_warning is not null)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mt-4">@_warning</MudAlert>
+            }
+
+            <div class="d-flex align-center mt-6">
+                <MudSpacer />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Large"
+                           StartIcon="@Icons.Material.Filled.PlayArrow"
+                           Disabled="@(!CanStart || _creating)" OnClick="StartGameAsync">
+                    @if (_creating)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                    }
+                    Start game
+                </MudButton>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    private const int MaxJqlIssues = 200;
+
+    private enum PokerIssueSource { Sprint, Jql }
+
+    private sealed record SprintOption(Sprint Sprint, string TeamName)
+    {
+        public string Label =>
+            $"{TeamName} — {Sprint.Name} ({Sprint.StartDate:dd.MM.yyyy} – {Sprint.EndDate:dd.MM.yyyy})";
+    }
+
+    private bool _loading = true;
+    private bool _creating;
+    private bool _disposed;
+
+    private string? _userName;
+    private string _displayName = string.Empty;
+    private SelfServiceContext? _self;
+
+    private const string DeckPrefsKey = "poker.setup.deck.v1";
+
+    private readonly HashSet<string> _selectedCards = new(PokerDeck.Default);
+    private bool _withJira;
+    private bool _jiraConnected;
+    private bool _allowVolunteers;
+
+    private string _roomName = string.Empty;
+    private PokerIssueSource _source = PokerIssueSource.Sprint;
+    private List<SprintOption> _sprintOptions = new();
+    private SprintOption? _selectedSprint;
+    private string _jql = string.Empty;
+
+    private string? _error;
+    private string? _warning;
+
+    private bool CanStart
+    {
+        get
+        {
+            if (_userName is null || _selectedCards.Count < 2)
+            {
+                return false;
+            }
+            if (!_withJira)
+            {
+                return true;
+            }
+            if (!_jiraConnected || string.IsNullOrWhiteSpace(_roomName))
+            {
+                return false;
+            }
+            return _source == PokerIssueSource.Sprint
+                ? _selectedSprint is not null
+                : !string.IsNullOrWhiteSpace(_jql);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userName = await WindowsAuth.GetUserName();
+        if (_userName is not null)
+        {
+            var appUser = await AppAuthService.GetCurrentUserAsync(_userName);
+            _displayName = string.IsNullOrWhiteSpace(appUser?.DisplayName) ? _userName : appUser!.DisplayName!;
+            _self = await SelfResolver.ResolveAsync();
+            await LoadSprintOptionsAsync();
+        }
+
+        _withJira = JiraAuth.IsConfigured;
+        if (JiraAuth.IsConfigured && _userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+
+        _roomName = _self?.Teams.FirstOrDefault()?.TeamName ?? _displayName;
+        if (_sprintOptions.Count == 0)
+        {
+            _source = PokerIssueSource.Jql;
+        }
+
+        _loading = false;
+    }
+
+    private async Task LoadSprintOptionsAsync()
+    {
+        if (_self is null)
+        {
+            return;
+        }
+
+        var today = DateTime.Today;
+        var options = new List<SprintOption>();
+        foreach (var team in _self.Teams)
+        {
+            var sprints = await SprintService.GetForTeamAsync(team.TeamId);
+            options.AddRange(sprints
+                .Where(s => s.EndDate.Date >= today)
+                .Select(s => new SprintOption(s, team.TeamName)));
+        }
+
+        _sprintOptions = options
+            .OrderBy(o => o.Sprint.StartDate)
+            .ThenBy(o => o.TeamName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadDeckPreferenceAsync();
+        }
+    }
+
+    private async Task ToggleCardAsync(string card)
+    {
+        if (!_selectedCards.Remove(card))
+        {
+            _selectedCards.Add(card);
+        }
+        await SaveDeckPreferenceAsync();
+    }
+
+    private async Task LoadDeckPreferenceAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", DeckPrefsKey);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            var saved = JsonSerializer.Deserialize<List<string>>(json)?
+                .Where(PokerDeck.Default.Contains)
+                .ToList();
+            if (saved is null || saved.Count < 2)
+            {
+                return;
+            }
+
+            _selectedCards.Clear();
+            foreach (var card in saved)
+            {
+                _selectedCards.Add(card);
+            }
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to read the saved poker deck");
+        }
+    }
+
+    private async Task SaveDeckPreferenceAsync()
+    {
+        try
+        {
+            var deck = PokerDeck.Default.Where(_selectedCards.Contains).ToList();
+            await JS.InvokeVoidAsync("localStorage.setItem", DeckPrefsKey, JsonSerializer.Serialize(deck));
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to save the selected poker deck");
+        }
+    }
+
+    private void OnWithJiraChanged(bool value)
+    {
+        _withJira = value;
+        _error = null;
+        _warning = null;
+    }
+
+    private async Task ConnectJiraAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>("Jira Authentication", options);
+        var result = await dialogRef.Result;
+
+        if (result?.Data is bool connected)
+        {
+            _jiraConnected = connected;
+        }
+        else if (_userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+    }
+
+    private async Task StartGameAsync()
+    {
+        if (!CanStart || _userName is null)
+        {
+            return;
+        }
+
+        _error = null;
+        _warning = null;
+        _creating = true;
+        try
+        {
+            var deck = PokerDeck.Default.Where(_selectedCards.Contains).ToList();
+            PokerRoom room;
+
+            if (!_withJira)
+            {
+                room = Registry.CreateRoom(new PokerRoomCreateRequest
+                {
+                    Name = _self?.Teams.FirstOrDefault()?.TeamName ?? _displayName,
+                    Mode = PokerRoomMode.Simple,
+                    Deck = deck,
+                    TeamId = _self?.Teams.FirstOrDefault()?.TeamId,
+                    CreatorUserName = _userName,
+                    CreatorDisplayName = _displayName,
+                });
+            }
+            else
+            {
+                var loaded = await LoadIssuesAsync();
+                if (loaded is null)
+                {
+                    return;
+                }
+
+                room = Registry.CreateRoom(new PokerRoomCreateRequest
+                {
+                    Name = _roomName.Trim(),
+                    Mode = PokerRoomMode.Jira,
+                    Deck = deck,
+                    TeamId = _source == PokerIssueSource.Sprint
+                        ? _selectedSprint!.Sprint.TeamId
+                        : _self?.Teams.FirstOrDefault()?.TeamId,
+                    Issues = loaded,
+                    AllowVolunteers = _allowVolunteers,
+                    SourceDescription = _source == PokerIssueSource.Sprint
+                        ? $"Sprint: {_selectedSprint!.Sprint.Name}"
+                        : "JQL query",
+                    CreatorUserName = _userName,
+                    CreatorDisplayName = _displayName,
+                });
+            }
+
+            Navigation.NavigateTo(RoomUrl(room.Id));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to start poker game");
+            _error = $"Failed to start the game: {ex.Message}";
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                _creating = false;
+            }
+        }
+    }
+
+    private async Task<List<JiraIssueResponse>?> LoadIssuesAsync()
+    {
+        if (_source == PokerIssueSource.Sprint)
+        {
+            var result = await SprintIssuesService.GetSprintIssuesAsync(_userName!, _selectedSprint!.Sprint.Name);
+            switch (result.Status)
+            {
+                case SprintLookupStatus.NotFound:
+                    _error = $"Sprint '{_selectedSprint.Sprint.Name}' was not found on the Jira server.";
+                    return null;
+                case SprintLookupStatus.AmbiguousName:
+                    _error = $"The name '{_selectedSprint.Sprint.Name}' matches several sprints on the Jira server. {result.ErrorMessage}";
+                    return null;
+                case SprintLookupStatus.Error:
+                    _error = $"Failed to load sprint issues: {result.ErrorMessage}";
+                    return null;
+            }
+
+            if (result.Issues.Count == 0)
+            {
+                _warning = "The sprint exists on Jira, but it contains no issues — nothing to estimate.";
+                return null;
+            }
+            return result.Issues;
+        }
+
+        try
+        {
+            var page = await JiraIssueService.SearchIssuesPageAsync(_userName!, _jql.Trim(), MaxJqlIssues);
+            if (page.Issues.Count == 0)
+            {
+                _warning = "The JQL query returned no issues — nothing to estimate.";
+                return null;
+            }
+            if (page.IsTruncated)
+            {
+                _warning = $"The JQL query matches {page.Total} issues; only the first {MaxJqlIssues} were loaded.";
+            }
+            return page.Issues;
+        }
+        catch (JiraSearchException ex)
+        {
+            _error = $"Jira rejected the JQL query: {ExtractJiraErrors(ex.ResponseBody)}";
+            return null;
+        }
+    }
+
+    private static string ExtractJiraErrors(string body)
+    {
+        try
+        {
+            var json = JsonNode.Parse(body);
+            if (json?["errorMessages"] is JsonArray arr)
+            {
+                var messages = arr.Select(m => m?.GetValue<string>())
+                    .Where(m => !string.IsNullOrWhiteSpace(m))
+                    .Cast<string>()
+                    .ToList();
+                if (messages.Count > 0)
+                {
+                    return string.Join(" ", messages);
+                }
+            }
+        }
+        catch
+        {
+        }
+        return body;
+    }
+
+    private static string RoomUrl(Guid roomId)
+    {
+        return RoutingPath.PokerRoom.Replace("{RoomId:guid}", roomId.ToString());
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+    }
+}

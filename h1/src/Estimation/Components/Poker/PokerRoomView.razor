@@ -1,0 +1,1533 @@
+@attribute [Route(RoutingPath.PokerRoom)]
+
+@implements IDisposable
+
+@inject IPokerGameRegistry Registry
+@inject IWindowsAuthService WindowsAuth
+@inject IAppAuthorizationService AppAuthService
+@inject IJiraAuthService JiraAuth
+@inject IJiraIssueService JiraIssueService
+@inject IPokerAssigneeService AssigneeService
+@inject IPokerBusinessOutcomeService BusinessOutcomeService
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject IOptions<JiraSettings> JiraOptions
+@inject IJSRuntime JS
+
+@using System.Globalization
+@using System.Text.Json
+@using Microsoft.Extensions.Options
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.Poker.Models
+@using Estimation.Core.Poker.Services
+@using Serilog
+
+<PageTitle>Estimation Poker</PageTitle>
+
+<style>
+    .pk-card {
+        width: 52px;
+        height: 74px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.05rem;
+        font-weight: 600;
+        cursor: pointer;
+        user-select: none;
+        border: 1px solid var(--mud-palette-lines-default);
+        background: var(--mud-palette-surface);
+        transition: transform .12s ease, border-color .12s ease;
+    }
+
+    .pk-card:hover {
+        transform: translateY(-4px);
+        border-color: var(--mud-palette-primary);
+    }
+
+    .pk-card.pk-selected {
+        transform: translateY(-6px);
+        border-color: var(--mud-palette-primary);
+        background: var(--mud-palette-primary);
+        color: var(--mud-palette-primary-text);
+    }
+
+    .pk-card.pk-disabled {
+        pointer-events: none;
+        opacity: .55;
+    }
+
+    .pk-actionbar {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 8px 12px;
+    }
+
+    .pk-badge {
+        font-size: .62rem;
+        font-weight: 700;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+        padding: 4px 9px;
+        border-radius: 6px;
+        background: var(--mud-palette-warning);
+        color: rgba(0, 0, 0, .82);
+    }
+
+    .pk-muted {
+        font-size: .78rem;
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .pk-layout {
+        display: grid;
+        grid-template-columns: 300px minmax(0, 1fr);
+        gap: 16px;
+        align-items: start;
+    }
+
+    @@media (max-width: 960px) {
+        .pk-layout {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
+
+    .pk-players {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pk-prow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 9px;
+        border-radius: 10px;
+        border: 1px solid var(--mud-palette-lines-default);
+        background: var(--mud-palette-surface);
+    }
+
+    .pk-prow.pk-me {
+        border-color: var(--mud-palette-primary);
+    }
+
+    .pk-prow.pk-offline {
+        opacity: .45;
+    }
+
+    .pk-avatar {
+        width: 30px;
+        height: 30px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: .68rem;
+        font-weight: 700;
+    }
+
+    .pk-pname {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: .8rem;
+        color: var(--mud-palette-primary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .pk-vote {
+        width: 34px;
+        height: 40px;
+        flex: 0 0 auto;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: .95rem;
+        font-weight: 700;
+    }
+
+    .pk-vote.pk-empty {
+        border: 1px dashed var(--mud-palette-lines-default);
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .pk-vote.pk-hidden {
+        border: 1px solid var(--mud-palette-primary);
+        background: repeating-linear-gradient(45deg,
+            var(--mud-palette-primary), var(--mud-palette-primary) 6px,
+            var(--mud-palette-primary-darken) 6px, var(--mud-palette-primary-darken) 12px);
+        color: var(--mud-palette-primary-text);
+    }
+
+    .pk-vote.pk-open {
+        border: 1px solid var(--mud-palette-lines-default);
+        background: var(--mud-palette-background-gray);
+        color: var(--mud-palette-text-primary);
+    }
+
+    .pk-issue-key {
+        font-size: 1.35rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+
+    .pk-issue-summary {
+        font-size: 1.15rem;
+        color: var(--mud-palette-text-secondary);
+        line-height: 1.3;
+    }
+
+    .pk-issue-sub {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 4px;
+        font-size: .8rem;
+    }
+
+    .pk-sub-key {
+        font-weight: 700;
+    }
+
+    .pk-sub-name {
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .pk-slot {
+        height: 200px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+    }
+
+    .pk-desc {
+        padding: 14px 16px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-size: .85rem;
+        line-height: 1.55;
+    }
+
+    .pk-desc-empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: var(--mud-palette-text-disabled);
+    }
+
+    .pk-results {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 20px;
+        padding: 12px 20px;
+        overflow: auto;
+    }
+
+    .pk-stats {
+        display: flex;
+        align-items: flex-end;
+        flex-wrap: wrap;
+        gap: 26px;
+    }
+
+    .pk-stat-label {
+        font-size: .62rem;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+        color: var(--mud-palette-text-secondary);
+        margin-bottom: 2px;
+    }
+
+    .pk-stat-value {
+        font-size: 1.45rem;
+        font-weight: 700;
+        line-height: 1.2;
+        color: var(--mud-palette-primary);
+    }
+
+    .pk-stat-apply {
+        cursor: pointer;
+        border: none;
+        background: none;
+        padding: 0;
+        font: inherit;
+        color: inherit;
+        text-decoration: underline dotted;
+        text-underline-offset: 3px;
+    }
+
+    .pk-hist {
+        margin-left: auto;
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        height: 108px;
+    }
+
+    .pk-hist-col {
+        width: 26px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-end;
+    }
+
+    .pk-hist-bar {
+        width: 100%;
+        min-height: 2px;
+        border-radius: 3px 3px 0 0;
+        background: var(--mud-palette-primary);
+    }
+
+    .pk-hist-bar.pk-hist-zero {
+        background: var(--mud-palette-lines-default);
+    }
+
+    .pk-hist-label {
+        margin-top: 3px;
+        font-size: .6rem;
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .pk-hand {
+        position: sticky;
+        bottom: 0;
+        z-index: 3;
+        padding: 10px 16px;
+        background: var(--mud-palette-surface);
+    }
+
+    .pk-hand-head {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 8px;
+    }
+
+    .pk-hand-label {
+        font-size: .62rem;
+        letter-spacing: .09em;
+        text-transform: uppercase;
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .pk-jira-row .mud-input-control {
+        margin-top: 0;
+    }
+</style>
+
+<div class="container-fluid mt-4 mb-5">
+    @if (!_initialized)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+    }
+    else if (_room is null)
+    {
+        <MudPaper Class="p-4 rounded-lg" Elevation="2">
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                This poker room no longer exists — it was closed after the last player left.
+            </MudAlert>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.ArrowBack"
+                       OnClick="@(() => Navigation.NavigateTo(RoutingPath.Base))">
+                Back to dashboard
+            </MudButton>
+        </MudPaper>
+    }
+    else if (Me is null)
+    {
+        <MudPaper Class="p-4 rounded-lg" Elevation="2">
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-3">
+                You left this room (joining another game removes you from this one).
+            </MudAlert>
+            <div class="d-flex gap-2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="RejoinAsync">Rejoin</MudButton>
+                <MudButton Variant="Variant.Outlined" OnClick="@(() => Navigation.NavigateTo(RoutingPath.Base))">
+                    Back to dashboard
+                </MudButton>
+            </div>
+        </MudPaper>
+    }
+    else
+    {
+        <MudPaper Class="p-4 rounded-lg mb-4" Elevation="2">
+            <div class="d-flex align-center flex-wrap gap-2">
+                <MudIcon Icon="@Icons.Material.Filled.Style" Color="Color.Primary" />
+                <MudText Typo="Typo.h5">@_room.Name</MudText>
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+                    @(_room.Mode == PokerRoomMode.Jira ? "Jira estimation" : "Simple poker")
+                </MudChip>
+                @if (!string.IsNullOrEmpty(_room.SourceDescription))
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@_room.SourceDescription</MudChip>
+                }
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                         Icon="@Icons.Material.Filled.Star" Color="Color.Warning">
+                    Presenter: @PresenterDisplayName
+                </MudChip>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Logout" OnClick="LeaveRoom">
+                    Leave room
+                </MudButton>
+            </div>
+        </MudPaper>
+
+        @if (_room.Mode == PokerRoomMode.Jira && _room.Phase == PokerPhase.IssueTable)
+        {
+            <MudPaper Class="p-4 rounded-lg" Elevation="2">
+                <div class="d-flex align-center mb-3 flex-wrap gap-2">
+                    <MudText Typo="Typo.h6">Issues to estimate</MudText>
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@IssueCountLabel</MudChip>
+                    <MudSpacer />
+                    <div style="position: relative;">
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.ViewColumn"
+                                   OnClick="@(() => _columnsPopoverOpen = !_columnsPopoverOpen)">
+                            Columns
+                        </MudButton>
+                        <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                                    Class="pa-4" Style="min-width: 260px; max-height: 75vh; overflow-y: auto;">
+                            <div class="d-flex align-center justify-space-between mb-2">
+                                <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle columns</MudText>
+                                <div>
+                                    <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Default"
+                                               StartIcon="@Icons.Material.Filled.RestartAlt" OnClick="ResetColumnsAsync">
+                                        Reset
+                                    </MudButton>
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                                   OnClick="@(() => _columnsPopoverOpen = false)" />
+                                </div>
+                            </div>
+                            <div class="d-flex flex-column gap-1">
+                                @foreach (var column in IssueColumns)
+                                {
+                                    <MudSwitch T="bool" Value="@IsColumnVisible(column.Key)"
+                                               ValueChanged="@(v => SetColumnVisibleAsync(column.Key, v))"
+                                               Label="@column.Label" Color="Color.Primary" Class="ma-0" />
+                                }
+                            </div>
+                        </MudPopover>
+                    </div>
+
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.FilterList"
+                               OnClick="@(() => _filterDrawerOpen = !_filterDrawerOpen)">
+                        Filter
+                    </MudButton>
+                </div>
+
+                @if (!IsPresenter)
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-3" Dense="true">
+                        Waiting for the presenter to pick an issue to estimate.
+                    </MudAlert>
+                }
+
+                <MudDrawer @bind-Open="_filterDrawerOpen" Anchor="Anchor.End" Elevation="2"
+                           Variant="DrawerVariant.Temporary" Width="400px"
+                           Style="background: var(--mud-palette-surface)">
+                    <MudDrawerHeader>
+                        <div class="d-flex align-center justify-space-between" style="width: 100%;">
+                            <MudText Typo="Typo.h6">Filters</MudText>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                           OnClick="@(() => _filterDrawerOpen = false)" />
+                        </div>
+                    </MudDrawerHeader>
+                    <div class="d-flex flex-column gap-3 pa-4">
+                        <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                                      DebounceInterval="300" Margin="Margin.Dense" Variant="Variant.Outlined"
+                                      HelperText="Jira id or summary" />
+
+                        <MudSelect T="string" Label="Type" MultiSelection @bind-SelectedValues="FilterTypes"
+                                   Margin="Margin.Dense" Variant="Variant.Outlined" Clearable
+                                   AnchorOrigin="Origin.BottomCenter">
+                            @foreach (var value in AvailableIssueTypes)
+                            {
+                                <MudSelectItem T="string" Value="@value">@value</MudSelectItem>
+                            }
+                        </MudSelect>
+
+                        <MudSelect T="string" Label="Status" MultiSelection @bind-SelectedValues="FilterStatuses"
+                                   Margin="Margin.Dense" Variant="Variant.Outlined" Clearable
+                                   AnchorOrigin="Origin.BottomCenter">
+                            @foreach (var value in AvailableStatuses)
+                            {
+                                <MudSelectItem T="string" Value="@value">@value</MudSelectItem>
+                            }
+                        </MudSelect>
+
+                        <MudSelect T="string" Label="Priority" MultiSelection @bind-SelectedValues="FilterPriorities"
+                                   Margin="Margin.Dense" Variant="Variant.Outlined" Clearable
+                                   AnchorOrigin="Origin.BottomCenter">
+                            @foreach (var value in AvailablePriorities)
+                            {
+                                <MudSelectItem T="string" Value="@value">@value</MudSelectItem>
+                            }
+                        </MudSelect>
+
+                        <MudSelect T="string" Label="Assignee" MultiSelection @bind-SelectedValues="FilterAssignees"
+                                   Margin="Margin.Dense" Variant="Variant.Outlined" Clearable
+                                   AnchorOrigin="Origin.BottomCenter">
+                            @foreach (var value in AvailableAssignees)
+                            {
+                                <MudSelectItem T="string" Value="@value">@value</MudSelectItem>
+                            }
+                        </MudSelect>
+
+                        <MudCheckBox T="bool" @bind-Value="FilterWithoutStoryPoints" Dense="true" Color="Color.Primary"
+                                     Label="Not estimated yet" />
+
+                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                                   StartIcon="@Icons.Material.Filled.ClearAll"
+                                   FullWidth OnClick="ClearIssueFilters" Class="mt-2">
+                            Clear filters
+                        </MudButton>
+                    </div>
+                </MudDrawer>
+
+                <MudDataGrid T="JiraIssueResponse" Items="_filteredIssues" Hover Dense Striped Elevation="0"
+                             Filterable="false" ShowColumnOptions="false" ShowFilterIcons="false">
+                    <Columns>
+                        <TemplateColumn Title="JiraId" SortBy="x => x.Key" Hidden="@(!IsColumnVisible(ColKey.JiraId))">
+                            <CellTemplate>
+                                <MudLink Href="@BrowseUrl(context.Item.Key)" Target="_blank">@context.Item.Key</MudLink>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Type" SortBy="x => x.IssueType" Hidden="@(!IsColumnVisible(ColKey.Type))">
+                            <CellTemplate>
+                                <MudChip T="string" Size="Size.Small"
+                                         Color="@JiraIssueTypeHelper.IssueTypeColor(context.Item.IssueType)">
+                                    @(context.Item.IssueType ?? "—")
+                                </MudChip>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Priority" SortBy="x => x.PriorityName" Hidden="@(!IsColumnVisible(ColKey.Priority))">
+                            <CellTemplate>
+                                @if (!string.IsNullOrEmpty(context.Item.PriorityIconUrl))
+                                {
+                                    <img src="@context.Item.PriorityIconUrl" alt="" style="width:16px;height:16px;vertical-align:text-bottom;" class="mr-1" />
+                                }
+                                @(context.Item.PriorityName ?? "—")
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.Summary" Title="Summary" Hidden="@(!IsColumnVisible(ColKey.Summary))" />
+                        <TemplateColumn Title="Feature Link" SortBy="x => x.FeatureLink" Hidden="@(!IsColumnVisible(ColKey.FeatureLink))">
+                            <CellTemplate>
+                                @if (!string.IsNullOrEmpty(context.Item.FeatureLink))
+                                {
+                                    <MudLink Href="@BrowseUrl(context.Item.FeatureLink)" Target="_blank">@context.Item.FeatureLink</MudLink>
+                                }
+                                else
+                                {
+                                    <span>—</span>
+                                }
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <TemplateColumn Title="Status" SortBy="x => x.Status" Hidden="@(!IsColumnVisible(ColKey.Status))">
+                            <CellTemplate>
+                                <MudChip T="string" Size="Size.Small" Color="@StatusColor(context.Item.Status)" Variant="Variant.Outlined">
+                                    @(context.Item.Status ?? "—")
+                                </MudChip>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        <PropertyColumn Property="x => x.StoryPoints" Title="Story Points" Hidden="@(!IsColumnVisible(ColKey.StoryPoints))" />
+                        <TemplateColumn Title="Assignee" SortBy="x => x.AssigneeDisplayName" Hidden="@(!IsColumnVisible(ColKey.Assignee))">
+                            <CellTemplate>
+                                <div class="d-flex align-center gap-2">
+                                    @if (!string.IsNullOrEmpty(context.Item.AssigneeAvatarUrl))
+                                    {
+                                        <MudAvatar Size="Size.Small">
+                                            <MudImage Src="@context.Item.AssigneeAvatarUrl" Alt="@context.Item.AssigneeDisplayName" />
+                                        </MudAvatar>
+                                    }
+                                    <span>@(context.Item.AssigneeDisplayName ?? "—")</span>
+                                </div>
+                            </CellTemplate>
+                        </TemplateColumn>
+                        @if (IsPresenter)
+                        {
+                            <TemplateColumn Title="Actions" Sortable="false" Filterable="false">
+                                <CellTemplate>
+                                    <MudTooltip Text="@($"Estimate {context.Item.Key}")">
+                                        <MudFab Color="Color.Primary" Size="Size.Small"
+                                                StartIcon="@Icons.Material.Filled.Calculate"
+                                                aria-label="@($"Estimate {context.Item.Key}")"
+                                                OnClick="@(() => StartEstimation(context.Item.Key))" />
+                                    </MudTooltip>
+                                </CellTemplate>
+                            </TemplateColumn>
+                        }
+                    </Columns>
+                    <PagerContent>
+                        <MudDataGridPager T="JiraIssueResponse" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+                    </PagerContent>
+                </MudDataGrid>
+            </MudPaper>
+        }
+        else
+        {
+            var issue = _room.CurrentIssue;
+            var stats = PokerVoteStats.Compute(_room.Players.Select(p => p.Vote));
+            var maxVotes = stats.Distribution.Count == 0 ? 0 : stats.Distribution.Values.Max();
+            var showJiraEditor = IsPresenter && _room.Mode == PokerRoomMode.Jira && issue is not null;
+
+            <MudPaper Class="pk-actionbar rounded-lg mb-3" Elevation="2">
+                @if (IsPresenter && _room.Mode == PokerRoomMode.Jira)
+                {
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="BackToTable">
+                        Back to issues
+                    </MudButton>
+                }
+                @if (_room.CardsRevealed)
+                {
+                    <span class="pk-badge">Revealed</span>
+                }
+                <span class="pk-muted">@VotedCount/@_room.Players.Count voted</span>
+                <MudSpacer />
+                @if (IsPresenter)
+                {
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.RestartAlt" OnClick="ResetEstimation">
+                        New round
+                    </MudButton>
+                    @if (!_room.CardsRevealed)
+                    {
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.Visibility" OnClick="RevealCards">
+                            Open cards
+                        </MudButton>
+                    }
+                }
+            </MudPaper>
+
+            <div class="pk-layout mb-3">
+                <div class="pk-players">
+                    @foreach (var player in _room.Players)
+                    {
+                        <div class="pk-prow @(player.IsConnected ? null : "pk-offline") @(IsMe(player) ? "pk-me" : null)">
+                            <div class="pk-avatar" style="@AvatarStyle(player.DisplayName)">@Initials(player.DisplayName)</div>
+                            <span class="pk-pname" title="@player.DisplayName">@player.DisplayName</span>
+                            @if (player.HasRaisedHand && IsPresenter)
+                            {
+                                <MudTooltip Text="@($"Assign {issue?.Key} to {player.DisplayName}")">
+                                    <MudIconButton Icon="@Icons.Material.Filled.PanTool" Size="Size.Small"
+                                                   Color="Color.Warning" Class="pa-0"
+                                                   Disabled="@(_savingAssignee || !_jiraConnected)"
+                                                   OnClick="@(() => AssignVolunteerAsync(player))" />
+                                </MudTooltip>
+                            }
+                            else if (player.HasRaisedHand)
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.PanTool" Size="Size.Small" Color="Color.Warning"
+                                         Style="font-size: .9rem;" Title="@($"{player.DisplayName} volunteered")" />
+                            }
+                            else if (_room.IsPresenter(player.UserName))
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.Star" Size="Size.Small" Color="Color.Warning"
+                                         Style="font-size: .9rem;" Title="Presenter" />
+                            }
+                            @if (!player.IsConnected)
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.CloudOff" Size="Size.Small"
+                                         Style="font-size: .9rem;" Title="Disconnected" />
+                            }
+                            @if (_room.CardsRevealed)
+                            {
+                                <div class="pk-vote @(player.Vote is null ? "pk-empty" : "pk-open")">
+                                    @(player.Vote ?? "—")
+                                </div>
+                            }
+                            else if (player.Vote is not null)
+                            {
+                                <div class="pk-vote pk-hidden" title="Voted">
+                                    <MudIcon Icon="@Icons.Material.Filled.Check" Size="Size.Small" />
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="pk-vote pk-empty" title="Has not voted yet">…</div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="d-flex flex-column gap-3" style="min-width: 0;">
+                    <MudPaper Class="p-4 rounded-lg" Elevation="2">
+                        @if (_room.Mode == PokerRoomMode.Jira && issue is not null)
+                        {
+                            <div class="d-flex align-center flex-wrap gap-2">
+                                <MudLink Href="@BrowseUrl(issue.Key)" Target="_blank" Class="pk-issue-key">@issue.Key</MudLink>
+                                <span class="pk-issue-summary">—</span>
+                                <span class="pk-issue-summary">@issue.Summary</span>
+                            </div>
+
+                            @if (_businessOutcome is not null)
+                            {
+                                <div class="pk-issue-sub">
+                                    <MudLink Href="@BrowseUrl(_businessOutcome.Key)" Target="_blank" Class="pk-sub-key">
+                                        @_businessOutcome.Key
+                                    </MudLink>
+                                    <span class="pk-sub-name">— @_businessOutcome.Name</span>
+                                </div>
+                            }
+
+                            <div class="d-flex align-center flex-wrap gap-2 mt-2 mb-2">
+                                <MudChip T="string" Size="Size.Small"
+                                         Color="@JiraIssueTypeHelper.IssueTypeColor(issue.IssueType)">
+                                    @(issue.IssueType ?? "—")
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Color="@StatusColor(issue.Status)" Variant="Variant.Outlined">
+                                    @(issue.Status ?? "—")
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                    @if (!string.IsNullOrEmpty(issue.PriorityIconUrl))
+                                    {
+                                        <img src="@issue.PriorityIconUrl" alt="" style="width:14px;height:14px;vertical-align:text-bottom;" class="mr-1" />
+                                    }
+                                    @(issue.PriorityName ?? "—")
+                                </MudChip>
+                                @if (!showJiraEditor)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                        SP: @(issue.StoryPoints?.ToString() ?? "—")
+                                    </MudChip>
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                             Icon="@Icons.Material.Filled.Person">
+                                        @(issue.AssigneeDisplayName ?? "Unassigned")
+                                    </MudChip>
+                                }
+                            </div>
+
+                            @if (showJiraEditor)
+                            {
+                                @if (!_jiraConnected)
+                                {
+                                    <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true" Class="mb-3">
+                                        <div class="d-flex align-center flex-wrap gap-3">
+                                            <span>Connect to Jira to save story points or the assignee.</span>
+                                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                                       StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectJiraAsync">
+                                                Connect to Jira
+                                            </MudButton>
+                                        </div>
+                                    </MudAlert>
+                                }
+                                else
+                                {
+                                    <div class="pk-jira-row d-flex align-center flex-wrap gap-2 mb-2">
+                                        <div style="width: 120px;">
+                                            <MudNumericField T="int?" Value="_storyPointsDraft" ValueChanged="OnStoryPointsCommitted"
+                                                             Label="Story points" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                             Min="0" Max="1000" Disabled="_savingStoryPoints" />
+                                        </div>
+                                        <div style="width: 240px;">
+                                            <MudAutocomplete T="PokerAssigneeOption" Value="_assigneeDraft" ValueChanged="OnAssigneeCommitted"
+                                                             SearchFunc="SearchAssigneesAsync"
+                                                             ToStringFunc="@(o => o?.DisplayName ?? string.Empty)"
+                                                             Label="Assignee" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                             Clearable="true" ResetValueOnEmptyText="true"
+                                                             Disabled="_savingAssignee">
+                                                <ItemTemplate Context="option">
+                                                    <div class="d-flex align-center gap-2">
+                                                        <span>@option.DisplayName</span>
+                                                        @if (option.IsTeamMember)
+                                                        {
+                                                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">team</MudChip>
+                                                        }
+                                                    </div>
+                                                </ItemTemplate>
+                                            </MudAutocomplete>
+                                        </div>
+                                        @if (_savingStoryPoints || _savingAssignee)
+                                        {
+                                            <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                        }
+                                        <span class="pk-muted">Changes are saved to Jira immediately.</span>
+                                    </div>
+                                }
+                            }
+
+                        }
+                        else if (_room.Mode == PokerRoomMode.Simple)
+                        {
+                            @if (IsPresenter)
+                            {
+                                <MudTextField T="string" Value="_topicDraft" ValueChanged="OnTopicCommitted"
+                                              Label="What are we estimating?" Variant="Variant.Outlined"
+                                              Placeholder="Type a short description of the item to estimate" />
+                            }
+                            else if (!string.IsNullOrWhiteSpace(_room.Topic))
+                            {
+                                <div class="pk-issue-key">@_room.Topic</div>
+                            }
+                            else
+                            {
+                                <div class="pk-desc-empty">The presenter has not set a topic yet.</div>
+                            }
+                        }
+                        else
+                        {
+                            <div class="pk-desc-empty">The presenter has not picked an issue yet.</div>
+                        }
+
+                        @if (_room.CardsRevealed)
+                        {
+                            <div class="pk-slot pk-results mt-2">
+                                <div class="pk-stats">
+                                    <div>
+                                        <div class="pk-stat-label">Average</div>
+                                        <div class="pk-stat-value">@(stats.Average?.ToString("0.#") ?? "—")</div>
+                                    </div>
+                                    <div>
+                                        <div class="pk-stat-label">Median</div>
+                                        <div class="pk-stat-value">@(stats.Median?.ToString("0.#") ?? "—")</div>
+                                    </div>
+                                    <div>
+                                        <div class="pk-stat-label">Spread</div>
+                                        <div class="pk-stat-value">@Spread(stats)</div>
+                                    </div>
+                                    <div title="Share of the table that played the suggested card">
+                                        <div class="pk-stat-label">Consensus</div>
+                                        <div class="pk-stat-value">@(stats.Suggested is null ? "—" : $"{stats.ConsensusPercent}%")</div>
+                                    </div>
+                                    <div>
+                                        <div class="pk-stat-label">Suggested</div>
+                                        @if (CanApplySuggested(stats))
+                                        {
+                                            <button type="button" class="pk-stat-value pk-stat-apply" disabled="@_savingStoryPoints"
+                                                    title="@($"Save {stats.Suggested} as the story points of {issue!.Key}")"
+                                                    @onclick="@(() => ApplySuggestedAsync(stats))">
+                                                @stats.Suggested
+                                            </button>
+                                        }
+                                        else
+                                        {
+                                            <div class="pk-stat-value">@(stats.Suggested ?? "—")</div>
+                                        }
+                                    </div>
+                                </div>
+                                <div class="pk-hist">
+                                    @foreach (var card in _room.Deck)
+                                    {
+                                        var count = stats.Distribution.GetValueOrDefault(card);
+                                        <div class="pk-hist-col" title="@($"{card}: {count} vote(s)")">
+                                            <div class="pk-hist-bar @(count == 0 ? "pk-hist-zero" : null)"
+                                                 style="height: @(BarHeight(count, maxVotes))px;"></div>
+                                            <div class="pk-hist-label">@card</div>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        else if (_room.Mode == PokerRoomMode.Jira && issue is not null)
+                        {
+                            <div class="pk-slot pk-desc mt-2">
+                                @if (!string.IsNullOrWhiteSpace(issue.Description))
+                                {
+                                    @issue.Description
+                                }
+                                else
+                                {
+                                    <div class="pk-desc-empty">This issue has no description.</div>
+                                }
+                            </div>
+                        }
+                    </MudPaper>
+                </div>
+            </div>
+
+            <MudPaper Class="pk-hand rounded-lg" Elevation="4">
+                <div class="pk-hand-head">
+                    <span class="pk-hand-label">Your hand</span>
+                    <span class="pk-muted">@HandHint</span>
+                    @if (CanVolunteer)
+                    {
+                        <MudSpacer />
+                        <MudButton Size="Size.Small" Color="Color.Warning"
+                                   Variant="@(Me!.HasRaisedHand ? Variant.Filled : Variant.Outlined)"
+                                   StartIcon="@Icons.Material.Filled.PanTool" OnClick="ToggleHand">
+                            @(Me!.HasRaisedHand ? "Lower hand" : "I can take it")
+                        </MudButton>
+                    }
+                </div>
+                <div class="d-flex flex-wrap gap-2">
+                    @foreach (var card in _room.Deck)
+                    {
+                        <div class="pk-card @(Me?.Vote == card ? "pk-selected" : null) @(_room.CardsRevealed ? "pk-disabled" : null)"
+                             @onclick="@(() => SelectCard(card))">
+                            @card
+                        </div>
+                    }
+                </div>
+            </MudPaper>
+        }
+    }
+</div>
+
+@code {
+    private const int MaxBarHeight = 90;
+
+    private const string ColumnPrefsKey = "pokerRoom.issueColumns.v1";
+
+    private static class ColKey
+    {
+        public const string JiraId = "jiraId";
+        public const string Type = "type";
+        public const string Priority = "priority";
+        public const string Summary = "summary";
+        public const string FeatureLink = "featureLink";
+        public const string Status = "status";
+        public const string StoryPoints = "storyPoints";
+        public const string Assignee = "assignee";
+    }
+
+    private record IssueColumn(string Key, string Label, bool DefaultVisible);
+
+    private static readonly IssueColumn[] IssueColumns =
+    [
+        new(ColKey.JiraId, "JiraId", true),
+        new(ColKey.Type, "Type", true),
+        new(ColKey.Priority, "Priority", true),
+        new(ColKey.Summary, "Summary", true),
+        new(ColKey.FeatureLink, "Feature Link", true),
+        new(ColKey.Status, "Status", true),
+        new(ColKey.StoryPoints, "Story Points", true),
+        new(ColKey.Assignee, "Assignee", true),
+    ];
+
+    [Parameter] public Guid RoomId { get; set; }
+
+    private bool _columnsPopoverOpen;
+    private bool _filterDrawerOpen;
+
+    private List<JiraIssueResponse> _filteredIssues = new();
+
+    private readonly Dictionary<string, bool> _columnVisibility =
+        IssueColumns.ToDictionary(c => c.Key, c => c.DefaultVisible, StringComparer.Ordinal);
+
+    private bool _initialized;
+    private bool _joined;
+    private bool _leftExplicitly;
+
+    private string? _userName;
+    private string _displayName = string.Empty;
+
+    private PokerRoom? _room;
+    private bool _jiraConnected;
+    private List<PokerAssigneeOption> _assigneeOptions = new();
+
+    private string? _topicDraft;
+    private string? _draftIssueKey;
+    private PokerBusinessOutcome? _businessOutcome;
+    private string? _businessOutcomeIssueKey;
+    private int? _storyPointsDraft;
+    private PokerAssigneeOption? _assigneeDraft;
+    private bool _savingStoryPoints;
+    private bool _savingAssignee;
+
+    private PokerPlayer? Me => _userName is null ? null : _room?.FindPlayer(_userName);
+
+    private bool IsPresenter => _userName is not null && _room?.IsPresenter(_userName) == true;
+
+    private int VotedCount => _room?.Players.Count(p => p.Vote is not null) ?? 0;
+
+    private string PresenterDisplayName =>
+        _room?.FindPlayer(_room.PresenterUserName)?.DisplayName ?? _room?.PresenterUserName ?? string.Empty;
+
+    private string HandHint
+    {
+        get
+        {
+            if (_room?.CardsRevealed == true)
+            {
+                return "Cards are open — wait for the presenter to start a new round.";
+            }
+            return Me?.Vote is { } vote
+                ? $"You played {vote}. Tap another card to change it."
+                : "Tap a card to play it.";
+        }
+    }
+
+    private bool IsMe(PokerPlayer player)
+    {
+        return string.Equals(player.UserName, _userName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool CanVolunteer =>
+        _room?.AllowVolunteers == true
+        && _room.Phase == PokerPhase.Voting
+        && _room.CurrentIssueKey is not null
+        && Me is not null;
+
+    private void ToggleHand()
+    {
+        if (_userName is not null)
+        {
+            Registry.ToggleHand(RoomId, _userName);
+        }
+    }
+
+    private async Task AssignVolunteerAsync(PokerPlayer player)
+    {
+        var option = _assigneeOptions.FirstOrDefault(o =>
+            string.Equals(o.WindowsUserName, player.UserName, StringComparison.OrdinalIgnoreCase));
+        if (option is null)
+        {
+            Snackbar.Add($"{player.DisplayName} has no Jira login registered in the tool, so the issue cannot be assigned.",
+                Severity.Warning);
+            return;
+        }
+
+        await OnAssigneeCommitted(option);
+    }
+
+    private readonly PokerIssueFilter _issueFilter = new();
+
+    private string? FilterSearch
+    {
+        get => _issueFilter.Search;
+        set { _issueFilter.Search = value; ApplyIssueFilters(); }
+    }
+
+    private IReadOnlyCollection<string> FilterTypes
+    {
+        get => _issueFilter.Types;
+        set { _issueFilter.Types = value; ApplyIssueFilters(); }
+    }
+
+    private IReadOnlyCollection<string> FilterStatuses
+    {
+        get => _issueFilter.Statuses;
+        set { _issueFilter.Statuses = value; ApplyIssueFilters(); }
+    }
+
+    private IReadOnlyCollection<string> FilterPriorities
+    {
+        get => _issueFilter.Priorities;
+        set { _issueFilter.Priorities = value; ApplyIssueFilters(); }
+    }
+
+    private IReadOnlyCollection<string> FilterAssignees
+    {
+        get => _issueFilter.Assignees;
+        set { _issueFilter.Assignees = value; ApplyIssueFilters(); }
+    }
+
+    private bool FilterWithoutStoryPoints
+    {
+        get => _issueFilter.OnlyWithoutStoryPoints;
+        set { _issueFilter.OnlyWithoutStoryPoints = value; ApplyIssueFilters(); }
+    }
+
+    private string IssueCountLabel
+    {
+        get
+        {
+            var total = _room?.Issues.Count ?? 0;
+            return _issueFilter.IsActive
+                ? $"{_filteredIssues.Count} of {total} issue(s)"
+                : $"{total} issue(s)";
+        }
+    }
+
+    private IReadOnlyList<string> AvailableIssueTypes => DistinctIssueValues(i => i.IssueType);
+
+    private IReadOnlyList<string> AvailableStatuses => DistinctIssueValues(i => i.Status);
+
+    private IReadOnlyList<string> AvailablePriorities => DistinctIssueValues(i => i.PriorityName);
+
+    private IReadOnlyList<string> AvailableAssignees => DistinctIssueValues(PokerIssueFilter.AssigneeLabel);
+
+    private IReadOnlyList<string> DistinctIssueValues(Func<JiraIssueResponse, string?> selector)
+    {
+        if (_room is null)
+        {
+            return [];
+        }
+
+        return _room.Issues
+            .Select(selector)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void ApplyIssueFilters()
+    {
+        _filteredIssues = _issueFilter.Apply(_room?.Issues ?? []);
+    }
+
+    private void ClearIssueFilters()
+    {
+        _issueFilter.Clear();
+        ApplyIssueFilters();
+    }
+
+    private bool IsColumnVisible(string key)
+    {
+        return _columnVisibility.GetValueOrDefault(key, true);
+    }
+
+    private async Task SetColumnVisibleAsync(string key, bool visible)
+    {
+        _columnVisibility[key] = visible;
+        await SaveColumnPreferencesAsync();
+    }
+
+    private async Task ResetColumnsAsync()
+    {
+        foreach (var column in IssueColumns)
+        {
+            _columnVisibility[column.Key] = column.DefaultVisible;
+        }
+        await SaveColumnPreferencesAsync();
+    }
+
+    private async Task LoadColumnPreferencesAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", ColumnPrefsKey);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            var saved = JsonSerializer.Deserialize<Dictionary<string, bool>>(json);
+            if (saved is null)
+            {
+                return;
+            }
+
+            foreach (var column in IssueColumns)
+            {
+                if (saved.TryGetValue(column.Key, out var visible))
+                {
+                    _columnVisibility[column.Key] = visible;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to read the poker issue column preferences");
+        }
+    }
+
+    private async Task SaveColumnPreferencesAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", ColumnPrefsKey, JsonSerializer.Serialize(_columnVisibility));
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to save the poker issue column preferences");
+        }
+    }
+
+    private static string Spread(PokerVoteStats stats)
+    {
+        if (stats.Min is null || stats.Max is null)
+        {
+            return "—";
+        }
+        return stats.Min == stats.Max
+            ? stats.Min.Value.ToString("0.#")
+            : $"{stats.Min.Value.ToString("0.#")}–{stats.Max.Value.ToString("0.#")}";
+    }
+
+    private static int BarHeight(int count, int maxVotes)
+    {
+        if (count == 0 || maxVotes == 0)
+        {
+            return 2;
+        }
+        return Math.Max(4, count * MaxBarHeight / maxVotes);
+    }
+
+    private static string Initials(string displayName)
+    {
+        var parts = displayName.Split([' ', '.', ',', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            return "?";
+        }
+        return parts.Length == 1
+            ? parts[0][..1].ToUpperInvariant()
+            : $"{char.ToUpperInvariant(parts[0][0])}{char.ToUpperInvariant(parts[1][0])}";
+    }
+
+    private static string AvatarStyle(string displayName)
+    {
+        var hash = 0;
+        foreach (var c in displayName)
+        {
+            hash = ((hash * 31) + c) % 360;
+        }
+        var hue = Math.Abs(hash);
+        return $"background: hsl({hue}, 62%, 86%); color: hsl({hue}, 45%, 28%);";
+    }
+
+    private bool CanApplySuggested(PokerVoteStats stats)
+    {
+        return IsPresenter
+               && _room?.Mode == PokerRoomMode.Jira
+               && _jiraConnected
+               && _room.CurrentIssue is { } issue
+               && SuggestedStoryPoints(stats) is { } points
+               && points != issue.StoryPoints;
+    }
+
+    private static int? SuggestedStoryPoints(PokerVoteStats stats)
+    {
+        return int.TryParse(stats.Suggested, NumberStyles.Integer, CultureInfo.InvariantCulture, out var points)
+            ? points
+            : null;
+    }
+
+    private async Task ApplySuggestedAsync(PokerVoteStats stats)
+    {
+        if (CanApplySuggested(stats) && SuggestedStoryPoints(stats) is { } points)
+        {
+            await OnStoryPointsCommitted(points);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        await LoadColumnPreferencesAsync();
+
+        _userName = await WindowsAuth.GetUserName();
+        if (_userName is not null)
+        {
+            var appUser = await AppAuthService.GetCurrentUserAsync(_userName);
+            _displayName = string.IsNullOrWhiteSpace(appUser?.DisplayName) ? _userName : appUser!.DisplayName!;
+
+            _room = Registry.GetRoom(RoomId);
+            if (_room is not null && Registry.Join(RoomId, _userName, _displayName))
+            {
+                _joined = true;
+                _room.Changed += OnRoomChanged;
+
+                if (_room.Mode == PokerRoomMode.Jira)
+                {
+                    _jiraConnected = JiraAuth.IsConfigured && await JiraAuth.IsAuthenticatedAsync(_userName);
+                    _assigneeOptions = await AssigneeService.GetAssignableUsersAsync(_room.TeamId);
+                }
+                SyncDrafts();
+                ApplyIssueFilters();
+                await EnsureBusinessOutcomeAsync();
+            }
+            else
+            {
+                _room = null;
+            }
+        }
+
+        _initialized = true;
+        StateHasChanged();
+    }
+
+    private void OnRoomChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            SyncDrafts();
+            ApplyIssueFilters();
+            await EnsureBusinessOutcomeAsync();
+            StateHasChanged();
+        });
+    }
+
+    private async Task EnsureBusinessOutcomeAsync()
+    {
+        var issue = _room?.Mode == PokerRoomMode.Jira ? _room.CurrentIssue : null;
+        if (issue is null)
+        {
+            _businessOutcome = null;
+            _businessOutcomeIssueKey = null;
+            return;
+        }
+
+        if (string.Equals(_businessOutcomeIssueKey, issue.Key, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _businessOutcomeIssueKey = issue.Key;
+        _businessOutcome = null;
+        try
+        {
+            _businessOutcome = await BusinessOutcomeService.ResolveAsync(issue.ParentLink, issue.FeatureLink);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to resolve the business outcome of {IssueKey}", issue.Key);
+        }
+    }
+
+    private void SyncDrafts()
+    {
+        if (_room is null)
+        {
+            return;
+        }
+
+        var issue = _room.CurrentIssue;
+        if (!string.Equals(issue?.Key, _draftIssueKey, StringComparison.OrdinalIgnoreCase))
+        {
+            _draftIssueKey = issue?.Key;
+            _storyPointsDraft = issue?.StoryPoints;
+            _assigneeDraft = FindAssigneeOption(issue?.AssigneeUserName);
+        }
+
+        if (_userName is null || !_room.IsPresenter(_userName))
+        {
+            _topicDraft = _room.Topic;
+        }
+        else
+        {
+            _topicDraft ??= _room.Topic;
+        }
+    }
+
+    private PokerAssigneeOption? FindAssigneeOption(string? samAccountName)
+    {
+        if (string.IsNullOrEmpty(samAccountName))
+        {
+            return null;
+        }
+        return _assigneeOptions.FirstOrDefault(o =>
+            string.Equals(o.SamAccountName, samAccountName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task RejoinAsync()
+    {
+        if (_userName is null)
+        {
+            return;
+        }
+        if (!Registry.Join(RoomId, _userName, _displayName))
+        {
+            _room = null;
+        }
+        else
+        {
+            _joined = true;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void LeaveRoom()
+    {
+        if (_userName is not null)
+        {
+            _leftExplicitly = true;
+            _joined = false;
+            Registry.Leave(RoomId, _userName);
+        }
+        Navigation.NavigateTo(RoutingPath.Base);
+    }
+
+    private void SelectCard(string card)
+    {
+        if (_userName is not null)
+        {
+            Registry.SetVote(RoomId, _userName, card);
+        }
+    }
+
+    private void StartEstimation(string issueKey)
+    {
+        if (_userName is not null)
+        {
+            Registry.StartEstimation(RoomId, _userName, issueKey);
+        }
+    }
+
+    private void RevealCards()
+    {
+        if (_userName is not null)
+        {
+            Registry.RevealCards(RoomId, _userName);
+        }
+    }
+
+    private void ResetEstimation()
+    {
+        if (_userName is not null)
+        {
+            Registry.ResetVotes(RoomId, _userName);
+        }
+    }
+
+    private void BackToTable()
+    {
+        if (_userName is not null)
+        {
+            Registry.BackToTable(RoomId, _userName);
+        }
+    }
+
+    private void OnTopicCommitted(string? value)
+    {
+        _topicDraft = value;
+        if (_userName is not null)
+        {
+            Registry.SetTopic(RoomId, _userName, value);
+        }
+    }
+
+    private async Task ConnectJiraAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>("Jira Authentication", options);
+        var result = await dialogRef.Result;
+
+        if (result?.Data is bool connected)
+        {
+            _jiraConnected = connected;
+        }
+        else if (_userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+    }
+
+    private Task<IEnumerable<PokerAssigneeOption>> SearchAssigneesAsync(string? value, CancellationToken token)
+    {
+        IEnumerable<PokerAssigneeOption> result = string.IsNullOrWhiteSpace(value)
+            ? _assigneeOptions
+            : _assigneeOptions.Where(o => o.DisplayName.Contains(value, StringComparison.OrdinalIgnoreCase)
+                                          || o.SamAccountName.Contains(value, StringComparison.OrdinalIgnoreCase));
+        return Task.FromResult(result);
+    }
+
+    private async Task OnStoryPointsCommitted(int? value)
+    {
+        _storyPointsDraft = value;
+        var issue = _room?.CurrentIssue;
+        if (_userName is null || issue is null || !IsPresenter || issue.StoryPoints == value)
+        {
+            return;
+        }
+
+        _savingStoryPoints = true;
+        try
+        {
+            var request = new JiraUpdateIssueRequest
+            {
+                StoryPoints = value,
+                FieldsToUpdate = [JiraUpdateFields.StoryPoints],
+            };
+            await JiraIssueService.UpdateIssueAsync(_userName, issue.Key, request);
+            Registry.UpdateIssue(RoomId, issue.Key, i => i.StoryPoints = value);
+            Snackbar.Add($"Story points of {issue.Key} saved to Jira.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to update story points of {IssueKey}", issue.Key);
+            Snackbar.Add($"Failed to update {issue.Key} on Jira: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _savingStoryPoints = false;
+        }
+    }
+
+    private async Task OnAssigneeCommitted(PokerAssigneeOption? option)
+    {
+        _assigneeDraft = option;
+        var issue = _room?.CurrentIssue;
+        if (_userName is null || issue is null || !IsPresenter)
+        {
+            return;
+        }
+        if (string.Equals(issue.AssigneeUserName, option?.SamAccountName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _savingAssignee = true;
+        try
+        {
+            var request = new JiraUpdateIssueRequest
+            {
+                AssigneeUserName = option?.SamAccountName,
+                FieldsToUpdate = [JiraUpdateFields.Assignee],
+            };
+            await JiraIssueService.UpdateIssueAsync(_userName, issue.Key, request);
+            Registry.UpdateIssue(RoomId, issue.Key, i =>
+            {
+                i.AssigneeUserName = option?.SamAccountName;
+                i.AssigneeDisplayName = option?.DisplayName;
+                i.AssigneeKey = null;
+                i.AssigneeAvatarUrl = null;
+            });
+            Snackbar.Add(option is null
+                ? $"{issue.Key} unassigned on Jira."
+                : $"{issue.Key} assigned to {option.DisplayName} on Jira.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to update assignee of {IssueKey}", issue.Key);
+            Snackbar.Add($"Failed to update {issue.Key} on Jira: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _savingAssignee = false;
+        }
+    }
+
+    private string BrowseUrl(string issueKey)
+    {
+        return $"{JiraOptions.Value.Url.TrimEnd('/')}/browse/{Uri.EscapeDataString(issueKey)}";
+    }
+
+    private static Color StatusColor(string? status)
+    {
+        return (status ?? string.Empty).ToLowerInvariant() switch
+        {
+            "done" or "closed" or "resolved" => Color.Success,
+            "in progress" or "in development" or "in review" => Color.Info,
+            "blocked" or "impeded" => Color.Error,
+            _ => Color.Default,
+        };
+    }
+
+    public void Dispose()
+    {
+        if (_room is not null)
+        {
+            _room.Changed -= OnRoomChanged;
+        }
+        if (_joined && !_leftExplicitly && _userName is not null)
+        {
+            Registry.Disconnect(RoomId, _userName);
+        }
+    }
+}

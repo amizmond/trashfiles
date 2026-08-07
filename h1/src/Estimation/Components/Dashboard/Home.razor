@@ -1,0 +1,160 @@
+@attribute [Route(RoutingPath.Base)]
+@implements IDisposable
+
+@inject IDashboardService DashboardService
+@inject IPermissionGuard PermissionGuard
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Dashboard.Services
+@using Serilog
+
+<PageTitle>Dashboard</PageTitle>
+
+<div class="container-fluid mt-4 mb-5">
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" Class="mt-6" />
+    }
+    else if (_noTrainsAssigned)
+    {
+        <MudAlert Severity="Severity.Info" Class="mt-6">
+            No @(PlanningDisplayNames.Art)s are assigned to your profile — contact an administrator.
+        </MudAlert>
+    }
+    else
+    {
+        <div class="d-flex align-center flex-wrap gap-2 mt-6 mb-3">
+            <MudSelect T="int?" Value="@_selectedCapitalProjectId" ValueChanged="OnCapitalProjectChanged"
+                       Label="@PlanningDisplayNames.Art" Placeholder="@AllArtsLabel"
+                       Variant="Variant.Outlined" Dense="true"
+                       Style="min-width: 260px; max-width: 320px;">
+                <MudSelectItem T="int?" Value="@((int?)null)">@AllArtsLabel</MudSelectItem>
+                @foreach (var cp in _capitalProjects)
+                {
+                    <MudSelectItem T="int?" Value="@cp.Id">@cp.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="ml-3"
+                                 Style="@(_refreshing ? null : "visibility: hidden;")" />
+        </div>
+
+        @if (_loadError is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-3">@_loadError</MudAlert>
+        }
+
+        @if (_data is not null)
+        {
+            <MudGrid Style="@(_refreshing ? "opacity: 0.6;" : null)">
+                <MudItem xs="12" md="6">
+                    <PiTimelineCard Data="@_data.PiTimeline" />
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <FeaturesByPiChart Data="@_data.FeaturesByPi" />
+                </MudItem>
+            </MudGrid>
+        }
+    }
+
+    <div class="mt-6">
+        <PokerDashboardPanel />
+    </div>
+</div>
+
+@code {
+    private const string GoverningPageKey = "Features";
+
+    private const string AllArtsLabel = "All ARTs";
+
+    private bool _loading = true;
+    private bool _refreshing;
+    private bool _disposed;
+    private DashboardData? _data;
+    private string? _loadError;
+    private List<CapitalProjectOption> _capitalProjects = new();
+    private IReadOnlyCollection<int>? _allowedCapitalProjectIds;
+    private int? _selectedCapitalProjectId;
+    private bool _noTrainsAssigned;
+    private CancellationTokenSource? _filterCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var permissions = await PermissionGuard.GetPermissionsAsync();
+            _allowedCapitalProjectIds = permissions.GetAllowedTrains(GoverningPageKey, AccessLevel.ReadOnly);
+
+            _capitalProjects = await DashboardService.GetCapitalProjectOptionsAsync(_allowedCapitalProjectIds);
+            _noTrainsAssigned = _capitalProjects.Count == 0;
+
+            if (!_noTrainsAssigned)
+            {
+                _data = await DashboardService.GetDashboardDataAsync(null, _allowedCapitalProjectIds);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the dashboard");
+            _loadError = "Could not load planning statistics.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OnCapitalProjectChanged(int? value)
+    {
+        _selectedCapitalProjectId = value;
+        _loadError = null;
+        _refreshing = true;
+
+        _filterCts?.Cancel();
+        var cts = _filterCts = new CancellationTokenSource();
+
+        try
+        {
+            var data = await DashboardService.GetDashboardDataAsync(value, _allowedCapitalProjectIds, cts.Token);
+            if (IsCurrent(cts))
+            {
+                _data = data;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex) when (IsCurrent(cts))
+        {
+            Log.Error(ex, "Failed to load dashboard statistics for capital project {CapitalProjectId}", value);
+            _loadError = $"Could not load statistics for that {PlanningDisplayNames.Art}.";
+            Snackbar.Add(_loadError, Severity.Error);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Superseded dashboard request failed for capital project {CapitalProjectId}", value);
+        }
+        finally
+        {
+            if (IsCurrent(cts))
+            {
+                _refreshing = false;
+            }
+        }
+    }
+
+    private bool IsCurrent(CancellationTokenSource cts) => ReferenceEquals(_filterCts, cts);
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _filterCts?.Cancel();
+        _filterCts = null;
+    }
+}

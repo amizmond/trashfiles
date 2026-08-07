@@ -1,0 +1,431 @@
+@inject ITeamService TeamService
+@inject ISprintService SprintService
+@inject IJiraAuthService JiraAuth
+@inject IJiraSprintIssuesService SprintIssuesService
+@inject IWindowsAuthService WindowsAuth
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject IOptions<JiraSettings> JiraOptions
+
+@using Serilog
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Microsoft.Extensions.Options
+
+<PageTitle>Sprint @(_sprint?.Name ?? "detail") - @(_team?.Name ?? "Team")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_sprint is null)
+        {
+            <div class="d-flex align-center gap-2 mb-3">
+                <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                               OnClick="@(() => Navigation.NavigateTo(BackUrl))" />
+                <MudText Typo="Typo.h6">Sprint detail</MudText>
+            </div>
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">Sprint not found.</MudAlert>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                               OnClick="@(() => Navigation.NavigateTo(BackUrl))" />
+                <MudText Typo="Typo.h6">@_sprint.Name - @(_team?.Name)</MudText>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                    @_sprint.StartDate.ToString("yyyy-MM-dd") — @_sprint.EndDate.ToString("yyyy-MM-dd")
+                </MudChip>
+                @if (_sprint.Pi is not null)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">@_sprint.Pi.Name</MudChip>
+                }
+                @if (_sprint.IsIpSprint == true)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">IP</MudChip>
+                }
+                @if (IsCurrentSprint)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">Current</MudChip>
+                }
+                <MudSpacer />
+                @if (_jiraConnected)
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small"
+                                   OnClick="LoadIssuesAsync" Disabled="_loadingIssues" />
+                }
+            </div>
+
+            @if (!JiraAuth.IsConfigured)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                    Jira integration is not configured; sprint issues cannot be loaded.
+                </MudAlert>
+            }
+            else if (!_jiraConnected)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                    Connect to Jira to load the issues of this sprint.
+                </MudAlert>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectJiraAsync">
+                    Connect to Jira
+                </MudButton>
+            }
+            else if (_loadingIssues)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" />
+            }
+            else if (_result is not null)
+            {
+                @switch (_result.Status)
+                {
+                    case SprintLookupStatus.NotFound:
+                        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">
+                            Sprint '@_sprint.Name' was not found on the Jira server.
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.AmbiguousName:
+                        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">
+                            The name '@_sprint.Name' matches several sprints on the Jira server. @_result.ErrorMessage
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.Error:
+                        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">
+                            Failed to load sprint issues: @_result.ErrorMessage
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.Found when _result.Issues.Count == 0:
+                        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                            The sprint exists on Jira, but no issues were found in the configured Jira projects.
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.Found:
+                        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+                                @_result.Issues.Count issue(s)
+                            </MudChip>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                                @TotalStoryPoints story points
+                            </MudChip>
+                            @foreach (var status in _statusCounts)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="@StatusColor(status.Name)" Variant="Variant.Outlined">
+                                    @status.Name: @status.Count
+                                </MudChip>
+                            }
+                            <MudSpacer />
+                            <MudToggleGroup T="IssueViewMode" @bind-Value="_viewMode"
+                                            SelectionMode="SelectionMode.SingleSelection"
+                                            Color="Color.Primary" Size="Size.Small" CheckMark="false" Dense>
+                                <MudToggleItem Value="IssueViewMode.ByAssignee">By assignee</MudToggleItem>
+                                <MudToggleItem Value="IssueViewMode.All">All issues</MudToggleItem>
+                            </MudToggleGroup>
+                        </div>
+
+                        @if (_viewMode == IssueViewMode.All)
+                        {
+                            <MudDataGrid T="JiraIssueResponse" Items="_result.Issues" Hover Dense Striped Elevation="0">
+                                <Columns>
+                                    <TemplateColumn Title="Key" SortBy="x => x.Key">
+                                        <CellTemplate>
+                                            <MudLink Href="@BrowseUrl(context.Item.Key)" Target="_blank">@context.Item.Key</MudLink>
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                    <TemplateColumn Title="Type" SortBy="x => x.IssueType">
+                                        <CellTemplate>
+                                            <MudChip T="string" Size="Size.Small"
+                                                     Color="@JiraIssueTypeHelper.IssueTypeColor(context.Item.IssueType)">
+                                                @(context.Item.IssueType ?? "—")
+                                            </MudChip>
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                    <PropertyColumn Property="x => x.Summary" Title="Summary" />
+                                    <TemplateColumn Title="Status" SortBy="x => x.Status">
+                                        <CellTemplate>
+                                            <MudChip T="string" Size="Size.Small" Color="@StatusColor(context.Item.Status)" Variant="Variant.Outlined">
+                                                @(context.Item.Status ?? "—")
+                                            </MudChip>
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                    <PropertyColumn Property="x => x.StoryPoints" Title="SP" />
+                                    <TemplateColumn Title="Assignee" SortBy="x => x.AssigneeDisplayName">
+                                        <CellTemplate>
+                                            @(context.Item.AssigneeDisplayName ?? "—")
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                                <PagerContent>
+                                    <MudDataGridPager T="JiraIssueResponse" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+                                </PagerContent>
+                            </MudDataGrid>
+                        }
+                        else
+                        {
+                            @foreach (var group in _assigneeGroups)
+                            {
+                                <MudExpansionPanels Elevation="2" Class="rounded-lg mb-3" @key="group.Name">
+                                    <MudExpansionPanel Expanded="IsGroupExpanded(group.Name)"
+                                                       ExpandedChanged="(bool v) => SetGroupExpanded(group.Name, v)">
+                                        <TitleContent>
+                                            <div class="d-flex align-center gap-2 flex-wrap">
+                                                @if (!string.IsNullOrEmpty(group.AvatarUrl))
+                                                {
+                                                    <MudAvatar Size="Size.Small">
+                                                        <MudImage Src="@group.AvatarUrl" Alt="@group.Name" />
+                                                    </MudAvatar>
+                                                }
+                                                else if (group.IsUnassigned)
+                                                {
+                                                    <MudAvatar Size="Size.Small" Color="Color.Default">
+                                                        <MudIcon Icon="@Icons.Material.Filled.PersonOff" Size="Size.Small" />
+                                                    </MudAvatar>
+                                                }
+                                                else
+                                                {
+                                                    <MudAvatar Size="Size.Small" Color="Color.Primary">
+                                                        @group.Name.First()
+                                                    </MudAvatar>
+                                                }
+                                                <MudText Typo="Typo.subtitle1">@group.Name</MudText>
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@group.Issues.Count issue(s)</MudChip>
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@group.TotalStoryPoints SP</MudChip>
+                                            </div>
+                                        </TitleContent>
+                                        <ChildContent>
+                                            <MudSimpleTable Dense="true" Hover="true" Elevation="0">
+                                                <thead>
+                                                    <tr>
+                                                        <th style="width:120px">Key</th>
+                                                        <th style="width:120px">Type</th>
+                                                        <th>Summary</th>
+                                                        <th style="width:160px">Status</th>
+                                                        <th style="width:60px">SP</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var issue in group.Issues)
+                                                    {
+                                                        <tr>
+                                                            <td><MudLink Href="@BrowseUrl(issue.Key)" Target="_blank">@issue.Key</MudLink></td>
+                                                            <td>
+                                                                <MudChip T="string" Size="Size.Small"
+                                                                         Color="@JiraIssueTypeHelper.IssueTypeColor(issue.IssueType)">
+                                                                    @(issue.IssueType ?? "—")
+                                                                </MudChip>
+                                                            </td>
+                                                            <td>@issue.Summary</td>
+                                                            <td>
+                                                                <MudChip T="string" Size="Size.Small" Color="@StatusColor(issue.Status)" Variant="Variant.Outlined">
+                                                                    @(issue.Status ?? "—")
+                                                                </MudChip>
+                                                            </td>
+                                                            <td>@issue.StoryPoints</td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </MudSimpleTable>
+                                        </ChildContent>
+                                    </MudExpansionPanel>
+                                </MudExpansionPanels>
+                            }
+                            @if (_membersWithoutIssues.Count > 0)
+                            {
+                                <MudText Typo="Typo.subtitle2" Class="mt-2 mb-1">Team members without issues in this sprint</MudText>
+                                <div class="d-flex align-center gap-1 flex-wrap">
+                                    @foreach (var name in _membersWithoutIssues)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@name</MudChip>
+                                    }
+                                </div>
+                            }
+                        }
+                        break;
+                }
+            }
+        }
+    </MudPaper>
+</div>
+
+@code {
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public int SprintId { get; set; }
+
+    [Parameter, EditorRequired] public string BackUrl { get; set; } = string.Empty;
+
+    private enum IssueViewMode { All, ByAssignee }
+
+    private sealed record AssigneeGroup(string Name, bool IsUnassigned, string? AvatarUrl, List<JiraIssueResponse> Issues, int TotalStoryPoints);
+
+    private sealed record StatusCount(string Name, int Count);
+
+    private bool _loading = true;
+    private Sprint? _sprint;
+    private Team? _team;
+    private readonly Dictionary<string, bool> _expandedGroups = new(StringComparer.OrdinalIgnoreCase);
+
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _loadingIssues;
+    private SprintIssuesResult? _result;
+    private IssueViewMode _viewMode = IssueViewMode.ByAssignee;
+
+    private List<AssigneeGroup> _assigneeGroups = new();
+    private List<StatusCount> _statusCounts = new();
+    private List<string> _membersWithoutIssues = new();
+
+    private int TotalStoryPoints => _result?.Issues.Sum(i => i.StoryPoints ?? 0) ?? 0;
+
+    private bool IsCurrentSprint =>
+        _sprint is not null && _sprint.StartDate.Date <= DateTime.Today && DateTime.Today <= _sprint.EndDate.Date;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _result = null;
+
+        _sprint = await SprintService.GetByIdAsync(SprintId);
+        if (_sprint is not null && _sprint.TeamId != TeamId)
+        {
+            _sprint = null;
+        }
+
+        if (_sprint is not null)
+        {
+            _team = await TeamService.GetByIdAsync(TeamId);
+
+            if (JiraAuth.IsConfigured)
+            {
+                _userName = await WindowsAuth.GetUserName();
+                _jiraConnected = _userName is not null && await JiraAuth.IsAuthenticatedAsync(_userName);
+            }
+        }
+
+        _loading = false;
+
+        if (_sprint is not null && _jiraConnected)
+        {
+            await LoadIssuesAsync();
+        }
+    }
+
+    private async Task LoadIssuesAsync()
+    {
+        if (_sprint is null || _userName is null)
+        {
+            return;
+        }
+        _loadingIssues = true;
+        try
+        {
+            _result = await SprintIssuesService.GetSprintIssuesAsync(_userName, _sprint.Name);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load Jira issues for sprint {SprintName}", _sprint.Name);
+            _result = new SprintIssuesResult
+            {
+                Status = SprintLookupStatus.Error,
+                ErrorMessage = ex.Message,
+            };
+        }
+        BuildViewData();
+        _loadingIssues = false;
+    }
+
+    private void BuildViewData()
+    {
+        if (_result is null || _result.Status != SprintLookupStatus.Found)
+        {
+            _assigneeGroups = new();
+            _statusCounts = new();
+            _membersWithoutIssues = new();
+            return;
+        }
+
+        _statusCounts = _result.Issues
+            .GroupBy(i => string.IsNullOrWhiteSpace(i.Status) ? "—" : i.Status!)
+            .Select(g => new StatusCount(g.Key, g.Count()))
+            .OrderByDescending(s => s.Count)
+            .ToList();
+
+        _assigneeGroups = _result.Issues
+            .GroupBy(i => string.IsNullOrWhiteSpace(i.AssigneeDisplayName) ? null : i.AssigneeDisplayName!.Trim())
+            .Select(g => new AssigneeGroup(
+                g.Key ?? "Unassigned",
+                g.Key is null,
+                g.Select(i => i.AssigneeAvatarUrl).FirstOrDefault(u => !string.IsNullOrWhiteSpace(u)),
+                g.OrderBy(i => i.Status).ThenBy(i => i.Key).ToList(),
+                g.Sum(i => i.StoryPoints ?? 0)))
+            .OrderBy(g => g.IsUnassigned ? 1 : 0)
+            .ThenBy(g => g.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var assignedKeys = new HashSet<string>(
+            _result.Issues
+                .Where(i => !string.IsNullOrWhiteSpace(i.AssigneeKey))
+                .Select(i => i.AssigneeKey!.Trim()),
+            StringComparer.OrdinalIgnoreCase);
+        _membersWithoutIssues = (_team?.TeamMembers ?? [])
+            .Select(m => m.HumanResource)
+            .Where(hr => hr is not null
+                         && (string.IsNullOrWhiteSpace(hr.EmployeeNumber) || !assignedKeys.Contains(hr.EmployeeNumber.Trim())))
+            .Select(hr => hr.FullName)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private bool IsGroupExpanded(string name)
+    {
+        return !_expandedGroups.TryGetValue(name, out var expanded) || expanded;
+    }
+
+    private void SetGroupExpanded(string name, bool expanded)
+    {
+        _expandedGroups[name] = expanded;
+    }
+
+    private async Task ConnectJiraAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>("Jira Authentication", options);
+        var result = await dialogRef.Result;
+
+        if (result?.Data is bool connected)
+        {
+            _jiraConnected = connected;
+        }
+        else if (_userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+
+        if (_jiraConnected)
+        {
+            await LoadIssuesAsync();
+        }
+    }
+
+    private string BrowseUrl(string issueKey)
+    {
+        return $"{JiraOptions.Value.Url.TrimEnd('/')}/browse/{Uri.EscapeDataString(issueKey)}";
+    }
+
+    private static Color StatusColor(string? status)
+    {
+        return (status ?? string.Empty).ToLowerInvariant() switch
+        {
+            "done" or "closed" or "resolved" => Color.Success,
+            "in progress" or "in development" or "in review" => Color.Info,
+            "blocked" or "on hold" => Color.Error,
+            _ => Color.Default,
+        };
+    }
+}
