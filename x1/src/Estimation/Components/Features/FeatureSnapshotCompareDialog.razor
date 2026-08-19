@@ -1,0 +1,68 @@
+@using Estimation.Core.Features.Models
+
+@inject IUserTimeZoneService UserTime
+
+<div class="pa-4" style="min-width:460px">
+    <div class="d-flex flex-wrap align-center gap-2 mb-4">
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">@Source.ArtName</MudChip>
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary">@Source.PiName</MudChip>
+    </div>
+
+    <MudText Typo="Typo.body2" Class="mb-4 mud-text-secondary">
+        Compare <b>@NameOf(Source)</b>, taken on @UserTime.Format(Source.CreatedAt), with another
+        snapshot of the same ART and PI, or with the current state.
+    </MudText>
+
+    <MudSelect T="string" @bind-Value="_target"
+               Label="Compare with"
+               Dense Variant="Variant.Outlined"
+               AnchorOrigin="Origin.BottomCenter">
+        <MudSelectItem T="string" Value="@NowValue">Now — current state</MudSelectItem>
+        @foreach (var other in Others)
+        {
+            <MudSelectItem T="string" Value="@other.Id.ToString()">
+                @NameOf(other) — @other.FeatureCount feature(s)
+            </MudSelectItem>
+        }
+    </MudSelect>
+
+    @if (Others.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense Class="mt-4">
+            This is the only snapshot for this ART and PI, so it can only be compared with the current state.
+        </MudAlert>
+    }
+
+    <div class="d-flex justify-end gap-2 mt-6">
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(string.IsNullOrEmpty(_target))" OnClick="Ok">OK</MudButton>
+    </div>
+</div>
+
+@code {
+    public const string NowValue = "now";
+
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public FeatureSnapshot Source { get; set; } = null!;
+
+    [Parameter]
+    public List<FeatureSnapshot> Others { get; set; } = new();
+
+    private string _target = NowValue;
+
+    private string NameOf(FeatureSnapshot snapshot) =>
+        UserTime.SnapshotName(snapshot.Name, snapshot.PiName, snapshot.CreatedAt);
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Ok()
+    {
+        var snapshotId = _target == NowValue ? (int?)null : int.Parse(_target);
+        MudDialog.Close(DialogResult.Ok(new CompareResult(snapshotId)));
+    }
+
+    public record CompareResult(int? SnapshotId);
+}

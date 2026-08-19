@@ -1,0 +1,407 @@
+@attribute [Route(RoutingPath.Skills)]
+@inherits LocalTimeComponentBase
+
+@inject ISkillService SkillService
+@inject ISkillUploadService SkillUploadService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+
+<AccessGuard PageKey="Skills">
+<PageTitle>Skills</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">Skills</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+
+            <MudTextField @bind-Value="_searchTerm"
+                          Placeholder="Search by name..."
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          IconSize="Size.Medium"
+                          Class="mt-0 mr-4"
+                          Style="min-width:260px"
+                          Clearable
+                          Immediate
+                          DebounceInterval="400"
+                          OnDebounceIntervalElapsed="OnSearchChanged" />
+
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_isLoading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showId" Label="Id" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showDescription" Label="Description" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showLevels" Label="Levels" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showCreated" Label="Created" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showUpdated" Label="Updated" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            @if (_canEdit)
+            {
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           Style="margin-right: 10px"
+                           OnClick="@(() => Navigation.NavigateTo(RoutingPath.SkillsNew))">
+                    New
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Style="margin-right: 10px"
+                           Disabled="_isLoading || _exporting"
+                           OnClick="ExportAllAsync">
+                    Export All
+                </MudButton>
+
+                <MudFileUpload T="IBrowserFile"
+                               Accept=".xlsx"
+                               MaximumFileCount="1"
+                               FilesChanged="OnUploadFileSelected">
+                    <ActivatorContent>
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Secondary"
+                                   StartIcon="@Icons.Material.Filled.UploadFile"
+                                   Disabled="_isLoading || _exporting">
+                            Upload
+                        </MudButton>
+                    </ActivatorContent>
+                </MudFileUpload>
+            }
+        </MudToolBar>
+
+        <MudDivider />
+
+        @if (!string.IsNullOrEmpty(_errorMessage))
+        {
+            <MudAlert Severity="Severity.Error" Class="my-3" ShowCloseIcon CloseIconClicked="() => _errorMessage = null">@_errorMessage</MudAlert>
+        }
+
+        <MudDataGrid @ref="_grid"
+                     T="Skill"
+                     Striped
+                     Items="@_filteredSkills"
+                     ReadOnly="true"
+                     Bordered="true"
+                     Dense="true"
+                     Loading="_isLoading"
+                     LoadingProgressColor="Color.Primary"
+                     Elevation="0"
+                     @bind-CurrentPage="CurrentPage"
+                     @bind-RowsPerPage="PageSize">
+            <Columns>
+                <PropertyColumn Property="p => p.Id" Sortable="true" Hidden="!_showId" />
+                <PropertyColumn Property="p => p.Name" Title="Name" Sortable="true" Hidden="!_showName" />
+                <PropertyColumn Property="p => p.Description" Title="Description" Sortable="true" Hidden="!_showDescription" />
+
+                <TemplateColumn Title="Levels" Filterable="false" Hidden="!_showLevels">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default">@context.Item.Levels.Count</MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Created" Filterable="false" Hidden="!_showCreated">
+                    <CellTemplate>
+                        @UserTime.Format(context.Item.Created, "yyyy-MM-dd", string.Empty)
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Updated" Filterable="false" Hidden="!_showUpdated">
+                    <CellTemplate>
+                        @UserTime.Format(context.Item.Updated, "yyyy-MM-dd", string.Empty)
+                    </CellTemplate>
+                </TemplateColumn>
+
+                @if (_canEdit)
+                {
+                    <TemplateColumn CellClass="d-flex justify-end" Hidden="!_showActions">
+                        <CellTemplate>
+                            <MudStack Row>
+                                <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => NavigateToEdit(context.Item.Id))" />
+                                <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="@(() => DeleteAsync(context.Item))" />
+                            </MudStack>
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent>
+                <MudText Class="pa-4 mud-text-secondary">No skills found. Create one to get started.</MudText>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudDataGridPager T="Skill" PageSizeOptions="new[] { 10, 25, 50 }" />
+            </PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private List<Skill> _skills = new();
+    private string? _searchTerm;
+    private bool _isLoading = true;
+    private bool _canEdit;
+    private bool _exporting;
+    private string? _errorMessage;
+    private bool _columnsPopoverOpen;
+    private bool _suppressUrlUpdate = true;
+
+    private MudDataGrid<Skill>? _grid;
+    private int? _initialPageSizeFromUrl;
+    private int? _initialPageFromUrl;
+    private int _currentPageBacking;
+    private int CurrentPage
+    {
+        get => _currentPageBacking;
+        set
+        {
+            if (_currentPageBacking == value)
+            {
+                return;
+            }
+            _currentPageBacking = value;
+            UpdateUrl();
+        }
+    }
+
+    private int _pageSizeBacking = 10;
+    private int PageSize
+    {
+        get => _pageSizeBacking;
+        set
+        {
+            if (_pageSizeBacking == value)
+            {
+                return;
+            }
+            _pageSizeBacking = value;
+            UpdateUrl();
+        }
+    }
+
+    private bool _showId = true;
+    private bool _showName = true;
+    private bool _showDescription = true;
+    private bool _showLevels = true;
+    private bool _showCreated = true;
+    private bool _showUpdated = true;
+    private bool _showActions = true;
+
+    private IEnumerable<Skill> _filteredSkills => string.IsNullOrWhiteSpace(_searchTerm)
+        ? _skills
+        : _skills.Where(s => s.Name?.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) == true
+                          || s.Description?.Contains(_searchTerm, StringComparison.OrdinalIgnoreCase) == true);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _canEdit = UserPageAccess.TryGetValue("Skills", out var access) && access == AccessLevel.Edit;
+        await LoadSkillsAsync();
+        ReadUrlParams();
+        _suppressUrlUpdate = false;
+    }
+
+    private void ReadUrlParams()
+    {
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        var q = QueryHelpers.ParseQuery(uri.Query);
+
+        if (q.TryGetValue("search", out var search) && !string.IsNullOrWhiteSpace(search))
+        {
+            _searchTerm = search.ToString();
+        }
+
+        if (q.TryGetValue("page", out var pageStr)
+            && int.TryParse(pageStr, out var pageVal) && pageVal >= 0)
+        {
+            _currentPageBacking = pageVal;
+            _initialPageFromUrl = pageVal;
+        }
+
+        if (q.TryGetValue("pageSize", out var pageSizeStr)
+            && int.TryParse(pageSizeStr, out var pageSizeVal) && pageSizeVal > 0)
+        {
+            _pageSizeBacking = pageSizeVal;
+            _initialPageSizeFromUrl = pageSizeVal;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await base.OnAfterRenderAsync(firstRender);
+
+        if (_initialPageSizeFromUrl.HasValue && _grid is not null)
+        {
+            var size = _initialPageSizeFromUrl.Value;
+            _initialPageSizeFromUrl = null;
+            await _grid.SetRowsPerPageAsync(size, false);
+        }
+
+        if (_initialPageFromUrl.HasValue && _grid is not null && !_isLoading)
+        {
+            var page = _initialPageFromUrl.Value;
+            _initialPageFromUrl = null;
+#pragma warning disable BL0005
+            _grid.CurrentPage = page;
+#pragma warning restore BL0005
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        if (_suppressUrlUpdate)
+        {
+            return;
+        }
+
+        var query = new Dictionary<string, object?>();
+        query["search"] = string.IsNullOrWhiteSpace(_searchTerm) ? null : _searchTerm;
+        query["page"] = _currentPageBacking > 0 ? (object?)_currentPageBacking : null;
+        query["pageSize"] = _pageSizeBacking != 10 ? (object?)_pageSizeBacking : null;
+
+        var uri = Navigation.GetUriWithQueryParameters(query);
+        Navigation.NavigateTo(uri, replace: true);
+    }
+
+    private void NavigateToEdit(int id)
+    {
+        var currentUri = new Uri(Navigation.Uri);
+        var returnUrl = currentUri.PathAndQuery;
+        var editUri = Navigation.GetUriWithQueryParameters(
+            $"{RoutingPath.Skills}/{id}",
+            new Dictionary<string, object?> { ["returnUrl"] = returnUrl });
+        Navigation.NavigateTo(editUri);
+    }
+
+    private async Task LoadSkillsAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            _skills = await SkillService.GetAllAsync();
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"Failed to load skills: {ex.Message}";
+            await MessageService.Exception(ex, $"Failed to load skills: {ex.Message}");
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void OnSearchChanged(string _)
+    {
+        UpdateUrl();
+        StateHasChanged();
+    }
+
+    private async Task DeleteAsync(Skill skill)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {skill.Name} ?"))
+            {
+                _isLoading = true;
+                await SkillService.DeleteAsync(skill.Id);
+                _skills.Remove(skill);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex, ex.Message);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task ExportAllAsync()
+    {
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = await SkillUploadService.ExportAllAsync();
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='Skills.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export skills");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnUploadFileSelected(IBrowserFile file)
+    {
+        if (file == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            await using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            var rows = await SkillUploadService.ParseFileAsync(stream);
+            SkillUploadPreviewState.PendingUpload = rows;
+            Navigation.NavigateTo(RoutingPath.SkillsUploadPreview);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to parse uploaded file");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+}

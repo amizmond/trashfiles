@@ -1,0 +1,323 @@
+@inject IRiskCommentService CommentService
+@inject IUserTimeZoneService UserTime
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.Risks.Models
+@using Estimation.Core.Risks.Services
+
+<div class="risk-comments">
+    @if (_loading)
+    {
+        <div class="d-flex justify-center pa-8">
+            <MudProgressCircular Indeterminate Color="Color.Primary" />
+        </div>
+    }
+    else
+    {
+        var doneCount = _comments.Count(c => c.IsDone);
+        var visible = _showDone ? _comments : _comments.Where(c => !c.IsDone).ToList();
+
+        <div class="d-flex align-center gap-2 mt-2 flex-wrap">
+            @if (!string.IsNullOrWhiteSpace(RiskTitle))
+            {
+                <MudText Typo="Typo.subtitle2" Class="mud-text-secondary">@RiskTitle</MudText>
+            }
+            <MudSpacer />
+            @if (doneCount > 0)
+            {
+                <MudTooltip Text="Comments marked Done are hidden by default. Turn this on to review them.">
+                    <MudSwitch T="bool" Value="_showDone" ValueChanged="@(v => _showDone = v)"
+                               Label="@($"Show done ({doneCount})")" Color="Color.Primary" Dense />
+                </MudTooltip>
+            }
+        </div>
+
+        <div class="comments-scroll">
+            @if (_comments.Count == 0)
+            {
+                <div class="d-flex flex-column align-center pa-6 gap-2">
+                    <MudIcon Icon="@Icons.Material.Outlined.Forum" Size="Size.Large" Class="mud-text-secondary" />
+                    <MudText Class="mud-text-secondary">No comments yet. Post the first update below.</MudText>
+                </div>
+            }
+            else if (visible.Count == 0)
+            {
+                <div class="d-flex flex-column align-center pa-6 gap-2">
+                    <MudIcon Icon="@Icons.Material.Outlined.DoneAll" Size="Size.Large" Class="mud-text-secondary" />
+                    <MudText Class="mud-text-secondary">
+                        All @doneCount comment@(doneCount != 1 ? "s are" : " is") marked Done. Turn on "Show done" to see @(doneCount != 1 ? "them" : "it").
+                    </MudText>
+                </div>
+            }
+            else
+            {
+                @foreach (var c in visible.AsEnumerable().Reverse())
+                {
+                    var mine = IsMine(c);
+                    <div class="comment-item @(mine ? "mine" : "") @(c.IsDone ? "done" : "")" @key="c.Id">
+                        <div class="d-flex align-center gap-2 mb-1">
+                            <MudTooltip Text="@(c.IsDone ? "Reopen this comment" : "Mark this comment as Done — it is hidden from the list and stops counting on the risk row")">
+                                <MudCheckBox T="bool" Value="c.IsDone" Color="Color.Success" Dense
+                                             ValueChanged="@((bool v) => SetDoneAsync(c, v))" />
+                            </MudTooltip>
+                            <MudAvatar Size="Size.Small" Color="@(mine ? Color.Primary : Color.Secondary)">
+                                @Initials(c.DisplayAuthor)
+                            </MudAvatar>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">@AuthorLabel(c.DisplayAuthor)</MudText>
+                            @if (c.IsDone)
+                            {
+                                <MudTooltip Text="@DoneTooltip(c)">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                                        Done by @AuthorLabel(c.DisplayDoneBy)
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                            <MudSpacer />
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">@FormatTime(c.CreatedAt)</MudText>
+                            @if (mine)
+                            {
+                                <MudTooltip Text="Delete this comment">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small"
+                                                   Color="Color.Error" OnClick="@(() => DeleteAsync(c))" />
+                                </MudTooltip>
+                            }
+                        </div>
+                        <MudText Typo="Typo.body2" Style="white-space:pre-wrap; word-break:break-word">@c.Text</MudText>
+                    </div>
+                }
+            }
+        </div>
+
+        <MudDivider Class="my-3" />
+
+        <MudTextField @bind-Value="_newComment"
+                      Label="Add a comment"
+                      Placeholder="Share an update for this risk…"
+                      Variant="Variant.Outlined"
+                      Lines="3"
+                      MaxLength="RiskComment.MaxTextLength"
+                      Counter="RiskComment.MaxTextLength"
+                      Immediate
+                      Disabled="@ReadOnly"
+                      AutoFocus="@AutoFocus" />
+
+        <div class="d-flex justify-end gap-2 mt-3">
+            @ExtraActions
+            <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Send"
+                       Disabled="@(ReadOnly || _saving || string.IsNullOrWhiteSpace(_newComment))"
+                       OnClick="AddAsync">
+                Add comment
+            </MudButton>
+        </div>
+    }
+</div>
+
+<style>
+    .risk-comments {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+    }
+
+    .risk-comments .comments-scroll {
+        max-height: 50vh;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
+
+    .risk-comments .comment-item {
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin-bottom: 8px;
+        background: var(--mud-palette-surface);
+    }
+
+    .risk-comments .comment-item.mine {
+        background: rgba(var(--mud-palette-primary-rgb), 0.08);
+        border-color: var(--mud-palette-primary);
+    }
+
+    .risk-comments .comment-item.done {
+        border-left: 4px solid var(--mud-palette-success);
+        opacity: 0.65;
+    }
+</style>
+
+@code {
+    [Parameter] public int RiskId { get; set; }
+
+    [Parameter] public string? CurrentUser { get; set; }
+
+    [Parameter] public string? RiskTitle { get; set; }
+
+    [Parameter] public EventCallback<int> CountChanged { get; set; }
+
+    [Parameter] public bool AutoFocus { get; set; }
+
+    [Parameter] public bool ReadOnly { get; set; }
+
+    [Parameter] public RenderFragment? ExtraActions { get; set; }
+
+    private List<RiskCommentVm> _comments = new();
+    private string? _newComment;
+    private bool _loading = true;
+    private bool _saving;
+    private bool _showDone;
+    private int _loadedRiskId;
+
+    private int OpenCount => _comments.Count(c => !c.IsDone);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (RiskId == _loadedRiskId)
+        {
+            return;
+        }
+
+        _loadedRiskId = RiskId;
+        _loading = true;
+        _showDone = false;
+        try
+        {
+            _comments = await CommentService.GetForRiskAsync(RiskId);
+            await CountChanged.InvokeAsync(OpenCount);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load comments: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private bool IsMine(RiskCommentVm c) =>
+        !string.IsNullOrWhiteSpace(CurrentUser)
+        && string.Equals(c.Author, CurrentUser, StringComparison.OrdinalIgnoreCase);
+
+    private async Task AddAsync()
+    {
+        var text = _newComment?.Trim();
+        if (string.IsNullOrEmpty(text) || _saving || ReadOnly)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var added = await CommentService.AddAsync(RiskId, text, CurrentUser);
+            _comments.Add(added);
+            _newComment = string.Empty;
+            await CountChanged.InvokeAsync(OpenCount);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to add comment: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task DeleteAsync(RiskCommentVm c)
+    {
+        try
+        {
+            var ok = await CommentService.DeleteAsync(c.Id, CurrentUser);
+            if (ok)
+            {
+                _comments.RemoveAll(x => x.Id == c.Id);
+                await CountChanged.InvokeAsync(OpenCount);
+            }
+            else
+            {
+                Snackbar.Add("Could not delete this comment.", Severity.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete comment: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task SetDoneAsync(RiskCommentVm c, bool isDone)
+    {
+        try
+        {
+            var updated = await CommentService.SetDoneAsync(c.Id, isDone, CurrentUser);
+            if (updated is null)
+            {
+                Snackbar.Add("Could not update this comment.", Severity.Warning);
+            }
+            else
+            {
+                var index = _comments.FindIndex(x => x.Id == c.Id);
+                if (index >= 0)
+                {
+                    _comments[index] = updated;
+                }
+                await CountChanged.InvokeAsync(OpenCount);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to update comment: {ex.Message}", Severity.Error);
+        }
+        StateHasChanged();
+    }
+
+    private string DoneTooltip(RiskCommentVm c)
+    {
+        var who = AuthorLabel(c.DisplayDoneBy);
+        return c.DoneAt is null
+            ? $"Marked Done by {who}."
+            : $"Marked Done by {who} on {FormatTime(c.DoneAt.Value)}.";
+    }
+
+    private string FormatTime(DateTime createdAtUtc) =>
+        UserTime.Format(createdAtUtc, "dd MMM yyyy HH:mm");
+
+    private static string AuthorLabel(string? author) =>
+        string.IsNullOrWhiteSpace(author) ? "Unknown" : author;
+
+    private static string Initials(string? author)
+    {
+        if (string.IsNullOrWhiteSpace(author))
+        {
+            return "?";
+        }
+
+        var name = author;
+        var colon = name.IndexOf(':');
+        if (colon >= 0)
+        {
+            name = name[..colon];
+        }
+        name = System.Text.RegularExpressions.Regex.Replace(name, @"[\(\[][^\)\]]*[\)\]]?", " ");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = author;
+        }
+
+        var initials = name
+            .Split(new[] { ' ', '.', '\\', '/', '@', '_', '-', ',' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.FirstOrDefault(char.IsLetterOrDigit))
+            .Where(ch => ch != default(char))
+            .ToList();
+
+        if (initials.Count == 0)
+        {
+            return "?";
+        }
+        if (initials.Count == 1)
+        {
+            return char.ToUpperInvariant(initials[0]).ToString();
+        }
+        return string.Concat(char.ToUpperInvariant(initials[0]), char.ToUpperInvariant(initials[^1]));
+    }
+}

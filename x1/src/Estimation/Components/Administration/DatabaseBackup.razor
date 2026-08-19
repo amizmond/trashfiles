@@ -1,0 +1,684 @@
+@attribute [Route(RoutingPath.DatabaseBackup)]
+@inherits LocalTimeComponentBase
+
+@inject IBackupService BackupService
+@inject IWindowsAuthService WindowsAuthService
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+
+@implements IAsyncDisposable
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Microsoft.Extensions.DependencyInjection
+
+<PageTitle>Database Backup</PageTitle>
+
+<AdminOnly>
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg mb-3" Elevation="2">
+        <MudText Typo="Typo.h5" Class="mb-4">Database Backup</MudText>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_settings is not null)
+        {
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudSwitch @bind-Value="_settings.Enabled" Color="Color.Primary" T="bool" Label="Enable scheduled backups" />
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudSwitch @bind-Value="_settings.VerifyAfterBackup" Color="Color.Primary" T="bool"
+                               Label="Verify each backup (RESTORE VERIFYONLY)" />
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Reads the file back and checks its checksums. Roughly doubles how long a backup takes.
+                    </MudText>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudTextField @bind-Value="_settings.BackupFolderPath"
+                                  Label="Backup folder path"
+                                  Variant="Variant.Outlined"
+                                  Placeholder="e.g. C:\Backups\Estimation"
+                                  HelperText="The folder must be accessible to the SQL Server service account."
+                                  Required="true"
+                                  Immediate="true"
+                                  @bind-Value:after="OnPathChanged" />
+                </MudItem>
+
+                @if (_pathCheck is not null)
+                {
+                    <MudItem xs="12">
+                        <MudPaper Class="pa-3" Elevation="0" Outlined="true">
+                            <MudText Typo="Typo.subtitle2" Class="mb-2">Path check</MudText>
+                            @foreach (var result in _pathCheck.Results)
+                            {
+                                <MudAlert Severity="@ToSeverity(result.Outcome)" Dense="true" Class="mb-1">
+                                    <b>@result.Name:</b> @result.Detail
+                                </MudAlert>
+                            }
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                <MudItem xs="12" md="4">
+                    <MudNumericField @bind-Value="_settings.RetentionCount"
+                                     Label="Keep last N backups"
+                                     Variant="Variant.Outlined"
+                                     HelperText="0 = no limit on the number of files"
+                                     Min="0"
+                                     Max="365" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudNumericField @bind-Value="_settings.RetentionDays"
+                                     Label="Delete backups older than (days)"
+                                     Variant="Variant.Outlined"
+                                     HelperText="0 = no age limit"
+                                     Min="0"
+                                     Max="3650" />
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudNumericField @bind-Value="_settings.RetentionMaxTotalGb"
+                                     Label="Total size limit (GB)"
+                                     Variant="Variant.Outlined"
+                                     HelperText="0 = no size limit. The newest backup is always kept."
+                                     Min="0"
+                                     Max="100000" />
+                </MudItem>
+
+                <MudItem xs="12" md="4">
+                    <MudSelect T="BackupScheduleType" @bind-Value="_settings.ScheduleType"
+                               Label="Schedule" Variant="Variant.Outlined">
+                        <MudSelectItem Value="BackupScheduleType.Daily">Daily</MudSelectItem>
+                        <MudSelectItem Value="BackupScheduleType.Hourly">Every N hours</MudSelectItem>
+                        <MudSelectItem Value="BackupScheduleType.Weekly">Weekly</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+
+                @if (_settings.ScheduleType == BackupScheduleType.Hourly)
+                {
+                    <MudItem xs="12" md="4">
+                        <MudNumericField @bind-Value="_settings.IntervalHours"
+                                         Label="Interval (hours)"
+                                         Variant="Variant.Outlined"
+                                         Min="1" Max="168" />
+                    </MudItem>
+                }
+                else if (_settings.ScheduleType == BackupScheduleType.Weekly)
+                {
+                    <MudItem xs="12" md="4">
+                        <MudSelect T="DayOfWeek" @bind-Value="_settings.WeeklyDay"
+                                   Label="Day of week" Variant="Variant.Outlined">
+                            @foreach (var d in Enum.GetValues<DayOfWeek>())
+                            {
+                                <MudSelectItem Value="d">@d.ToString()</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudTimePicker @bind-Time="_dailyTimeSpan"
+                                       Label="Time of day"
+                                       Variant="Variant.Outlined"
+                                       AmPm="false" />
+                    </MudItem>
+                }
+                else
+                {
+                    <MudItem xs="12" md="4">
+                        <MudTimePicker @bind-Time="_dailyTimeSpan"
+                                       Label="Time of day"
+                                       Variant="Variant.Outlined"
+                                       AmPm="false" />
+                    </MudItem>
+                }
+            </MudGrid>
+
+            <MudStack Row="true" Class="mt-4" Spacing="2">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Save"
+                           OnClick="SaveSettingsAsync"
+                           Disabled="_saving || _running">
+                    Save settings
+                </MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.PlayArrow"
+                           OnClick="RunBackupNowAsync"
+                           Disabled="_running || _saving || string.IsNullOrWhiteSpace(_settings.BackupFolderPath)">
+                    @if (_running)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>Running…</span>
+                    }
+                    else
+                    {
+                        <span>Run backup now</span>
+                    }
+                </MudButton>
+                <MudButton Variant="Variant.Outlined"
+                           StartIcon="@Icons.Material.Filled.NetworkCheck"
+                           OnClick="TestPathAsync"
+                           Disabled="_testingPath || string.IsNullOrWhiteSpace(_settings.BackupFolderPath)">
+                    @if (_testingPath)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>Testing…</span>
+                    }
+                    else
+                    {
+                        <span>Test path</span>
+                    }
+                </MudButton>
+                @if (_running)
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.Cancel"
+                               OnClick="CancelBackupAsync"
+                               Disabled="_cancelling">
+                        Cancel
+                    </MudButton>
+                }
+                <MudSpacer />
+                <MudStack Spacing="0" Class="align-end">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Last backup: @UserTime.Format(_settings.LastBackupAt, "yyyy-MM-dd HH:mm")
+                    </MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Next backup: @(_settings.Enabled ? UserTime.Format(_settings.NextBackupAt, "yyyy-MM-dd HH:mm", "pending") : "disabled")
+                    </MudText>
+                </MudStack>
+            </MudStack>
+        }
+    </MudPaper>
+
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudStack Row="true" Class="mb-3" AlignItems="AlignItems.Center">
+            <MudText Typo="Typo.h6">History</MudText>
+            <MudSpacer />
+            <MudSelect T="string" Value="_statusFilter" ValueChanged="OnStatusFilterChanged"
+                       Label="Status" Variant="Variant.Outlined" Margin="Margin.Dense"
+                       Style="max-width:180px;" Clearable="true">
+                <MudSelectItem T="string" Value="@AllStatuses">All</MudSelectItem>
+                <MudSelectItem T="string" Value="@BackupStatuses.Success">Success</MudSelectItem>
+                <MudSelectItem T="string" Value="@BackupStatuses.Failed">Failed</MudSelectItem>
+                <MudSelectItem T="string" Value="@BackupStatuses.Cancelled">Cancelled</MudSelectItem>
+                <MudSelectItem T="string" Value="@BackupStatuses.Running">Running</MudSelectItem>
+            </MudSelect>
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="ReloadHistoryAsync" />
+        </MudStack>
+
+        <MudDataGrid T="BackupHistory" Items="FilteredHistory" Dense Hover Striped Bordered="true" RowsPerPage="25">
+            <Columns>
+                <PropertyColumn Property="x => x.StartedAt" Title="Started"
+                                InitialDirection="SortDirection.Descending">
+                    <CellTemplate>
+                        @UserTime.Format(context.Item.StartedAt, "yyyy-MM-dd HH:mm:ss")
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.Status" Title="Status">
+                    <CellTemplate>
+                        @switch (context.Item.Status)
+                        {
+                            case BackupStatuses.Success:
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Success</MudChip>
+                                break;
+                            case BackupStatuses.Failed:
+                                <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">Failed</MudChip>
+                                break;
+                            case BackupStatuses.Running:
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Running</MudChip>
+                                break;
+                            case BackupStatuses.Cancelled:
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">Cancelled</MudChip>
+                                break;
+                            default:
+                                <MudText>@context.Item.Status</MudText>
+                                break;
+                        }
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.TriggeredBy" Title="Triggered by" />
+                <TemplateColumn Title="Duration" Sortable="false">
+                    <CellTemplate>
+                        @FormatDuration(context.Item)
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.FilePath" Title="File">
+                    <CellTemplate>
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="0">
+                            <MudText Style="@TruncatedCellStyle" title="@context.Item.FilePath">
+                                @(context.Item.FilePath ?? "—")
+                            </MudText>
+                            @if (!string.IsNullOrWhiteSpace(context.Item.FilePath))
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                               Size="Size.Small"
+                                               title="Copy full path"
+                                               OnClick="@(() => CopyPathAsync(context.Item.FilePath!))" />
+                            }
+                        </MudStack>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.FileSizeBytes" Title="Size">
+                    <CellTemplate>
+                        @(context.Item.FileSizeBytes is null ? "—" : FormatSize(context.Item.FileSizeBytes.Value))
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.Message" Title="Message">
+                    <CellTemplate>
+                        <MudText Style="@TruncatedCellStyle" title="@context.Item.Message">
+                            @(context.Item.Message ?? "—")
+                        </MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+            </Columns>
+            <NoRecordsContent>
+                <MudText Class="pa-4 mud-text-secondary">No backups yet.</MudText>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudDataGridPager T="BackupHistory" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+</AdminOnly>
+
+@code {
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private BackupSettings? _settings;
+    private List<BackupHistory> _history = new();
+    private bool _loading = true;
+    private bool _saving;
+    private bool _running;
+
+    private TimeSpan? _dailyTimeSpan;
+
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
+
+    /// <summary>How many idle polls to tolerate before giving up on a run that never appeared.</summary>
+    private const int MaxStartupPolls = 5;
+
+    private const string TruncatedCellStyle =
+        "max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;";
+
+    private const string AllStatuses = "";
+
+    private System.Threading.Timer? _pollTimer;
+    private bool _disposed;
+    private bool _observedRun;
+    private int _startupPolls;
+
+    private bool _testingPath;
+    private bool _cancelling;
+    private BackupPathCheck? _pathCheck;
+    private string _statusFilter = AllStatuses;
+
+    private IEnumerable<BackupHistory> FilteredHistory =>
+        string.IsNullOrEmpty(_statusFilter)
+            ? _history
+            : _history.Where(h => h.Status == _statusFilter);
+
+    private void OnStatusFilterChanged(string? value)
+    {
+        _statusFilter = value ?? AllStatuses;
+    }
+
+    /// <summary>A check result describes the path it was run against, so editing invalidates it.</summary>
+    private void OnPathChanged()
+    {
+        _pathCheck = null;
+    }
+
+    private static Severity ToSeverity(BackupCheckOutcome outcome) => outcome switch
+    {
+        BackupCheckOutcome.Pass => Severity.Success,
+        BackupCheckOutcome.Warning => Severity.Warning,
+        _ => Severity.Error
+    };
+
+    private static string FormatDuration(BackupHistory history)
+    {
+        if (history.FinishedAt is null)
+        {
+            return "—";
+        }
+
+        var elapsed = history.FinishedAt.Value - history.StartedAt;
+        if (elapsed < TimeSpan.Zero)
+        {
+            return "—";
+        }
+
+        if (elapsed.TotalMinutes < 1)
+        {
+            return $"{elapsed.TotalSeconds:F1}s";
+        }
+
+        return elapsed.TotalHours < 1
+            ? $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s"
+            : $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m";
+    }
+
+    private async Task CopyPathAsync(string path)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", path);
+            Snackbar.Add("Path copied.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not copy the path: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task TestPathAsync()
+    {
+        if (_settings is null || string.IsNullOrWhiteSpace(_settings.BackupFolderPath))
+        {
+            Snackbar.Add("Set a backup folder path first.", Severity.Warning);
+            return;
+        }
+
+        _testingPath = true;
+        _pathCheck = null;
+        StateHasChanged();
+        try
+        {
+            _pathCheck = await BackupService.CheckBackupPathAsync(_settings.BackupFolderPath);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _testingPath = false;
+        }
+    }
+
+    private async Task CancelBackupAsync()
+    {
+        if (!await MessageService.Confirm(
+                "Stop the backup that is currently running? A partial file may be left behind for retention to clear up.",
+                "Cancel backup",
+                "Stop backup"))
+        {
+            return;
+        }
+
+        _cancelling = true;
+        StateHasChanged();
+        try
+        {
+            if (!BackupService.TryCancelRunningBackup())
+            {
+                Snackbar.Add("Nothing is running on this server to cancel.", Severity.Info);
+            }
+        }
+        finally
+        {
+            _cancelling = false;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // <AdminOnly> is what actually gates the page; this only avoids loading data nobody will
+        // see. Clearing the flag matters because the initial value is true.
+        if (!IsAdmin)
+        {
+            _loading = false;
+            return;
+        }
+
+        await ReloadAsync();
+
+        // Covers opening the page while a scheduled backup, or one started before a refresh, is
+        // still in flight.
+        if (BackupService.IsBackupRunning)
+        {
+            _running = true;
+            StartPolling();
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+        try
+        {
+            _settings = await BackupService.GetOrCreateSettingsAsync();
+            _dailyTimeSpan = _settings.DailyTime.ToTimeSpan();
+            _history = await BackupService.GetHistoryAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ReloadHistoryAsync()
+    {
+        try
+        {
+            _history = await BackupService.GetHistoryAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        if (_settings.Enabled && string.IsNullOrWhiteSpace(_settings.BackupFolderPath))
+        {
+            Snackbar.Add("Backup folder path is required when scheduled backups are enabled.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+        StateHasChanged();
+        try
+        {
+            if (_dailyTimeSpan.HasValue)
+            {
+                _settings.DailyTime = TimeOnly.FromTimeSpan(_dailyTimeSpan.Value);
+            }
+
+            _settings = await BackupService.UpdateSettingsAsync(_settings);
+            _dailyTimeSpan = _settings.DailyTime.ToTimeSpan();
+            Snackbar.Add("Settings saved.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task RunBackupNowAsync()
+    {
+        if (_settings is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_settings.BackupFolderPath))
+        {
+            Snackbar.Add("Set a backup folder path first.", Severity.Warning);
+            return;
+        }
+
+        if (!await MessageService.Confirm("Run a database backup now?"))
+        {
+            return;
+        }
+
+        if (BackupService.IsBackupRunning)
+        {
+            Snackbar.Add("A backup is already running.", Severity.Warning);
+            return;
+        }
+
+        var userName = await WindowsAuthService.GetUserName() ?? "Manual";
+
+        // Deliberately detached from this circuit. A backup can run for a long time, and holding it
+        // on the circuit meant a browser navigating away or a dropped connection lost the outcome.
+        // Its own scope keeps it alive independently of the page; progress is picked up by polling.
+        _ = Task.Run(async () =>
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<IBackupService>();
+            try
+            {
+                await service.RunBackupAsync(userName);
+            }
+            catch (Exception ex)
+            {
+                // RunBackupAsync records its own failures; this only catches the rare case where it
+                // could not even do that.
+                Serilog.Log.Error(ex, "Manual database backup failed to start or report");
+            }
+        });
+
+        // Rendered explicitly rather than relying on the framework's post-handler render, so the
+        // button shows its running state from the moment the run is handed off.
+        _running = true;
+        StartPolling();
+        Snackbar.Add("Backup started.", Severity.Info);
+        StateHasChanged();
+    }
+
+    private void StartPolling()
+    {
+        _pollTimer ??= new System.Threading.Timer(_ => _ = PollAsync(), null, PollInterval, PollInterval);
+    }
+
+    private void StopPolling()
+    {
+        _pollTimer?.Dispose();
+        _pollTimer = null;
+    }
+
+    private async Task PollAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                await ReloadHistoryAsync();
+
+                // A history row is also treated as evidence, both because the detached run may not
+                // have reached the service yet on the first tick, and because a backup started by
+                // another application instance is invisible to the in-process flag.
+                var running = BackupService.IsBackupRunning
+                              || _history.Any(h => h.Status == BackupStatuses.Running);
+
+                if (running)
+                {
+                    _observedRun = true;
+                    _startupPolls = 0;
+                }
+                else if (_observedRun || ++_startupPolls >= MaxStartupPolls)
+                {
+                    StopPolling();
+                    _running = false;
+                    _observedRun = false;
+                    _startupPolls = 0;
+                    ReportLastOutcome();
+                    await ReloadAsync();
+                }
+
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // The circuit went away between the timer firing and the render dispatch.
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Database backup page failed to refresh while polling");
+        }
+    }
+
+    private void ReportLastOutcome()
+    {
+        var latest = _history.FirstOrDefault();
+        if (latest is null)
+        {
+            return;
+        }
+
+        switch (latest.Status)
+        {
+            case BackupStatuses.Success:
+                Snackbar.Add($"Backup completed: {Path.GetFileName(latest.FilePath)}", Severity.Success);
+                break;
+            case BackupStatuses.Failed:
+                Snackbar.Add($"Backup failed: {latest.Message}", Severity.Error);
+                break;
+            case BackupStatuses.Cancelled:
+                Snackbar.Add("Backup was cancelled before it finished.", Severity.Warning);
+                break;
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        StopPolling();
+        return ValueTask.CompletedTask;
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024)
+        {
+            return $"{bytes} B";
+        }
+
+        double size = bytes;
+        string[] units = { "KB", "MB", "GB", "TB" };
+        var unitIndex = -1;
+
+        do
+        {
+            size /= 1024;
+            unitIndex++;
+        }
+        while (size >= 1024 && unitIndex < units.Length - 1);
+
+        return $"{size:F1} {units[unitIndex]}";
+    }
+}

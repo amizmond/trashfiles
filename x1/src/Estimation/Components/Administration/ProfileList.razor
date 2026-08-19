@@ -1,0 +1,113 @@
+@attribute [Route(RoutingPath.Profiles)]
+@inherits LocalTimeComponentBase
+
+@inject IProfileService ProfileService
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+@using Estimation.Core.Administration.Services
+
+<PageTitle>Profiles</PageTitle>
+
+<AdminOnly>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+            <MudText Typo="Typo.h5">Profiles</MudText>
+            <MudSpacer />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                       OnClick="@(() => Navigation.NavigateTo($"{RoutingPath.Profiles}/new"))">
+                New Profile
+            </MudButton>
+        </MudStack>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_profiles.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info">
+                No profiles yet. Create a profile and assign it to users on the Authorization page.
+            </MudAlert>
+        }
+        else
+        {
+            <MudDataGrid T="ProfileSummary" Items="_profiles" Hover="true" Striped="true" Dense="true" SortMode="SortMode.Single">
+                <Columns>
+                    <PropertyColumn Property="p => p.Name" Title="Name" />
+                    <PropertyColumn Property="p => p.Description" Title="Description" />
+                    <PropertyColumn Property="p => p.UserCount" Title="Assigned Users" />
+                    <PropertyColumn Property="p => p.CreatedBy" Title="Created By" />
+                    <TemplateColumn Title="Modified" Sortable="false">
+                        <CellTemplate>
+                            @{
+                                var modified = context.Item.ModifiedAt ?? context.Item.CreatedAt;
+                            }
+                            @UserTime.Format(modified, "g")
+                        </CellTemplate>
+                    </TemplateColumn>
+                    <TemplateColumn Title="Actions" Sortable="false">
+                        <CellTemplate>
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                               OnClick="@(() => Navigation.NavigateTo($"{RoutingPath.Profiles}/{context.Item.Id}"))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                               OnClick="@(() => DeleteProfileAsync(context.Item))" />
+                            </MudStack>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+            </MudDataGrid>
+        }
+    </MudPaper>
+</div>
+
+</AdminOnly>
+
+@code {
+    private bool _loading = true;
+    private List<ProfileSummary> _profiles = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _loading = false;
+    }
+
+    private async Task LoadAsync() => _profiles = await ProfileService.GetSummariesAsync();
+
+    private async Task DeleteProfileAsync(ProfileSummary profile)
+    {
+        var message = $"Delete profile '{profile.Name}'?";
+        if (profile.UserCount > 0)
+        {
+            var users = await ProfileService.GetAssignedUserNamesAsync(profile.Id);
+            var preview = string.Join(", ", users.Take(10));
+            if (users.Count > 10)
+            {
+                preview += $" … (+{users.Count - 10} more)";
+            }
+            message = $"Profile '{profile.Name}' is assigned to {profile.UserCount} user(s): {preview}. " +
+                      "Deleting it removes their access granted through this profile. Delete anyway?";
+        }
+
+        if (!await MessageService.Confirm(message))
+        {
+            return;
+        }
+
+        var (success, error) = await ProfileService.DeleteAsync(profile.Id);
+        if (success)
+        {
+            Snackbar.Add($"Profile '{profile.Name}' deleted.", Severity.Success);
+            await LoadAsync();
+        }
+        else
+        {
+            Snackbar.Add(error ?? "Delete failed.", Severity.Error);
+        }
+    }
+}

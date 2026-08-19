@@ -1,0 +1,1835 @@
+@attribute [Route(RoutingPath.Risks)]
+@inherits LocalTimeComponentBase
+
+@inject IRiskService RiskService
+@inject IRiskCommentService RiskCommentService
+@inject IPiService PiService
+@inject IBrowserDownloadService DownloadService
+@inject ISnackbar Snackbar
+@inject IWindowsAuthService WindowsAuth
+@inject NavigationManager Nav
+@inject IModalDialogService MessageService
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
+@using MudBlazor.Utilities
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Risks.Models
+@using Estimation.Core.Risks.Services
+
+<PageTitle>@PlanningDisplayNames.Risks</PageTitle>
+
+<AccessGuard PageKey="Risks">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.Risks</MudText>
+
+            <MudSelect T="int?"
+                       Value="_selectedPiId"
+                       ValueChanged="OnPiChangedAsync"
+                       Label="@PlanningDisplayNames.PI"
+                       Variant="Variant.Outlined"
+                       Dense
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:240px">
+                @foreach (var pi in _allPis)
+                {
+                    <MudSelectItem T="int?" Value="@pi.Id">@pi.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSpacer />
+
+            <div style="position:relative;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                            Class="pa-4" Style="min-width:340px; max-height:75vh; overflow-y:auto">
+                    <div class="d-flex align-center justify-space-between mb-1">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@PlanningDisplayNames.ToggleColumns</MudText>
+                        <div>
+                            <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Default"
+                                       StartIcon="@Icons.Material.Filled.RestartAlt" OnClick="ResetColumnsAsync">Reset</MudButton>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                        </div>
+                    </div>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary mb-2 d-block">Drag a row to reorder. Toggle to show or hide.</MudText>
+                    <MudDropContainer T="ColumnItem" @ref="_columnDropContainer" Items="_columnItems"
+                                      ItemsSelector="@((item, zone) => item.Selector == zone)"
+                                      ItemDropped="OnColumnDroppedAsync" Class="d-block">
+                        <ChildContent>
+                            <MudDropZone T="ColumnItem" Identifier="@ColumnZoneId" AllowReorder="true"
+                                         Class="d-flex flex-column gap-1" />
+                        </ChildContent>
+                        <ItemRenderer>
+                            <div class="d-flex align-center gap-2 px-2 py-1 rounded-lg mud-paper-outlined" style="cursor:grab; user-select:none">
+                                <MudIcon Icon="@Icons.Material.Filled.DragIndicator" Size="Size.Small" Class="mud-text-secondary" />
+                                <MudSwitch T="bool" Value="context.Visible"
+                                           ValueChanged="@(v => OnColumnVisibilityChangedAsync(context, v))"
+                                           Label="@context.Label" Color="Color.Primary" Dense Class="flex-grow-1 ma-0" />
+                            </div>
+                        </ItemRenderer>
+                    </MudDropContainer>
+
+                    <MudDivider Class="my-3" />
+                    <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Feature columns</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary mb-2 d-block">Shown inside the expanded feature rows.</MudText>
+                    <div class="d-flex flex-column gap-1">
+                        @foreach (var item in _featureColumnItems)
+                        {
+                            var current = item;
+                            <div class="d-flex align-center gap-2 px-2 py-1 rounded-lg mud-paper-outlined">
+                                <MudSwitch T="bool" Value="current.Visible"
+                                           ValueChanged="@(v => OnFeatureColumnVisibilityChangedAsync(current, v))"
+                                           Label="@current.Label" Color="Color.Primary" Dense Class="flex-grow-1 ma-0" />
+                            </div>
+                        }
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            <MudTooltip Text="Exports every risk of the selected PI, ignoring the filters.">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="@(_loading || _exporting || _selectedPiId is null)"
+                           OnClick="ExportToExcelAsync">
+                    Export to excel
+                </MudButton>
+            </MudTooltip>
+
+            @if (_canEdit)
+            {
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           Disabled="@(_loading || _selectedPiId is null)"
+                           OnClick="OpenNewDialogAsync">
+                    New
+                </MudButton>
+            }
+        </div>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                   Variant="DrawerVariant.Temporary" Width="360px"
+                   Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">@PlanningDisplayNames.Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4 risk-filter-panel">
+                <MudTextField @bind-Value="FilterSearch" Label="@PlanningDisplayNames.Search"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              HelperText="Matches summary, owner, ART, comments and the linked features."
+                              Clearable Immediate DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <MudSelect T="RiskCategory?" Label="@PlanningDisplayNames.Category" MultiSelection
+                           @bind-SelectedValues="FilterCategories"
+                           Dense Variant="Variant.Outlined" Clearable
+                           ToStringFunc="@(c => c?.ToDisplayString() ?? string.Empty)"
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var category in Enum.GetValues<RiskCategory>())
+                    {
+                        <MudSelectItem T="RiskCategory?" Value="@((RiskCategory?)category)">@category.ToDisplayString()</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="RiskSeverity?" Label="@PlanningDisplayNames.Severity" MultiSelection
+                           @bind-SelectedValues="FilterSeverities"
+                           Dense Variant="Variant.Outlined" Clearable
+                           ToStringFunc="@(s => s?.ToDisplayString() ?? string.Empty)"
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var severity in Enum.GetValues<RiskSeverity>())
+                    {
+                        <MudSelectItem T="RiskSeverity?" Value="@((RiskSeverity?)severity)">@severity.ToDisplayString()</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="RiskStatus?" Label="@PlanningDisplayNames.Status" MultiSelection
+                           @bind-SelectedValues="FilterStatuses"
+                           Dense Variant="Variant.Outlined" Clearable
+                           ToStringFunc="@(s => s?.ToDisplayString() ?? string.Empty)"
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var status in Enum.GetValues<RiskStatus>())
+                    {
+                        <MudSelectItem T="RiskStatus?" Value="@((RiskStatus?)status)">@status.ToDisplayString()</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableArts"
+                                        Values="FilterArtNames"
+                                        ValuesChanged="OnFilterArtNamesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.Art"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find risks without an ART or exclude the selected ones">
+                        <MudCheckBox T="bool" @bind-Value="FilterArtNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableOwners"
+                                        Values="FilterOwners"
+                                        ValuesChanged="OnFilterOwnersChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.Owner"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find risks without an owner or exclude the selected ones">
+                        <MudCheckBox T="bool" @bind-Value="FilterOwnerNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableJiraIds"
+                                        Values="FilterJiraIds"
+                                        ValuesChanged="OnFilterJiraIdsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.Feature"
+                                        ToStringFunc="@LookupFeatureText"
+                                        ItemTemplate="@FeatureItemTemplate"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find risks without features or exclude the selected ones">
+                        <MudCheckBox T="bool" @bind-Value="FilterJiraIdNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableSoIds"
+                                        Values="FilterSoIds"
+                                        ValuesChanged="OnFilterSoIdsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.StrategicObjective"
+                                        ToStringFunc="@LookupSoText"
+                                        ItemTemplate="@SoItemTemplate"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find risks without Strategic Objective or exclude the selected ones">
+                        <MudCheckBox T="bool" @bind-Value="FilterSoNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableEpicIds"
+                                        Values="FilterEpicIds"
+                                        ValuesChanged="OnFilterEpicIdsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.PortfolioEpic"
+                                        ToStringFunc="@LookupEpicText"
+                                        ItemTemplate="@EpicItemTemplate"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find risks without Portfolio Epic or exclude the selected ones">
+                        <MudCheckBox T="bool" @bind-Value="FilterEpicNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableBoIds"
+                                        Values="FilterBoIds"
+                                        ValuesChanged="OnFilterBoIdsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.BusinessOutcome"
+                                        ToStringFunc="@LookupBoText"
+                                        ItemTemplate="@BoItemTemplate"
+                                        Style="flex:1" />
+                    <MudTooltip Text="Negate: find risks without Business Outcome or exclude the selected ones">
+                        <MudCheckBox T="bool" @bind-Value="FilterBoNot" Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <MudDivider Class="my-1" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">@PlanningDisplayNames.DueBy</MudText>
+                <div class="d-flex gap-2">
+                    <MudDatePicker Date="FilterDueFrom" DateChanged="@(d => FilterDueFrom = d)"
+                                   Label="From" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Clearable DateFormat="yyyy-MM-dd" Style="flex:1" />
+                    <MudDatePicker Date="FilterDueTo" DateChanged="@(d => FilterDueTo = d)"
+                                   Label="To" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Clearable DateFormat="yyyy-MM-dd" Style="flex:1" />
+                </div>
+
+                <MudDivider Class="my-1" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">@PlanningDisplayNames.DateRaised</MudText>
+                <div class="d-flex gap-2">
+                    <MudDatePicker Date="FilterRaisedFrom" DateChanged="@(d => FilterRaisedFrom = d)"
+                                   Label="From" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Clearable DateFormat="yyyy-MM-dd" Style="flex:1" />
+                    <MudDatePicker Date="FilterRaisedTo" DateChanged="@(d => FilterRaisedTo = d)"
+                                   Label="To" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Clearable DateFormat="yyyy-MM-dd" Style="flex:1" />
+                </div>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    @PlanningDisplayNames.ClearFilters
+                </MudButton>
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+
+        @if (!_loading && _allPis.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Class="mt-3">No PIs are defined yet. Create a PI before raising risks.</MudAlert>
+        }
+        else
+        {
+            <MudDataGrid @ref="_grid"
+                         T="RiskVm"
+                         Items="@_filteredRows"
+                         Hover="true"
+                         Striped="true"
+                         Dense="true"
+                         Elevation="0"
+                         Loading="_loading"
+                         LoadingProgressColor="Color.Primary"
+                         ColumnResizeMode="ResizeMode.Container"
+                         @bind-CurrentPage="_currentPage"
+                         @bind-RowsPerPage="_pageSize">
+                <Columns>
+                    <HierarchyColumn T="RiskVm" />
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showOrder" CellStyle="width:60px">
+                        <HeaderTemplate>#</HeaderTemplate>
+                        <CellTemplate>@OrderNumber(context.Item)</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showDateRaised">
+                        <HeaderTemplate>@SortableHeader(SortableDateRaised, PlanningDisplayNames.DateRaised)</HeaderTemplate>
+                        <CellTemplate>@FormatDay(context.Item.DateRaised)</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" CellStyle="min-width:80px; max-width:260px;" Hidden="!_showArt">
+                        <HeaderTemplate>@SortableHeader(SortableArt, PlanningDisplayNames.Art)</HeaderTemplate>
+                        <CellTemplate>
+                            @foreach (var art in context.Item.Arts)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary" Class="mr-1">
+                                    @art.Name
+                                </MudChip>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" CellStyle="min-width:100px; max-width:260px;" Hidden="!_showJiraIds">
+                        <HeaderTemplate>@SortableHeader(SortableJiraIds, PlanningDisplayNames.RiskJiraIds)</HeaderTemplate>
+                        <CellTemplate>
+                            @foreach (var feature in context.Item.Features.Where(f => !string.IsNullOrEmpty(f.JiraId)))
+                            {
+                                <MudTooltip Text="@feature.Summary">
+                                    <a href="@(Configuration["JiraTaskUrl"] + feature.JiraId)" target="_blank" style="text-decoration:none">
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                            @feature.JiraId
+                                        </MudChip>
+                                    </a>
+                                </MudTooltip>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showCategory">
+                        <HeaderTemplate>@SortableHeader(SortableCategory, PlanningDisplayNames.Category)</HeaderTemplate>
+                        <CellTemplate>
+                            <MudTooltip Text="@(context.Item.Category == RiskCategory.Risk ? "Potential future problem" : "Problem that has already materialised")">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                         Color="@CategoryColor(context.Item.Category)">
+                                    @context.Item.Category.ToDisplayString()
+                                </MudChip>
+                            </MudTooltip>
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showSeverity">
+                        <HeaderTemplate>@SortableHeader(SortableSeverity, PlanningDisplayNames.Severity)</HeaderTemplate>
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                     Color="@SeverityColor(context.Item.Severity)">
+                                @context.Item.Severity.ToDisplayString()
+                            </MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" CellStyle="min-width:150px; max-width:500px;" Hidden="!_showSummary">
+                        <HeaderTemplate>@SortableHeader(SortableSummary, PlanningDisplayNames.Summary)</HeaderTemplate>
+                        <CellTemplate>
+                            <div style="white-space:pre-wrap; word-break:break-word">@context.Item.Summary</div>
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" CellStyle="min-width:80px; max-width:220px;" Hidden="!_showOwner">
+                        <HeaderTemplate>@SortableHeader(SortableOwner, PlanningDisplayNames.Owner)</HeaderTemplate>
+                        <CellTemplate>@context.Item.Owner</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showStatus">
+                        <HeaderTemplate>@SortableHeader(SortableStatus, PlanningDisplayNames.Status)</HeaderTemplate>
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                     Color="@StatusColor(context.Item.Status)">
+                                @context.Item.Status.ToDisplayString()
+                            </MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showDueBy">
+                        <HeaderTemplate>@SortableHeader(SortableDueBy, PlanningDisplayNames.DueBy)</HeaderTemplate>
+                        <CellTemplate>
+                            @if (context.Item.DueBy.HasValue)
+                            {
+                                @FormatDay(context.Item.DueBy.Value)
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" CellStyle="min-width:150px; max-width:500px;" Hidden="!_showComments">
+                        <HeaderTemplate>@SortableHeader(SortableComments, PlanningDisplayNames.RiskComments)</HeaderTemplate>
+                        <CellTemplate>
+                            <div style="white-space:pre-wrap; word-break:break-word">@_unitedComments.GetValueOrDefault(context.Item.Id)</div>
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showDateUpdated">
+                        <HeaderTemplate>@SortableHeader(SortableDateUpdated, PlanningDisplayNames.DateUpdated)</HeaderTemplate>
+                        <CellTemplate>
+                            @if (context.Item.DateUpdated.HasValue)
+                            {
+                                @FormatTimestamp(context.Item.DateUpdated.Value)
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showCreatedBy">
+                        <HeaderTemplate>@SortableHeader(SortableCreatedBy, PlanningDisplayNames.CreatedBy)</HeaderTemplate>
+                        <CellTemplate>@context.Item.DisplayCreatedBy</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Sortable="false" Resizable="true" Hidden="!_showUpdatedBy">
+                        <HeaderTemplate>@SortableHeader(SortableUpdatedBy, PlanningDisplayNames.UpdatedBy)</HeaderTemplate>
+                        <CellTemplate>@context.Item.DisplayUpdatedBy</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Actions" Sortable="false" Filterable="false"
+                                    Hidden="!_showActions" StickyRight="true">
+                        <CellTemplate>
+                            <MudBadge Content="@(_commentCounts.GetValueOrDefault(context.Item.Id))"
+                                      Color="Color.Info" Overlap="true" Bordered="true"
+                                      Visible="@(_commentCounts.GetValueOrDefault(context.Item.Id) > 0)">
+                                <MudTooltip Text="@PlanningDisplayNames.RiskComments">
+                                    <MudFab Class="m-2" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Comment"
+                                            Size="Size.Small" OnClick="@(() => ShowCommentsAsync(context.Item))" />
+                                </MudTooltip>
+                            </MudBadge>
+                            @if (_canEdit)
+                            {
+                                <MudTooltip Text="Edit risk">
+                                    <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit"
+                                            Size="Size.Small" OnClick="@(() => OpenEditDialogAsync(context.Item))" />
+                                </MudTooltip>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <ChildRowContent>
+                    <MudPaper Class="pa-3 ma-2" Elevation="0" Style="border:1px solid var(--mud-palette-lines-default)">
+                        @if (context.Item.Features.Count == 0)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">No features are linked to this risk.</MudText>
+                        }
+                        else
+                        {
+                            <MudSimpleTable Dense="true" Bordered="true" Striped="true" Elevation="0">
+                                <thead>
+                                    <tr>
+                                        @if (_showFeatureJiraId)
+                                        {
+                                            <th>@PlanningDisplayNames.JiraId</th>
+                                        }
+                                        @if (_showFeatureSummary)
+                                        {
+                                            <th>@PlanningDisplayNames.Summary</th>
+                                        }
+                                        @if (_showFeatureBo)
+                                        {
+                                            <th>@PlanningDisplayNames.BusinessOutcome</th>
+                                        }
+                                        @if (_showFeatureBoName)
+                                        {
+                                            <th>@PlanningDisplayNames.BusinessOutcomeName</th>
+                                        }
+                                        @if (_showFeatureEpic)
+                                        {
+                                            <th>@PlanningDisplayNames.PortfolioEpic</th>
+                                        }
+                                        @if (_showFeatureEpicName)
+                                        {
+                                            <th>@PlanningDisplayNames.PortfolioEpicName</th>
+                                        }
+                                        @if (_showFeatureSo)
+                                        {
+                                            <th>@PlanningDisplayNames.StrategicObjective</th>
+                                        }
+                                        @if (_showFeatureSoName)
+                                        {
+                                            <th>@PlanningDisplayNames.StrategicObjectiveName</th>
+                                        }
+                                        @if (_showFeatureLabels)
+                                        {
+                                            <th>@PlanningDisplayNames.Labels</th>
+                                        }
+                                        @if (_showFeatureStoryPoints)
+                                        {
+                                            <th>@PlanningDisplayNames.StoryPoints</th>
+                                        }
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var feature in context.Item.Features)
+                                    {
+                                        <tr @key="feature.FeatureId">
+                                            @if (_showFeatureJiraId)
+                                            {
+                                                <td>
+                                                    @if (!string.IsNullOrEmpty(feature.JiraId))
+                                                    {
+                                                        <a href="@(Configuration["JiraTaskUrl"] + feature.JiraId)" target="_blank" style="text-decoration:none">
+                                                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                                                @feature.JiraId
+                                                            </MudChip>
+                                                        </a>
+                                                    }
+                                                </td>
+                                            }
+                                            @if (_showFeatureSummary)
+                                            {
+                                                <td><span class="font-weight-bold">@feature.Summary</span></td>
+                                            }
+                                            @if (_showFeatureBo)
+                                            {
+                                                <td>
+                                                    @if (!string.IsNullOrEmpty(feature.BoJiraId))
+                                                    {
+                                                        <MudTooltip Text="@feature.BoName">
+                                                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+                                                                @feature.BoJiraId
+                                                            </MudChip>
+                                                        </MudTooltip>
+                                                    }
+                                                </td>
+                                            }
+                                            @if (_showFeatureBoName)
+                                            {
+                                                <td>@feature.BoName</td>
+                                            }
+                                            @if (_showFeatureEpic)
+                                            {
+                                                <td>
+                                                    @if (!string.IsNullOrEmpty(feature.EpicJiraId))
+                                                    {
+                                                        <MudTooltip Text="@feature.EpicName">
+                                                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+                                                                @feature.EpicJiraId
+                                                            </MudChip>
+                                                        </MudTooltip>
+                                                    }
+                                                </td>
+                                            }
+                                            @if (_showFeatureEpicName)
+                                            {
+                                                <td>@feature.EpicName</td>
+                                            }
+                                            @if (_showFeatureSo)
+                                            {
+                                                <td>
+                                                    @foreach (var so in feature.StrategicObjectives.Where(s => !string.IsNullOrEmpty(s.JiraId)))
+                                                    {
+                                                        <MudTooltip Text="@so.Name">
+                                                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+                                                                @so.JiraId
+                                                            </MudChip>
+                                                        </MudTooltip>
+                                                    }
+                                                </td>
+                                            }
+                                            @if (_showFeatureSoName)
+                                            {
+                                                <td>@feature.SoNamesText</td>
+                                            }
+                                            @if (_showFeatureLabels)
+                                            {
+                                                <td>
+                                                    @if (!string.IsNullOrEmpty(feature.Labels))
+                                                    {
+                                                        @foreach (var label in feature.Labels.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                                                        {
+                                                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Class="mr-1">@label</MudChip>
+                                                        }
+                                                    }
+                                                </td>
+                                            }
+                                            @if (_showFeatureStoryPoints)
+                                            {
+                                                <td>@feature.StoryPoints</td>
+                                            }
+                                        </tr>
+                                    }
+                                </tbody>
+                            </MudSimpleTable>
+                        }
+                    </MudPaper>
+                </ChildRowContent>
+                <NoRecordsContent>
+                    <MudText Class="pa-6 mud-text-secondary">
+                        @(_selectedPiId is null ? "Select a PI to see its risks." : "No risks found for this PI.")
+                    </MudText>
+                </NoRecordsContent>
+                <PagerContent><MudDataGridPager T="RiskVm" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+            </MudDataGrid>
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+<style>
+    .risk-filter-panel {
+        overflow-y: auto;
+    }
+
+    .risk-filter-panel > * {
+        flex-shrink: 0;
+    }
+</style>
+
+@code {
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private const string PageKey = "Risks";
+
+    private bool _loading = true;
+    private bool _canEdit;
+    private bool _exporting;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+    private string? _userName;
+
+    private List<Pi> _allPis = new();
+    private int? _selectedPiId;
+    private string? SelectedPiName => _allPis.FirstOrDefault(p => p.Id == _selectedPiId)?.Name;
+
+    private List<RiskVm> _rows = new();
+    private List<RiskVm> _filteredRows = new();
+    private List<string> _availableArts = new();
+    private List<string> _availableOwners = new();
+    private List<(string JiraId, string? Summary)> _availableFeatures = new();
+    private List<(string JiraId, string? Summary)> _availableBos = new();
+    private List<(string JiraId, string? Summary)> _availableEpics = new();
+    private List<(string JiraId, string? Summary)> _availableSos = new();
+
+    private List<string> _availableJiraIds => _availableFeatures.Select(f => f.JiraId).ToList();
+    private List<string> _availableBoIds => _availableBos.Select(b => b.JiraId).ToList();
+    private List<string> _availableEpicIds => _availableEpics.Select(e => e.JiraId).ToList();
+    private List<string> _availableSoIds => _availableSos.Select(s => s.JiraId).ToList();
+
+    private static string LookupText(List<(string JiraId, string? Summary)> source, string? jiraId)
+    {
+        if (string.IsNullOrEmpty(jiraId))
+        {
+            return string.Empty;
+        }
+
+        var hit = source.FirstOrDefault(i => i.JiraId == jiraId);
+
+        if (hit.JiraId is null)
+        {
+            return jiraId;
+        }
+
+        return string.IsNullOrEmpty(hit.Summary) ? hit.JiraId : $"{hit.JiraId} — {hit.Summary}";
+    }
+
+    private string LookupFeatureText(string? jiraId) => LookupText(_availableFeatures, jiraId);
+    private string LookupBoText(string? jiraId) => LookupText(_availableBos, jiraId);
+    private string LookupEpicText(string? jiraId) => LookupText(_availableEpics, jiraId);
+    private string LookupSoText(string? jiraId) => LookupText(_availableSos, jiraId);
+
+    private RenderFragment<string> ItemTemplate(List<(string JiraId, string? Summary)> source) => jiraId => @<text>
+        @{
+            var item = source.FirstOrDefault(i => i.JiraId == jiraId);
+        }
+        <div style="font-size:0.8rem; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+            <b>@jiraId</b>@(string.IsNullOrEmpty(item.Summary) ? "" : $" — {item.Summary}")
+        </div>
+    </text>;
+
+    private RenderFragment<string> FeatureItemTemplate => ItemTemplate(_availableFeatures);
+    private RenderFragment<string> BoItemTemplate => ItemTemplate(_availableBos);
+    private RenderFragment<string> EpicItemTemplate => ItemTemplate(_availableEpics);
+    private RenderFragment<string> SoItemTemplate => ItemTemplate(_availableSos);
+    private Dictionary<int, int> _orderNumbers = new();
+    private Dictionary<int, int> _commentCounts = new();
+    private Dictionary<int, string> _unitedComments = new();
+
+    private MudDataGrid<RiskVm>? _grid;
+    private int _currentPage;
+    private int _pageSize = 25;
+
+    private const string SortableDateRaised = "DateRaised";
+    private const string SortableArt = "Art";
+    private const string SortableJiraIds = "JiraIds";
+    private const string SortableCategory = "Category";
+    private const string SortableSeverity = "Severity";
+    private const string SortableSummary = "Summary";
+    private const string SortableOwner = "Owner";
+    private const string SortableStatus = "Status";
+    private const string SortableDueBy = "DueBy";
+    private const string SortableComments = "Comments";
+    private const string SortableDateUpdated = "DateUpdated";
+    private const string SortableCreatedBy = "CreatedBy";
+    private const string SortableUpdatedBy = "UpdatedBy";
+
+    private string? _sortColumn;
+    private bool _sortDescending;
+
+    private RenderFragment SortableHeader(string sortKey, string title) => @<div style="cursor:pointer; display:flex; align-items:center; user-select:none" @onclick="@(() => ToggleSort(sortKey))">
+        <span>@title</span>
+        @if (_sortColumn == sortKey)
+        {
+            <MudIcon Icon="@(_sortDescending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)" Size="Size.Small" Class="ml-1" />
+        }
+    </div>;
+
+    private void ToggleSort(string sortKey)
+    {
+        if (_sortColumn == sortKey)
+        {
+            if (_sortDescending)
+            {
+                _sortColumn = null;
+                _sortDescending = false;
+            }
+            else
+            {
+                _sortDescending = true;
+            }
+        }
+        else
+        {
+            _sortColumn = sortKey;
+            _sortDescending = false;
+        }
+        RecomputeFilteredRows();
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private static HashSet<T> ValuesOf<T>(IReadOnlyCollection<T?> selected) where T : struct =>
+        selected.Where(v => v.HasValue).Select(v => v!.Value).ToHashSet();
+
+    private IReadOnlyCollection<RiskCategory?> _filterCategoriesBacking = Array.Empty<RiskCategory?>();
+    private HashSet<RiskCategory> _filterCategoriesSet = new();
+    private IReadOnlyCollection<RiskCategory?> FilterCategories
+    {
+        get => _filterCategoriesBacking;
+        set { _filterCategoriesBacking = value; _filterCategoriesSet = ValuesOf(value); RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<RiskSeverity?> _filterSeveritiesBacking = Array.Empty<RiskSeverity?>();
+    private HashSet<RiskSeverity> _filterSeveritiesSet = new();
+    private IReadOnlyCollection<RiskSeverity?> FilterSeverities
+    {
+        get => _filterSeveritiesBacking;
+        set { _filterSeveritiesBacking = value; _filterSeveritiesSet = ValuesOf(value); RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<RiskStatus?> _filterStatusesBacking = Array.Empty<RiskStatus?>();
+    private HashSet<RiskStatus> _filterStatusesSet = new();
+    private IReadOnlyCollection<RiskStatus?> FilterStatuses
+    {
+        get => _filterStatusesBacking;
+        set { _filterStatusesBacking = value; _filterStatusesSet = ValuesOf(value); RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<string> _filterArtNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterArtNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterArtNames => _filterArtNamesBacking;
+
+    private void OnFilterArtNamesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterArtNamesBacking = values;
+        _filterArtNamesSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        RecomputeFilteredRows();
+    }
+
+    private bool _filterArtNotBacking;
+    private bool FilterArtNot
+    {
+        get => _filterArtNotBacking;
+        set { _filterArtNotBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<string> _filterOwnersBacking = Array.Empty<string>();
+    private HashSet<string> _filterOwnersSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterOwners => _filterOwnersBacking;
+
+    private void OnFilterOwnersChanged(IReadOnlyCollection<string> values)
+    {
+        _filterOwnersBacking = values;
+        _filterOwnersSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        RecomputeFilteredRows();
+    }
+
+    private bool _filterOwnerNotBacking;
+    private bool FilterOwnerNot
+    {
+        get => _filterOwnerNotBacking;
+        set { _filterOwnerNotBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<string> _filterJiraIdsBacking = Array.Empty<string>();
+    private HashSet<string> _filterJiraIdsSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterJiraIds => _filterJiraIdsBacking;
+
+    private void OnFilterJiraIdsChanged(IReadOnlyCollection<string> values)
+    {
+        _filterJiraIdsBacking = values;
+        _filterJiraIdsSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        RecomputeFilteredRows();
+    }
+
+    private bool _filterJiraIdNotBacking;
+    private bool FilterJiraIdNot
+    {
+        get => _filterJiraIdNotBacking;
+        set { _filterJiraIdNotBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<string> _filterBoIdsBacking = Array.Empty<string>();
+    private HashSet<string> _filterBoIdsSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterBoIds => _filterBoIdsBacking;
+
+    private void OnFilterBoIdsChanged(IReadOnlyCollection<string> values)
+    {
+        _filterBoIdsBacking = values;
+        _filterBoIdsSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        RecomputeFilteredRows();
+    }
+
+    private bool _filterBoNotBacking;
+    private bool FilterBoNot
+    {
+        get => _filterBoNotBacking;
+        set { _filterBoNotBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<string> _filterEpicIdsBacking = Array.Empty<string>();
+    private HashSet<string> _filterEpicIdsSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterEpicIds => _filterEpicIdsBacking;
+
+    private void OnFilterEpicIdsChanged(IReadOnlyCollection<string> values)
+    {
+        _filterEpicIdsBacking = values;
+        _filterEpicIdsSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        RecomputeFilteredRows();
+    }
+
+    private bool _filterEpicNotBacking;
+    private bool FilterEpicNot
+    {
+        get => _filterEpicNotBacking;
+        set { _filterEpicNotBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private IReadOnlyCollection<string> _filterSoIdsBacking = Array.Empty<string>();
+    private HashSet<string> _filterSoIdsSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterSoIds => _filterSoIdsBacking;
+
+    private void OnFilterSoIdsChanged(IReadOnlyCollection<string> values)
+    {
+        _filterSoIdsBacking = values;
+        _filterSoIdsSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        RecomputeFilteredRows();
+    }
+
+    private bool _filterSoNotBacking;
+    private bool FilterSoNot
+    {
+        get => _filterSoNotBacking;
+        set { _filterSoNotBacking = value; RecomputeFilteredRows(); }
+    }
+
+    private DateTime? _filterDueFromBacking;
+    private DateTime? FilterDueFrom
+    {
+        get => _filterDueFromBacking;
+        set { _filterDueFromBacking = value?.Date; RecomputeFilteredRows(); }
+    }
+
+    private DateTime? _filterDueToBacking;
+    private DateTime? FilterDueTo
+    {
+        get => _filterDueToBacking;
+        set { _filterDueToBacking = value?.Date; RecomputeFilteredRows(); }
+    }
+
+    private DateTime? _filterRaisedFromBacking;
+    private DateTime? FilterRaisedFrom
+    {
+        get => _filterRaisedFromBacking;
+        set { _filterRaisedFromBacking = value?.Date; RecomputeFilteredRows(); }
+    }
+
+    private DateTime? _filterRaisedToBacking;
+    private DateTime? FilterRaisedTo
+    {
+        get => _filterRaisedToBacking;
+        set { _filterRaisedToBacking = value?.Date; RecomputeFilteredRows(); }
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterCategoriesBacking = Array.Empty<RiskCategory?>();
+        _filterCategoriesSet.Clear();
+        _filterSeveritiesBacking = Array.Empty<RiskSeverity?>();
+        _filterSeveritiesSet.Clear();
+        _filterStatusesBacking = Array.Empty<RiskStatus?>();
+        _filterStatusesSet.Clear();
+        _filterArtNamesBacking = Array.Empty<string>();
+        _filterArtNamesSet.Clear();
+        _filterArtNotBacking = false;
+        _filterOwnersBacking = Array.Empty<string>();
+        _filterOwnersSet.Clear();
+        _filterOwnerNotBacking = false;
+        _filterJiraIdsBacking = Array.Empty<string>();
+        _filterJiraIdsSet.Clear();
+        _filterJiraIdNotBacking = false;
+        _filterBoIdsBacking = Array.Empty<string>();
+        _filterBoIdsSet.Clear();
+        _filterBoNotBacking = false;
+        _filterEpicIdsBacking = Array.Empty<string>();
+        _filterEpicIdsSet.Clear();
+        _filterEpicNotBacking = false;
+        _filterSoIdsBacking = Array.Empty<string>();
+        _filterSoIdsSet.Clear();
+        _filterSoNotBacking = false;
+        _filterDueFromBacking = null;
+        _filterDueToBacking = null;
+        _filterRaisedFromBacking = null;
+        _filterRaisedToBacking = null;
+        RecomputeFilteredRows();
+    }
+
+    private bool MatchesFilter(RiskVm risk)
+    {
+        if (_filterCategoriesSet.Count > 0 && !_filterCategoriesSet.Contains(risk.Category))
+        {
+            return false;
+        }
+
+        if (_filterSeveritiesSet.Count > 0 && !_filterSeveritiesSet.Contains(risk.Severity))
+        {
+            return false;
+        }
+
+        if (_filterStatusesSet.Count > 0 && !_filterStatusesSet.Contains(risk.Status))
+        {
+            return false;
+        }
+
+        if (!MatchesAnySet(_filterArtNamesSet, _filterArtNotBacking, risk.Arts.Select(a => a.Name)))
+        {
+            return false;
+        }
+
+        if (!MatchesSet(_filterOwnersSet, _filterOwnerNotBacking, risk.Owner))
+        {
+            return false;
+        }
+
+        if (!MatchesAnySet(_filterJiraIdsSet, _filterJiraIdNotBacking, risk.Features.Select(f => f.JiraId)))
+        {
+            return false;
+        }
+
+        if (!MatchesAnySet(_filterBoIdsSet, _filterBoNotBacking, risk.Features.Select(f => f.BoJiraId)))
+        {
+            return false;
+        }
+
+        if (!MatchesAnySet(_filterEpicIdsSet, _filterEpicNotBacking, risk.Features.Select(f => f.EpicJiraId)))
+        {
+            return false;
+        }
+
+        if (!MatchesAnySet(_filterSoIdsSet, _filterSoNotBacking,
+            risk.Features.SelectMany(f => f.StrategicObjectives).Select(so => so.JiraId)))
+        {
+            return false;
+        }
+
+        if (_filterDueFromBacking is { } dueFrom && (risk.DueBy is null || risk.DueBy < dueFrom))
+        {
+            return false;
+        }
+
+        if (_filterDueToBacking is { } dueTo && (risk.DueBy is null || risk.DueBy > dueTo))
+        {
+            return false;
+        }
+
+        if (_filterRaisedFromBacking is { } raisedFrom && risk.DateRaised < raisedFrom)
+        {
+            return false;
+        }
+
+        if (_filterRaisedToBacking is { } raisedTo && risk.DateRaised > raisedTo)
+        {
+            return false;
+        }
+
+        var search = _filterSearchBacking?.Trim();
+        if (string.IsNullOrEmpty(search))
+        {
+            return true;
+        }
+
+        if (Matches(risk.Summary, search)
+            || Matches(risk.Owner, search)
+            || Matches(risk.ArtNamesText, search)
+            || Matches(_unitedComments.GetValueOrDefault(risk.Id), search))
+        {
+            return true;
+        }
+
+        return risk.Features.Any(f => Matches(f.JiraId, search) || Matches(f.Summary, search));
+    }
+
+    private static bool Matches(string? value, string search) =>
+        value?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false;
+
+    private static bool MatchesSet(HashSet<string> selected, bool negate, string? value)
+    {
+        if (selected.Count == 0)
+        {
+            return !negate || string.IsNullOrWhiteSpace(value);
+        }
+
+        var hit = !string.IsNullOrWhiteSpace(value) && selected.Contains(value);
+        return negate ? !hit : hit;
+    }
+
+    private static bool MatchesAnySet(HashSet<string> selected, bool negate, IEnumerable<string?> values)
+    {
+        var present = values.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v!).ToList();
+
+        if (selected.Count == 0)
+        {
+            return !negate || present.Count == 0;
+        }
+
+        var hit = present.Any(selected.Contains);
+        return negate ? !hit : hit;
+    }
+
+    private static IOrderedEnumerable<RiskVm> OrderRows<TKey>(
+        IEnumerable<RiskVm> source, Func<RiskVm, TKey> keySelector, bool descending) =>
+        descending ? source.OrderByDescending(keySelector) : source.OrderBy(keySelector);
+
+    private void RecomputeFilteredRows()
+    {
+        IEnumerable<RiskVm> filtered = _rows.Where(MatchesFilter);
+
+        filtered = _sortColumn switch
+        {
+            SortableDateRaised => OrderRows(filtered, r => r.DateRaised, _sortDescending),
+            SortableArt => OrderRows(filtered, r => r.ArtNamesText, _sortDescending),
+            SortableJiraIds => OrderRows(filtered, JiraIdsSortKey, _sortDescending),
+            SortableCategory => OrderRows(filtered, r => r.Category, _sortDescending),
+            SortableSeverity => OrderRows(filtered, r => r.Severity, _sortDescending),
+            SortableSummary => OrderRows(filtered, r => r.Summary, _sortDescending),
+            SortableOwner => OrderRows(filtered, r => r.Owner, _sortDescending),
+            SortableStatus => OrderRows(filtered, r => r.Status, _sortDescending),
+            SortableDueBy => OrderRows(filtered, r => r.DueBy, _sortDescending),
+            SortableComments => OrderRows(filtered, r => _unitedComments.GetValueOrDefault(r.Id), _sortDescending),
+            SortableDateUpdated => OrderRows(filtered, r => r.DateUpdated, _sortDescending),
+            SortableCreatedBy => OrderRows(filtered, r => r.DisplayCreatedBy, _sortDescending),
+            SortableUpdatedBy => OrderRows(filtered, r => r.DisplayUpdatedBy, _sortDescending),
+            _ => filtered
+        };
+
+        _filteredRows = filtered.ToList();
+
+        _orderNumbers = _filteredRows
+            .Select((r, index) => (r.Id, Number: index + 1))
+            .ToDictionary(x => x.Id, x => x.Number);
+    }
+
+    private int OrderNumber(RiskVm risk) => _orderNumbers.GetValueOrDefault(risk.Id);
+
+    private static string JiraIdsSortKey(RiskVm risk) =>
+        string.Join(", ", risk.Features
+            .Select(f => f.JiraId)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase));
+
+    private static string FormatDay(DateTime date) => date.ToString("yyyy-MM-dd");
+
+    private string FormatTimestamp(DateTime utc) =>
+        UserTime.Format(utc, "yyyy-MM-dd HH:mm");
+
+    private static Color CategoryColor(RiskCategory category) => category switch
+    {
+        RiskCategory.Risk => Color.Error,
+        RiskCategory.Issue => Color.Warning,
+        _ => Color.Default
+    };
+
+    private static Color SeverityColor(RiskSeverity severity) => severity switch
+    {
+        RiskSeverity.Low => Color.Primary,
+        RiskSeverity.Medium => Color.Warning,
+        RiskSeverity.High => Color.Error,
+        _ => Color.Default
+    };
+
+    private static Color StatusColor(RiskStatus status) => status switch
+    {
+        RiskStatus.Open => Color.Warning,
+        RiskStatus.ToBeClosed => Color.Primary,
+        RiskStatus.Closed => Color.Success,
+        _ => Color.Default
+    };
+
+    private static class ColKey
+    {
+        public const string Hierarchy = "hierarchy";
+        public const string Order = "order";
+        public const string DateRaised = "dateRaised";
+        public const string Art = "art";
+        public const string JiraIds = "jiraIds";
+        public const string Category = "category";
+        public const string Severity = "severity";
+        public const string Summary = "summary";
+        public const string Owner = "owner";
+        public const string Status = "status";
+        public const string DueBy = "dueBy";
+        public const string Comments = "comments";
+        public const string DateUpdated = "dateUpdated";
+        public const string CreatedBy = "createdBy";
+        public const string UpdatedBy = "updatedBy";
+        public const string Actions = "actions";
+    }
+
+    private static class FeatureColKey
+    {
+        public const string JiraId = "featureJiraId";
+        public const string Summary = "featureSummary";
+        public const string Bo = "featureBo";
+        public const string BoName = "featureBoName";
+        public const string Epic = "featureEpic";
+        public const string EpicName = "featureEpicName";
+        public const string So = "featureSo";
+        public const string SoName = "featureSoName";
+        public const string Labels = "featureLabels";
+        public const string StoryPoints = "featureStoryPoints";
+    }
+
+    private record ColumnMeta(string Key, string Label, bool DefaultVisible);
+
+    private static readonly ColumnMeta[] AllColumns =
+    {
+        new(ColKey.Order, "#", true),
+        new(ColKey.DateRaised, PlanningDisplayNames.DateRaised, true),
+        new(ColKey.Art, PlanningDisplayNames.Art, true),
+        new(ColKey.JiraIds, PlanningDisplayNames.RiskJiraIds, true),
+        new(ColKey.Category, PlanningDisplayNames.Category, true),
+        new(ColKey.Severity, PlanningDisplayNames.Severity, true),
+        new(ColKey.Summary, PlanningDisplayNames.Summary, true),
+        new(ColKey.Owner, PlanningDisplayNames.Owner, true),
+        new(ColKey.Status, PlanningDisplayNames.Status, true),
+        new(ColKey.DueBy, PlanningDisplayNames.DueBy, true),
+        new(ColKey.Comments, PlanningDisplayNames.RiskComments, true),
+        new(ColKey.DateUpdated, PlanningDisplayNames.DateUpdated, false),
+        new(ColKey.CreatedBy, PlanningDisplayNames.CreatedBy, false),
+        new(ColKey.UpdatedBy, PlanningDisplayNames.UpdatedBy, false),
+        new(ColKey.Actions, PlanningDisplayNames.Actions, true),
+    };
+
+    private static readonly ColumnMeta[] AllFeatureColumns =
+    {
+        new(FeatureColKey.JiraId, "Feature Jira Id", true),
+        new(FeatureColKey.Summary, "Feature Summary", true),
+        new(FeatureColKey.Bo, PlanningDisplayNames.BusinessOutcome, false),
+        new(FeatureColKey.BoName, PlanningDisplayNames.BusinessOutcomeName, false),
+        new(FeatureColKey.Epic, PlanningDisplayNames.PortfolioEpic, false),
+        new(FeatureColKey.EpicName, PlanningDisplayNames.PortfolioEpicName, false),
+        new(FeatureColKey.So, PlanningDisplayNames.StrategicObjective, false),
+        new(FeatureColKey.SoName, PlanningDisplayNames.StrategicObjectiveName, false),
+        new(FeatureColKey.Labels, PlanningDisplayNames.Labels, false),
+        new(FeatureColKey.StoryPoints, PlanningDisplayNames.StoryPoints, false),
+    };
+
+    private sealed class ColumnItem
+    {
+        public string Key { get; init; } = string.Empty;
+        public string Label { get; init; } = string.Empty;
+        public bool Visible { get; set; }
+        public int Order { get; set; }
+        public string Selector { get; set; } = ColumnZoneId;
+    }
+
+    private const string ColumnZoneId = "risk-columns";
+    private MudDropContainer<ColumnItem>? _columnDropContainer;
+
+    private string[] _markupOrderKeys = Array.Empty<string>();
+    private List<ColumnItem> _columnItems = new();
+    private List<ColumnItem> _featureColumnItems = new();
+
+    private bool IsVisible(string key)
+    {
+        var item = _columnItems.FirstOrDefault(c => c.Key == key);
+        return item is null || item.Visible;
+    }
+
+    private bool IsFeatureVisible(string key)
+    {
+        var item = _featureColumnItems.FirstOrDefault(c => c.Key == key);
+        return item is null || item.Visible;
+    }
+
+    private bool _showOrder => IsVisible(ColKey.Order);
+    private bool _showDateRaised => IsVisible(ColKey.DateRaised);
+    private bool _showArt => IsVisible(ColKey.Art);
+    private bool _showJiraIds => IsVisible(ColKey.JiraIds);
+    private bool _showCategory => IsVisible(ColKey.Category);
+    private bool _showSeverity => IsVisible(ColKey.Severity);
+    private bool _showSummary => IsVisible(ColKey.Summary);
+    private bool _showOwner => IsVisible(ColKey.Owner);
+    private bool _showStatus => IsVisible(ColKey.Status);
+    private bool _showDueBy => IsVisible(ColKey.DueBy);
+    private bool _showComments => IsVisible(ColKey.Comments);
+    private bool _showDateUpdated => IsVisible(ColKey.DateUpdated);
+    private bool _showCreatedBy => IsVisible(ColKey.CreatedBy);
+    private bool _showUpdatedBy => IsVisible(ColKey.UpdatedBy);
+    private bool _showActions => IsVisible(ColKey.Actions);
+
+    private bool _showFeatureJiraId => IsFeatureVisible(FeatureColKey.JiraId);
+    private bool _showFeatureSummary => IsFeatureVisible(FeatureColKey.Summary);
+    private bool _showFeatureBo => IsFeatureVisible(FeatureColKey.Bo);
+    private bool _showFeatureBoName => IsFeatureVisible(FeatureColKey.BoName);
+    private bool _showFeatureEpic => IsFeatureVisible(FeatureColKey.Epic);
+    private bool _showFeatureEpicName => IsFeatureVisible(FeatureColKey.EpicName);
+    private bool _showFeatureSo => IsFeatureVisible(FeatureColKey.So);
+    private bool _showFeatureSoName => IsFeatureVisible(FeatureColKey.SoName);
+    private bool _showFeatureLabels => IsFeatureVisible(FeatureColKey.Labels);
+    private bool _showFeatureStoryPoints => IsFeatureVisible(FeatureColKey.StoryPoints);
+
+    private void InitColumnDefaults()
+    {
+        _markupOrderKeys = new[] { ColKey.Hierarchy }
+            .Concat(AllColumns.Select(c => c.Key))
+            .ToArray();
+
+        _columnItems = AllColumns
+            .Select((c, idx) => new ColumnItem
+            {
+                Key = c.Key,
+                Label = c.Label,
+                Visible = c.DefaultVisible,
+                Order = idx,
+                Selector = ColumnZoneId,
+            })
+            .ToList();
+
+        _featureColumnItems = AllFeatureColumns
+            .Select((c, idx) => new ColumnItem
+            {
+                Key = c.Key,
+                Label = c.Label,
+                Visible = c.DefaultVisible,
+                Order = idx,
+            })
+            .ToList();
+    }
+
+    private List<string> ColumnOrderForPrefs() =>
+        _columnItems.OrderBy(c => c.Order).Select(c => c.Key).ToList();
+
+    private List<string> OrderedKeys()
+    {
+        var keys = ColumnOrderForPrefs();
+        if (keys.Remove(ColKey.Actions))
+        {
+            keys.Add(ColKey.Actions);
+        }
+        keys.Insert(0, ColKey.Hierarchy);
+        return keys;
+    }
+
+    private const string ColumnPrefsKey = "riskList.columns.v2";
+    private bool _columnPrefsLoaded;
+    private bool _columnLayoutInitialized;
+
+    private sealed class ColumnPrefs
+    {
+        public List<string>? Order { get; set; }
+        public Dictionary<string, bool>? Visible { get; set; }
+        public Dictionary<string, bool>? FeatureVisible { get; set; }
+    }
+
+    private void AssignColumnIdentifiers()
+    {
+        if (_grid is null)
+        {
+            return;
+        }
+
+        var rendered = _grid.RenderedColumns;
+        if (rendered.Count != _markupOrderKeys.Length)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _markupOrderKeys.Length; i++)
+        {
+            rendered[i].Identifier = _markupOrderKeys[i];
+        }
+    }
+
+    private void ApplyColumnOrder()
+    {
+        if (_grid is null)
+        {
+            return;
+        }
+
+        var order = OrderedKeys();
+        var rendered = _grid.RenderedColumns;
+        var ordered = rendered
+            .OrderBy(c =>
+            {
+                var idx = order.IndexOf(c.Identifier ?? string.Empty);
+                return idx < 0 ? int.MaxValue : idx;
+            })
+            .ToList();
+
+        rendered.Clear();
+        rendered.AddRange(ordered);
+
+        _filteredRows = new List<RiskVm>(_filteredRows);
+    }
+
+    private async Task OnColumnDroppedAsync(MudItemDropInfo<ColumnItem> dropInfo)
+    {
+        if (dropInfo.Item is null)
+        {
+            return;
+        }
+
+        dropInfo.Item.Selector = dropInfo.DropzoneIdentifier;
+        _columnItems.UpdateOrder(dropInfo, item => item.Order, 0);
+        _columnItems = _columnItems.OrderBy(c => c.Order).ToList();
+
+        ApplyColumnOrder();
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task OnColumnVisibilityChangedAsync(ColumnItem item, bool value)
+    {
+        item.Visible = value;
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task OnFeatureColumnVisibilityChangedAsync(ColumnItem item, bool value)
+    {
+        item.Visible = value;
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task ResetColumnsAsync()
+    {
+        InitColumnDefaults();
+        ApplyColumnOrder();
+        _columnDropContainer?.Refresh();
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task LoadColumnPrefsAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", ColumnPrefsKey);
+            if (string.IsNullOrEmpty(json))
+            {
+                return;
+            }
+
+            var prefs = System.Text.Json.JsonSerializer.Deserialize<ColumnPrefs>(json);
+            if (prefs is null)
+            {
+                return;
+            }
+
+            if (prefs.Visible is not null)
+            {
+                foreach (var item in _columnItems)
+                {
+                    if (prefs.Visible.TryGetValue(item.Key, out var vis))
+                    {
+                        item.Visible = vis;
+                    }
+                }
+            }
+
+            if (prefs.FeatureVisible is not null)
+            {
+                foreach (var item in _featureColumnItems)
+                {
+                    if (prefs.FeatureVisible.TryGetValue(item.Key, out var vis))
+                    {
+                        item.Visible = vis;
+                    }
+                }
+            }
+
+            if (prefs.Order is not null && prefs.Order.Count > 0)
+            {
+                var known = _columnItems.Select(c => c.Key).ToHashSet(StringComparer.Ordinal);
+                var newOrder = prefs.Order.Where(k => known.Contains(k)).Distinct().ToList();
+                foreach (var item in _columnItems)
+                {
+                    if (!newOrder.Contains(item.Key))
+                    {
+                        newOrder.Add(item.Key);
+                    }
+                }
+
+                foreach (var item in _columnItems)
+                {
+                    item.Order = newOrder.IndexOf(item.Key);
+                }
+                _columnItems = _columnItems.OrderBy(c => c.Order).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load RiskList column preferences");
+        }
+        finally
+        {
+            _columnPrefsLoaded = true;
+        }
+    }
+
+    private async Task SaveColumnPrefsAsync()
+    {
+        if (!_columnPrefsLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            var prefs = new ColumnPrefs
+            {
+                Order = ColumnOrderForPrefs(),
+                Visible = _columnItems.ToDictionary(c => c.Key, c => c.Visible, StringComparer.Ordinal),
+                FeatureVisible = _featureColumnItems.ToDictionary(c => c.Key, c => c.Visible, StringComparer.Ordinal)
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(prefs);
+            await JS.InvokeVoidAsync("localStorage.setItem", ColumnPrefsKey, json);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to save RiskList column preferences");
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _canEdit = UserPageAccess.TryGetValue(PageKey, out var access) && access == AccessLevel.Edit;
+        InitColumnDefaults();
+
+        try
+        {
+            _userName = await WindowsAuth.GetUserName();
+            _allPis = await PiService.GetAllLightAsync();
+            _selectedPiId = PiIdFromQuery();
+
+            if (_selectedPiId is not null)
+            {
+                await LoadRisksAsync();
+            }
+
+            _piRestorePending = _selectedPiId is null && _allPis.Count > 0;
+            _loading = _piRestorePending;
+        }
+        catch (Exception ex)
+        {
+            _piRestorePending = false;
+            _loading = false;
+            Log.Error(ex, "Failed to initialise the Risks view");
+            await MessageService.Exception(ex);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await base.OnAfterRenderAsync(firstRender);
+
+        if (firstRender)
+        {
+            await LoadColumnPrefsAsync();
+
+            if (_piRestorePending)
+            {
+                _piRestorePending = false;
+                await RestoreSelectedPiAsync();
+            }
+            else
+            {
+                await SaveSelectedPiAsync(_selectedPiId);
+            }
+
+            StateHasChanged();
+        }
+
+        if (!_columnLayoutInitialized && _columnPrefsLoaded
+            && _grid is not null
+            && _grid.RenderedColumns.Count == _markupOrderKeys.Length)
+        {
+            AssignColumnIdentifiers();
+            ApplyColumnOrder();
+            _columnLayoutInitialized = true;
+            _columnDropContainer?.Refresh();
+            StateHasChanged();
+        }
+    }
+
+    private int? PiIdFromQuery()
+    {
+        var uri = Nav.ToAbsoluteUri(Nav.Uri);
+        var q = QueryHelpers.ParseQuery(uri.Query);
+
+        if (q.TryGetValue("pi", out var raw)
+            && int.TryParse(raw.ToString(), out var piId)
+            && _allPis.Any(p => p.Id == piId))
+        {
+            return piId;
+        }
+
+        return null;
+    }
+
+    private const string SelectedPiKey = "riskList.selectedPi";
+    private bool _piRestorePending;
+
+    private async Task RestoreSelectedPiAsync()
+    {
+        _selectedPiId = await LoadStoredPiIdAsync() ?? _allPis.FirstOrDefault()?.Id;
+        await SaveSelectedPiAsync(_selectedPiId);
+
+        try
+        {
+            if (_selectedPiId is not null)
+            {
+                Nav.NavigateTo(Nav.GetUriWithQueryParameter("pi", _selectedPiId), replace: true);
+                await LoadRisksAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to restore the selected PI");
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task<int?> LoadStoredPiIdAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", SelectedPiKey);
+
+            if (int.TryParse(raw, out var piId) && _allPis.Any(p => p.Id == piId))
+            {
+                return piId;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load the stored Risks PI selection");
+        }
+
+        return null;
+    }
+
+    private async Task SaveSelectedPiAsync(int? piId)
+    {
+        try
+        {
+            if (piId is { } id)
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", SelectedPiKey, id.ToString());
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", SelectedPiKey);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to save the Risks PI selection");
+        }
+    }
+
+    private async Task OnPiChangedAsync(int? piId)
+    {
+        _selectedPiId = piId;
+        _currentPage = 0;
+
+        Nav.NavigateTo(Nav.GetUriWithQueryParameter("pi", piId), replace: true);
+        await SaveSelectedPiAsync(piId);
+
+        if (piId is null)
+        {
+            _rows = new List<RiskVm>();
+            _commentCounts = new Dictionary<int, int>();
+            _unitedComments = new Dictionary<int, string>();
+            RecomputeFilteredRows();
+            return;
+        }
+
+        _loading = true;
+        try
+        {
+            await LoadRisksAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadRisksAsync()
+    {
+        if (_selectedPiId is not { } piId)
+        {
+            return;
+        }
+
+        _rows = await RiskService.GetForPiAsync(piId);
+
+        var ids = _rows.Select(r => r.Id).ToList();
+        _commentCounts = await RiskCommentService.GetCountsAsync(ids);
+        _unitedComments = await RiskCommentService.GetUnitedAsync(ids, UserTime.TimeZone);
+
+        RebuildFilterOptions();
+        RecomputeFilteredRows();
+    }
+
+    private void RebuildFilterOptions()
+    {
+        _availableArts = _rows
+            .SelectMany(r => r.Arts.Select(a => a.Name))
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _availableOwners = _rows
+            .Select(r => r.Owner)
+            .Where(o => !string.IsNullOrWhiteSpace(o))
+            .Select(o => o!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(o => o, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _availableFeatures = CollectJiraRefs(_rows.SelectMany(r => r.Features)
+            .Select(f => (f.JiraId, f.Summary)));
+
+        _availableBos = CollectJiraRefs(_rows.SelectMany(r => r.Features)
+            .Select(f => (f.BoJiraId, f.BoName)));
+
+        _availableEpics = CollectJiraRefs(_rows.SelectMany(r => r.Features)
+            .Select(f => (f.EpicJiraId, f.EpicName)));
+
+        _availableSos = CollectJiraRefs(_rows.SelectMany(r => r.Features)
+            .SelectMany(f => f.StrategicObjectives)
+            .Select(so => (so.JiraId, so.Name)));
+
+        _filterArtNamesBacking = Retain(_filterArtNamesBacking, _availableArts);
+        _filterArtNamesSet = new HashSet<string>(_filterArtNamesBacking, StringComparer.OrdinalIgnoreCase);
+        _filterOwnersBacking = Retain(_filterOwnersBacking, _availableOwners);
+        _filterOwnersSet = new HashSet<string>(_filterOwnersBacking, StringComparer.OrdinalIgnoreCase);
+        _filterJiraIdsBacking = Retain(_filterJiraIdsBacking, _availableJiraIds);
+        _filterJiraIdsSet = new HashSet<string>(_filterJiraIdsBacking, StringComparer.OrdinalIgnoreCase);
+        _filterBoIdsBacking = Retain(_filterBoIdsBacking, _availableBoIds);
+        _filterBoIdsSet = new HashSet<string>(_filterBoIdsBacking, StringComparer.OrdinalIgnoreCase);
+        _filterEpicIdsBacking = Retain(_filterEpicIdsBacking, _availableEpicIds);
+        _filterEpicIdsSet = new HashSet<string>(_filterEpicIdsBacking, StringComparer.OrdinalIgnoreCase);
+        _filterSoIdsBacking = Retain(_filterSoIdsBacking, _availableSoIds);
+        _filterSoIdsSet = new HashSet<string>(_filterSoIdsBacking, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static List<(string JiraId, string? Summary)> CollectJiraRefs(
+        IEnumerable<(string? JiraId, string? Summary)> source) =>
+        source
+            .Where(x => !string.IsNullOrWhiteSpace(x.JiraId))
+            .Select(x => (JiraId: x.JiraId!, x.Summary))
+            .DistinctBy(x => x.JiraId, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x.JiraId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static IReadOnlyCollection<string> Retain(IReadOnlyCollection<string> selected, List<string> available)
+    {
+        if (selected.Count == 0)
+        {
+            return selected;
+        }
+
+        var lookup = available.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return selected.Where(lookup.Contains).ToList();
+    }
+
+    private async Task ExportToExcelAsync()
+    {
+        if (_selectedPiId is null || _exporting)
+        {
+            return;
+        }
+
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = RiskExcelExportService.Generate(_rows, SelectedPiName, _unitedComments);
+            await DownloadService.DownloadAsync(bytes, RiskExcelExportService.BuildFileName(SelectedPiName));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export risks");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private string RiskLabel(RiskVm risk) => $"{risk.Category.ToDisplayString()} #{OrderNumber(risk)}";
+
+    private Task OpenNewDialogAsync() => OpenRiskDialogAsync(null);
+
+    private Task OpenEditDialogAsync(RiskVm risk) => OpenRiskDialogAsync(risk.Id);
+
+    private async Task OpenRiskDialogAsync(int? riskId)
+    {
+        if (_selectedPiId is not { } piId)
+        {
+            return;
+        }
+
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(RiskEditDialog.PiId), piId },
+            { nameof(RiskEditDialog.PiName), SelectedPiName },
+            { nameof(RiskEditDialog.RiskId), riskId },
+            { nameof(RiskEditDialog.CurrentUser), _userName },
+            { nameof(RiskEditDialog.CanDelete), _canEdit && IsAdmin },
+        };
+
+        var title = riskId is null ? "New Risk" : "Edit Risk";
+
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.False, FullWidth = false };
+        var dialogRef = await MessageService.Component<RiskEditDialog>(title, parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is { Canceled: false })
+        {
+            await LoadRisksAsync();
+        }
+    }
+
+    private async Task ShowCommentsAsync(RiskVm risk)
+    {
+        var title = RiskLabel(risk)
+            + (string.IsNullOrWhiteSpace(risk.Summary) ? string.Empty : $" — {risk.Summary}");
+
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(RiskCommentsDialog.RiskId), risk.Id },
+            { nameof(RiskCommentsDialog.RiskTitle), title },
+            { nameof(RiskCommentsDialog.CurrentUser), _userName },
+            { nameof(RiskCommentsDialog.ReadOnly), !_canEdit },
+        };
+
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.False, FullWidth = false };
+        var dialogRef = await MessageService.Component<RiskCommentsDialog>(PlanningDisplayNames.RiskComments, parameters, options);
+        await dialogRef.Result;
+
+        try
+        {
+            var counts = await RiskCommentService.GetCountsAsync(new[] { risk.Id });
+            _commentCounts[risk.Id] = counts.GetValueOrDefault(risk.Id);
+
+            var united = await RiskCommentService.GetUnitedAsync(new[] { risk.Id }, UserTime.TimeZone);
+            if (united.TryGetValue(risk.Id, out var text))
+            {
+                _unitedComments[risk.Id] = text;
+            }
+            else
+            {
+                _unitedComments.Remove(risk.Id);
+            }
+
+            RecomputeFilteredRows();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to refresh risk comments for risk {RiskId}", risk.Id);
+        }
+    }
+
+}

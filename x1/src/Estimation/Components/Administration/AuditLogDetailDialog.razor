@@ -1,0 +1,225 @@
+@using System.Text.Json
+
+@inject IAuditLogService AuditLogService
+@inject IUserTimeZoneService UserTime
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <div class="d-flex justify-center pa-8">
+                <MudProgressCircular Indeterminate Color="Color.Primary" />
+            </div>
+        }
+        else if (_entry is null)
+        {
+            <MudAlert Severity="Severity.Warning">This audit entry no longer exists.</MudAlert>
+        }
+        else
+        {
+            <MudGrid Spacing="2" Class="mb-1">
+                <MudItem xs="6" sm="4" md="2">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Date/Time</MudText>
+                    <MudText Typo="Typo.body2">@UserTime.Format(_entry.Timestamp, "yyyy-MM-dd HH:mm:ss")</MudText>
+                </MudItem>
+                <MudItem xs="6" sm="4" md="2">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">User</MudText>
+                    <MudText Typo="Typo.body2">@_entry.UserName</MudText>
+                </MudItem>
+                <MudItem xs="6" sm="4" md="3">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Model</MudText>
+                    <MudText Typo="Typo.body2">
+                        @_entry.EntityName
+                        @if (!string.IsNullOrWhiteSpace(_entry.EntityDisplayName))
+                        {
+                            <span class="mud-text-secondary"> — @_entry.EntityDisplayName</span>
+                        }
+                    </MudText>
+                </MudItem>
+                <MudItem xs="6" sm="4" md="2">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Entity Id</MudText>
+                    <MudText Typo="Typo.body2">@_entry.EntityId</MudText>
+                </MudItem>
+                <MudItem xs="6" sm="4" md="1">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Action</MudText>
+                    <div>
+                        <MudChip T="string" Size="Size.Small" Color="@ActionColor(_entry.Action)" Variant="Variant.Filled">
+                            @_entry.Action
+                        </MudChip>
+                    </div>
+                </MudItem>
+                <MudItem xs="6" sm="4" md="2">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Property</MudText>
+                    <MudText Typo="Typo.body2">@(_entry.PropertyName ?? "—")</MudText>
+                </MudItem>
+            </MudGrid>
+
+            <MudDivider Class="my-3" />
+
+            @if (_entry.Action == "Update")
+            {
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-1">Old value</MudText>
+                        <MudPaper Outlined Class="pa-2">
+                            <pre style="white-space:pre-wrap; word-break:break-word; max-height:340px; overflow:auto; margin:0; font-size:0.8rem;">@FormatValue(_entry.OldValue)</pre>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.subtitle2" Class="mb-1">New value</MudText>
+                        <MudPaper Outlined Class="pa-2">
+                            <pre style="white-space:pre-wrap; word-break:break-word; max-height:340px; overflow:auto; margin:0; font-size:0.8rem;">@FormatValue(_entry.NewValue)</pre>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            }
+            else
+            {
+                <MudText Typo="Typo.subtitle2" Class="mb-1">
+                    @(_entry.Action == "Create" ? "Created with" : "Deleted state")
+                </MudText>
+                <MudPaper Outlined Class="pa-2">
+                    <pre style="white-space:pre-wrap; word-break:break-word; max-height:400px; overflow:auto; margin:0; font-size:0.8rem;">@FormatValue(_entry.Action == "Create" ? _entry.NewValue : _entry.OldValue)</pre>
+                </MudPaper>
+            }
+
+            @if (_batch.Count > 1)
+            {
+                <MudDivider Class="my-3" />
+                <MudText Typo="Typo.subtitle1" Class="mb-2">
+                    Same operation — @_batch.Count changes saved together
+                </MudText>
+                <MudSimpleTable Dense Hover Bordered Class="audit-batch-table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th>Name</th>
+                            <th>Entity Id</th>
+                            <th>Action</th>
+                            <th>Property</th>
+                            <th>Old Value</th>
+                            <th>New Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _batch)
+                        {
+                            <tr @key="row.Id"
+                                class="@(row.Id == _entry.Id ? "audit-batch-current" : "")"
+                                style="cursor:pointer"
+                                @onclick="@(() => SelectEntry(row))">
+                                <td>@row.EntityName</td>
+                                <td>@Shorten(row.EntityDisplayName, 40)</td>
+                                <td>@row.EntityId</td>
+                                <td>
+                                    <MudChip T="string" Size="Size.Small" Color="@ActionColor(row.Action)" Variant="Variant.Filled">
+                                        @row.Action
+                                    </MudChip>
+                                </td>
+                                <td>@(row.PropertyName ?? "—")</td>
+                                <td>@Shorten(row.OldValue, 60)</td>
+                                <td>@Shorten(row.NewValue, 60)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Click a row to inspect its full values above.
+                </MudText>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .audit-batch-table tr.audit-batch-current td {
+        background-color: var(--mud-palette-primary-hover);
+    }
+</style>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter]
+    public long AuditLogId { get; set; }
+
+    private bool _loading = true;
+    private AuditLog? _entry;
+    private List<AuditLog> _batch = new();
+
+    private static readonly JsonSerializerOptions PrettyJsonOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _entry = await AuditLogService.GetByIdAsync(AuditLogId);
+        if (_entry?.BatchId is Guid batchId)
+        {
+            _batch = await AuditLogService.GetBatchAsync(batchId);
+        }
+        _loading = false;
+    }
+
+    private void SelectEntry(AuditLog entry)
+    {
+        _entry = entry;
+    }
+
+    private static Color ActionColor(string action) => action switch
+    {
+        "Create" => Color.Success,
+        "Update" => Color.Info,
+        "Delete" => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string FormatValue(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "—";
+        }
+
+        var trimmed = value.TrimStart();
+        if (trimmed.StartsWith('{') || trimmed.StartsWith('['))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(value);
+                return JsonSerializer.Serialize(doc, PrettyJsonOptions);
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        if (value.Contains(" | "))
+        {
+            return value.Replace(" | ", Environment.NewLine);
+        }
+
+        return value;
+    }
+
+    private static string Shorten(string? value, int max)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "—";
+        }
+
+        return value.Length <= max ? value : value[..max] + "…";
+    }
+
+    private void Close() => MudDialog.Close();
+}

@@ -1,0 +1,357 @@
+@attribute [Route(RoutingPath.AuditLog)]
+@inherits LocalTimeComponentBase
+
+@inject IAuditLogService AuditLogService
+@inject IDialogService DialogService
+
+@using Estimation.Core.Administration.Services
+
+<PageTitle>Audit Log</PageTitle>
+
+<AdminOnly>
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h5" Class="mb-4">Audit Log</MudText>
+
+        <div class="d-flex flex-wrap align-center mb-3" style="gap:12px;">
+            <div style="flex:2 1 230px; min-width:220px;">
+                <MudDateRangePicker DateRange="_dateRange" DateRangeChanged="OnDateRangeChanged"
+                                    Label="Date range" Clearable
+                                    Margin="Margin.Dense" Variant="Variant.Outlined"
+                                    PlaceholderStart="All" PlaceholderEnd="time" />
+            </div>
+            <div style="flex:1 1 150px; min-width:140px;">
+                <MudSelect T="string" Value="_entityName" ValueChanged="OnEntityNameChanged"
+                           Label="Model" Clearable Margin="Margin.Dense" Variant="Variant.Outlined">
+                    @foreach (var name in _entityNames)
+                    {
+                        <MudSelectItem T="string" Value="@name">@name</MudSelectItem>
+                    }
+                </MudSelect>
+            </div>
+            <div style="flex:1 1 150px; min-width:140px;">
+                <MudSelect T="string" Value="_userName" ValueChanged="OnUserNameChanged"
+                           Label="User" Clearable Margin="Margin.Dense" Variant="Variant.Outlined">
+                    @foreach (var name in _userNames)
+                    {
+                        <MudSelectItem T="string" Value="@name">@name</MudSelectItem>
+                    }
+                </MudSelect>
+            </div>
+            <div style="flex:1 1 120px; min-width:110px;">
+                <MudSelect T="string" Value="_action" ValueChanged="OnActionChanged"
+                           Label="Action" Clearable Margin="Margin.Dense" Variant="Variant.Outlined">
+                    <MudSelectItem T="string" Value="@("Create")">Create</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Update")">Update</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("Delete")">Delete</MudSelectItem>
+                </MudSelect>
+            </div>
+            <div style="flex:1 1 120px; min-width:110px;">
+                <MudTextField T="string" @bind-Value="_entityId"
+                              Label="Entity Id" Placeholder="Exact match"
+                              Clearable Margin="Margin.Dense" Variant="Variant.Outlined"
+                              Immediate DebounceInterval="500" OnDebounceIntervalElapsed="ReloadAsync" />
+            </div>
+            <div style="flex:2 1 200px; min-width:180px;">
+                <MudTextField T="string" @bind-Value="_searchText"
+                              Label="Search" Placeholder="Entity name, property, id…"
+                              Clearable Margin="Margin.Dense" Variant="Variant.Outlined"
+                              Immediate DebounceInterval="500" OnDebounceIntervalElapsed="ReloadAsync"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" />
+            </div>
+            <div style="flex:0 0 auto;">
+                <MudTooltip Text="Also search inside old/new values (slower)">
+                    <MudSwitch T="bool" Value="_searchValues" ValueChanged="OnSearchValuesChanged"
+                               Color="Color.Primary" Label="Search values" />
+                </MudTooltip>
+            </div>
+            <div style="flex:0 0 auto;">
+                <MudSwitch T="bool" Value="_groupByBatch" ValueChanged="OnGroupByBatchChanged"
+                           Color="Color.Primary" Label="Group by operation" />
+            </div>
+            <div style="flex:0 0 auto;">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.FilterAltOff"
+                           OnClick="ResetFiltersAsync">
+                    Reset
+                </MudButton>
+            </div>
+        </div>
+        @if (_searchValues && _dateRange?.Start is null)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                No date range set — value search covers the last 30 days.
+            </MudText>
+        }
+
+        <MudDataGrid @ref="_grid" T="AuditLogListItem" ServerData="LoadGridDataAsync"
+                     Dense Hover Striped Bordered
+                     SortMode="SortMode.Single"
+                     Groupable="@_groupByBatch" GroupExpanded="true"
+                     RowsPerPage="25"
+                     RowClass="cursor-pointer"
+                     RowClick="OnRowClickAsync">
+            <Columns>
+                <PropertyColumn Property="x => x.Timestamp" Title="Date/Time"
+                                InitialDirection="SortDirection.Descending" Groupable="false">
+                    <CellTemplate>@UserTime.Format(context.Item.Timestamp, TimestampFormat)</CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.UserName" Title="User" Groupable="false" />
+                <PropertyColumn Property="x => x.EntityName" Title="Model" Groupable="false" />
+                <PropertyColumn Property="x => x.EntityDisplayName" Title="Name" Groupable="false">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2"
+                                 Style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                                 title="@context.Item.EntityDisplayName">
+                            @(context.Item.EntityDisplayName ?? "—")
+                        </MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.EntityId" Title="Entity Id" Groupable="false" />
+                <PropertyColumn Property="x => x.Action" Title="Action" Groupable="false">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Color="@ActionColor(context.Item.Action)" Variant="Variant.Filled">
+                            @context.Item.Action
+                        </MudChip>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.PropertyName" Title="Property" Groupable="false" />
+                <PropertyColumn Property="x => x.OldValuePreview" Title="Old Value" Sortable="false" Groupable="false">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2"
+                                 Style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                            @(PreviewText(context.Item.OldValuePreview, context.Item.OldValueIsTruncated))
+                        </MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <PropertyColumn Property="x => x.NewValuePreview" Title="New Value" Sortable="false" Groupable="false">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2"
+                                 Style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                            @(PreviewText(context.Item.NewValuePreview, context.Item.NewValueIsTruncated))
+                        </MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                @if (_groupByBatch)
+                {
+                    <PropertyColumn Property="x => x.BatchId" Title="Operation" Hidden="true"
+                                    Grouping GroupBy="@(x => x.BatchId != null ? x.BatchId.ToString()! : $"row-{x.Id}")">
+                        <GroupTemplate>
+                            @{
+                                var rows = context.Grouping.ToList();
+                                var first = rows.FirstOrDefault();
+                            }
+                            @if (first is not null)
+                            {
+                                <span class="d-inline-flex align-center flex-wrap" style="gap:10px">
+                                    <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                        @UserTime.Format(first.Timestamp, TimestampFormat)
+                                    </MudText>
+                                    <MudText Typo="Typo.body2">@first.UserName</MudText>
+                                    <MudText Typo="Typo.body2">
+                                        @first.EntityName@(string.IsNullOrWhiteSpace(first.EntityDisplayName) ? "" : $" — {first.EntityDisplayName}")
+                                    </MudText>
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                        @rows.Count @(rows.Count == 1 ? "change" : "changes")
+                                    </MudText>
+                                </span>
+                            }
+                        </GroupTemplate>
+                    </PropertyColumn>
+                }
+            </Columns>
+            <PagerContent>
+                <MudDataGridPager T="AuditLogListItem" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+        </MudDataGrid>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary mt-1 d-block">
+            Click a row to see the full values and every change saved in the same operation.
+        </MudText>
+    </MudPaper>
+</div>
+</AdminOnly>
+
+@code {
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    [SupplyParameterFromQuery(Name = "entity")]
+    public string? EntityFromQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "id")]
+    public string? EntityIdFromQuery { get; set; }
+
+    private const string TimestampFormat = "yyyy-MM-dd HH:mm:ss";
+
+    private MudDataGrid<AuditLogListItem>? _grid;
+
+    private DateRange? _dateRange = DefaultDateRange();
+    private string? _entityName;
+    private string? _userName;
+    private string? _action;
+    private string? _entityId;
+    private string? _searchText;
+    private bool _searchValues;
+    private bool _groupByBatch;
+
+    private List<string> _entityNames = new();
+    private List<string> _userNames = new();
+
+    private static DateRange DefaultDateRange() =>
+        new(DateTime.Today.AddDays(-29), DateTime.Today);
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!IsAdmin)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(EntityFromQuery))
+        {
+            _entityName = EntityFromQuery;
+            _entityId = EntityIdFromQuery;
+            _dateRange = null;
+        }
+
+        _entityNames = await AuditLogService.GetEntityNamesAsync();
+        _userNames = await AuditLogService.GetUserNamesAsync();
+
+        if (_entityName is not null && !_entityNames.Contains(_entityName))
+        {
+            _entityNames.Insert(0, _entityName);
+        }
+    }
+
+    private GridData<AuditLogListItem> _lastGridData = new()
+    {
+        Items = Array.Empty<AuditLogListItem>(),
+        TotalItems = 0
+    };
+
+    private async Task<GridData<AuditLogListItem>> LoadGridDataAsync(
+        GridState<AuditLogListItem> state, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var sort = state.SortDefinitions.FirstOrDefault();
+
+            var result = await AuditLogService.QueryAsync(
+                BuildFilter(),
+                state.Page,
+                state.PageSize,
+                sort?.SortBy,
+                sort?.Descending ?? true,
+                cancellationToken);
+
+            _lastGridData = new GridData<AuditLogListItem>
+            {
+                Items = result.Items,
+                TotalItems = result.TotalCount
+            };
+            return _lastGridData;
+        }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            return _lastGridData;
+        }
+    }
+
+    private AuditLogFilter BuildFilter()
+    {
+        DateTime? fromUtc = _dateRange?.Start is DateTime start
+            ? UserTime.ToUtc(start.Date)
+            : null;
+        DateTime? toUtc = _dateRange?.End is DateTime end
+            ? UserTime.ToUtc(end.Date.AddDays(1))
+            : null;
+
+        return new AuditLogFilter
+        {
+            FromUtc = fromUtc,
+            ToUtc = toUtc,
+            EntityName = _entityName,
+            EntityId = _entityId,
+            UserName = _userName,
+            Action = _action,
+            Text = _searchText,
+            SearchValues = _searchValues
+        };
+    }
+
+    private Task ReloadAsync() => _grid?.ReloadServerData() ?? Task.CompletedTask;
+
+    private Task OnDateRangeChanged(DateRange? range)
+    {
+        _dateRange = range;
+        return ReloadAsync();
+    }
+
+    private Task OnEntityNameChanged(string? value)
+    {
+        _entityName = value;
+        return ReloadAsync();
+    }
+
+    private Task OnUserNameChanged(string? value)
+    {
+        _userName = value;
+        return ReloadAsync();
+    }
+
+    private Task OnActionChanged(string? value)
+    {
+        _action = value;
+        return ReloadAsync();
+    }
+
+    private Task OnSearchValuesChanged(bool value)
+    {
+        _searchValues = value;
+        return string.IsNullOrWhiteSpace(_searchText) ? Task.CompletedTask : ReloadAsync();
+    }
+
+    private void OnGroupByBatchChanged(bool value)
+    {
+        _groupByBatch = value;
+    }
+
+    private async Task ResetFiltersAsync()
+    {
+        _dateRange = DefaultDateRange();
+        _entityName = null;
+        _userName = null;
+        _action = null;
+        _entityId = null;
+        _searchText = null;
+        _searchValues = false;
+        await ReloadAsync();
+    }
+
+    private async Task OnRowClickAsync(DataGridRowClickEventArgs<AuditLogListItem> args)
+    {
+        var parameters = new DialogParameters
+        {
+            [nameof(AuditLogDetailDialog.AuditLogId)] = args.Item.Id
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = true };
+        await DialogService.ShowAsync<AuditLogDetailDialog>("Change details", parameters, options);
+    }
+
+    private static Color ActionColor(string action) => action switch
+    {
+        "Create" => Color.Success,
+        "Update" => Color.Info,
+        "Delete" => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string PreviewText(string? preview, bool truncated)
+    {
+        if (string.IsNullOrEmpty(preview))
+        {
+            return "—";
+        }
+
+        return truncated ? preview + "…" : preview;
+    }
+}

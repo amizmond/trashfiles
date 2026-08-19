@@ -1,0 +1,25 @@
+@inject IUserTimeZoneService UserTime
+
+<span>@UserTime.Format(Value, Format, EmptyText)</span>
+
+@code {
+    [Parameter]
+    public DateTime? Value { get; set; }
+
+    [Parameter]
+    public string? Format { get; set; }
+
+    [Parameter]
+    public string EmptyText { get; set; } = "—";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || UserTime.IsResolved)
+        {
+            return;
+        }
+
+        await UserTime.EnsureResolvedAsync();
+        StateHasChanged();
+    }
+}

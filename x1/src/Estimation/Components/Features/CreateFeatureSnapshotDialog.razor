@@ -1,0 +1,104 @@
+@using Estimation.Core.Train.Models
+
+@inject IUserTimeZoneService UserTime
+
+<div class="pa-4" style="min-width:420px">
+    <MudText Typo="Typo.body2" Class="mb-4 mud-text-secondary">
+        The snapshot stores the current values of every feature that belongs to the selected ART and PI.
+    </MudText>
+
+    <MudSelect T="int?" @bind-Value="_capitalProjectId"
+               Label="@PlanningDisplayNames.Art"
+               Dense Variant="Variant.Outlined" Clearable
+               AnchorOrigin="Origin.BottomCenter" Class="mb-4">
+        @foreach (var art in Arts)
+        {
+            <MudSelectItem T="int?" Value="@art.Id">@art.Name</MudSelectItem>
+        }
+    </MudSelect>
+
+    <MudSelect T="string" Value="_piName" ValueChanged="OnPiChanged"
+               Label="@PlanningDisplayNames.PI"
+               Dense Variant="Variant.Outlined" Clearable
+               AnchorOrigin="Origin.BottomCenter" Class="mb-4">
+        @foreach (var pi in PiNames)
+        {
+            <MudSelectItem T="string" Value="@pi">@pi</MudSelectItem>
+        }
+    </MudSelect>
+
+    <MudTextField T="string" Value="_name" ValueChanged="OnNameChanged"
+                  Label="Snapshot name"
+                  HelperText="Optional. Leave it empty to fall back to the PI and the creation time."
+                  MaxLength="200"
+                  Immediate Clearable
+                  Dense Variant="Variant.Outlined" />
+
+    @if (Arts.Count == 0)
+    {
+        <MudAlert Severity="Severity.Warning" Dense Class="mt-4">
+            No ART is available. An ART must have a Jira key and you need edit rights for it.
+        </MudAlert>
+    }
+
+    <div class="d-flex justify-end gap-2 mt-6">
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!IsValid)" OnClick="Create">Create</MudButton>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter]
+    public List<CapitalProject> Arts { get; set; } = new();
+
+    [Parameter]
+    public List<string> PiNames { get; set; } = new();
+
+    private int? _capitalProjectId;
+    private string? _piName;
+    private string? _name;
+
+    private bool _nameEditedByUser;
+
+    private bool IsValid => _capitalProjectId is not null && !string.IsNullOrWhiteSpace(_piName);
+
+    private void OnPiChanged(string? value)
+    {
+        _piName = value;
+
+        if (!_nameEditedByUser)
+        {
+            _name = string.IsNullOrWhiteSpace(value) ? null : UserTime.SuggestSnapshotName(value);
+        }
+    }
+
+    private void OnNameChanged(string? value)
+    {
+        _name = value;
+        _nameEditedByUser = true;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Create()
+    {
+        var art = Arts.FirstOrDefault(a => a.Id == _capitalProjectId);
+
+        if (art is null || string.IsNullOrWhiteSpace(_piName))
+        {
+            return;
+        }
+
+        MudDialog.Close(DialogResult.Ok(new CreateSnapshotResult(art.Id, art.Name, art.JiraKey, _piName!, _name)));
+    }
+
+    public record CreateSnapshotResult(
+        int CapitalProjectId,
+        string ArtName,
+        string? ArtJiraKey,
+        string PiName,
+        string? Name);
+}

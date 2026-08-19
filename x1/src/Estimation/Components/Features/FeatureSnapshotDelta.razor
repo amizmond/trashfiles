@@ -1,0 +1,1195 @@
+@attribute [Route(RoutingPath.FeatureSnapshotsDelta)]
+@inherits LocalTimeComponentBase
+
+@inject IFeatureSnapshotService SnapshotService
+@inject IFeatureSnapshotDeltaService DeltaService
+@inject IUserPermissionService UserPermissions
+@inject IWindowsAuthService WindowsAuth
+@inject ISolutionTrainResolver TrainResolver
+@inject IBrowserDownloadService DownloadService
+@inject IModalDialogService MessageService
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+@using Microsoft.AspNetCore.WebUtilities
+@using MudBlazor.Utilities
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+@using Estimation.Core.Shared.Services
+
+<PageTitle>Feature delta</PageTitle>
+
+<AccessGuard PageKey="FeatureSnapshots">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.FeatureSnapshots))" />
+            <MudText Typo="Typo.h6" Class="mr-2">Feature delta</MudText>
+
+            @if (_result is not null)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    @_result.Rows.Count item(s) compared
+                </MudText>
+            }
+
+            <MudSpacer />
+
+            @if (_result is not null)
+            {
+                <MudTextField T="string" Value="_search" ValueChanged="OnSearchChanged"
+                              Placeholder="Search name, Jira ID, team, label"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              Clearable Immediate DebounceInterval="300"
+                              Dense Variant="Variant.Outlined" Style="width:280px" />
+
+                <div class="d-flex align-center">
+                    <MudButton Variant="@ViewVariant(false)" Color="@ViewColor(false)"
+                               StartIcon="@ViewIcon(false)"
+                               Style="border-top-right-radius:0; border-bottom-right-radius:0"
+                               OnClick="@(() => SetSideBySide(false))">
+                        Unified
+                    </MudButton>
+                    <MudButton Variant="@ViewVariant(true)" Color="@ViewColor(true)"
+                               StartIcon="@ViewIcon(true)"
+                               Style="border-top-left-radius:0; border-bottom-left-radius:0"
+                               OnClick="@(() => SetSideBySide(true))">
+                        Side by side
+                    </MudButton>
+                </div>
+
+                <div style="position:relative;">
+                    <MudButton Variant="Variant.Outlined"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.ViewColumn"
+                               OnClick="@(() => _columnsPopoverOpen = !_columnsPopoverOpen)">
+                        Columns
+                    </MudButton>
+                    <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                                Class="pa-4" Style="min-width:340px; max-height:75vh; overflow-y:auto">
+                        <div class="d-flex align-center justify-space-between mb-1">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@PlanningDisplayNames.ToggleColumns</MudText>
+                            <div>
+                                <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Default"
+                                           StartIcon="@Icons.Material.Filled.RestartAlt" OnClick="ResetColumnsAsync">Reset</MudButton>
+                                <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                               OnClick="@(() => _columnsPopoverOpen = false)" />
+                            </div>
+                        </div>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary mb-2 d-block">Drag a row to reorder. Toggle to show or hide.</MudText>
+                        <MudDropContainer T="ColumnItem" @ref="_columnDropContainer" Items="_columnItems"
+                                          ItemsSelector="@((item, zone) => item.Selector == zone)"
+                                          ItemDropped="OnColumnDroppedAsync" Class="d-block">
+                            <ChildContent>
+                                <MudDropZone T="ColumnItem" Identifier="@ColumnZoneId" AllowReorder="true"
+                                             Class="d-flex flex-column gap-1" />
+                            </ChildContent>
+                            <ItemRenderer>
+                                <div class="d-flex align-center gap-2 px-2 py-1 rounded-lg mud-paper-outlined" style="cursor:grab; user-select:none">
+                                    <MudIcon Icon="@Icons.Material.Filled.DragIndicator" Size="Size.Small" Class="mud-text-secondary" />
+                                    <MudSwitch T="bool" Value="context.Visible"
+                                               ValueChanged="@(v => OnColumnVisibilityChangedAsync(context, v))"
+                                               Label="@context.Label" Color="Color.Primary" Dense Class="flex-grow-1 ma-0" />
+                                </div>
+                            </ItemRenderer>
+                        </MudDropContainer>
+                    </MudPopover>
+                </div>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.FileDownload"
+                           Disabled="_exporting"
+                           OnClick="ExportExcelAsync">
+                    Export Excel
+                </MudButton>
+            }
+        </div>
+
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="ma-2">@_error</MudAlert>
+        }
+        else if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-3" />
+        }
+        else if (_result is not null)
+        {
+            <div class="d-flex flex-wrap align-center gap-3 pa-2">
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">
+                    @_artName
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary">
+                    @_piName
+                </MudChip>
+                <MudText Typo="Typo.body2">
+                    <b>A</b> @_labelA
+                </MudText>
+                <MudText Typo="Typo.body2" Class="mud-text-secondary">vs</MudText>
+                <MudText Typo="Typo.body2">
+                    <b>B</b> @_labelB
+                </MudText>
+            </div>
+
+            <div class="d-flex flex-wrap align-center gap-2 pa-2">
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning"
+                         Variant="@ChipVariant(_showChanged)" OnClick="@(() => ToggleKind(FeatureDeltaChangeKind.Changed))">
+                    Changed @_result.ChangedCount
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Success"
+                         Variant="@ChipVariant(_showAdded)" OnClick="@(() => ToggleKind(FeatureDeltaChangeKind.Added))">
+                    Added @_result.AddedCount
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Error"
+                         Variant="@ChipVariant(_showRemoved)" OnClick="@(() => ToggleKind(FeatureDeltaChangeKind.Removed))">
+                    Removed @_result.RemovedCount
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Default"
+                         Variant="@ChipVariant(_showUnchanged)" OnClick="@(() => ToggleKind(FeatureDeltaChangeKind.Unchanged))">
+                    Unchanged @_result.UnchangedCount
+                </MudChip>
+
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="ShowAll">Show all</MudButton>
+
+                <MudSpacer />
+
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    @_visibleRows.Count of @_result.Rows.Count rows shown
+                </MudText>
+            </div>
+
+            <MudDivider />
+
+            <MudDataGrid @ref="_grid"
+                         T="FeatureDeltaRow"
+                         Items="@_visibleRows"
+                         Hover="true"
+                         Striped="true"
+                         Dense="true"
+                         Bordered="true"
+                         Elevation="0"
+                         ColumnResizeMode="ResizeMode.Container"
+                         @bind-CurrentPage="_currentPage"
+                         @bind-RowsPerPage="_pageSize">
+                <Columns>
+                    <HierarchyColumn T="FeatureDeltaRow" />
+
+                    <TemplateColumn Title="Change" Sortable="true" SortBy="r => (int)r.Kind" Hidden="!IsVisible(ColKey.Change)">
+                        <CellTemplate>
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="@KindColor(context.Item.Kind)">
+                                @FeatureSnapshotDeltaService.KindLabel(context.Item.Kind)
+                            </MudChip>
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="true" SortBy="r => r.JiraId"
+                                    Resizable="true" Hidden="!IsVisible(ColKey.JiraId)">
+                        <CellTemplate>
+                            @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                            {
+                                <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                        @context.Item.JiraId
+                                    </MudChip>
+                                </a>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.FeatureName" Sortable="true" SortBy="r => r.Current.Name" Resizable="true" CellStyle="min-width:160px; max-width:320px;"
+                                    Hidden="@HideUnified(ColKey.FeatureName)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.Name))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.FeatureName)" Sortable="true" SortBy="r => r.A == null ? null : r.A.Name" Resizable="true" CellStyle="min-width:160px; max-width:320px;"
+                                    Hidden="@HideSide(ColKey.FeatureName)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Name, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.FeatureName)" Sortable="true" SortBy="r => r.B == null ? null : r.B.Name" Resizable="true" CellStyle="min-width:160px; max-width:320px;"
+                                    Hidden="@HideSide(ColKey.FeatureName)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Name, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Summary" Sortable="true" SortBy="r => r.Current.Summary" Resizable="true" CellStyle="min-width:200px; max-width:400px;"
+                                    Hidden="@HideUnified(ColKey.Summary)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.Summary))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.Summary)" Sortable="true" SortBy="r => r.A == null ? null : r.A.Summary" Resizable="true" CellStyle="min-width:200px; max-width:400px;"
+                                    Hidden="@HideSide(ColKey.Summary)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Summary, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.Summary)" Sortable="true" SortBy="r => r.B == null ? null : r.B.Summary" Resizable="true" CellStyle="min-width:200px; max-width:400px;"
+                                    Hidden="@HideSide(ColKey.Summary)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Summary, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Labels" Sortable="true" SortBy="r => r.Current.Labels" Resizable="true" CellStyle="min-width:120px; max-width:280px;"
+                                    Hidden="@HideUnified(ColKey.Labels)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.Labels))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.Labels)" Sortable="true" SortBy="r => r.A == null ? null : r.A.Labels" Resizable="true" CellStyle="min-width:120px; max-width:280px;"
+                                    Hidden="@HideSide(ColKey.Labels)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Labels, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.Labels)" Sortable="true" SortBy="r => r.B == null ? null : r.B.Labels" Resizable="true" CellStyle="min-width:120px; max-width:280px;"
+                                    Hidden="@HideSide(ColKey.Labels)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Labels, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Teams" Sortable="true" SortBy="r => r.Current.Teams" Resizable="true" CellStyle="min-width:120px; max-width:260px;"
+                                    Hidden="@HideUnified(ColKey.Teams)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.Teams))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.Teams)" Sortable="true" SortBy="r => r.A == null ? null : r.A.Teams" Resizable="true" CellStyle="min-width:120px; max-width:260px;"
+                                    Hidden="@HideSide(ColKey.Teams)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Teams, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.Teams)" Sortable="true" SortBy="r => r.B == null ? null : r.B.Teams" Resizable="true" CellStyle="min-width:120px; max-width:260px;"
+                                    Hidden="@HideSide(ColKey.Teams)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.Teams, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.TargetStart" Sortable="true" SortBy="r => r.Current.TargetStart" Resizable="true"
+                                    Hidden="@HideUnified(ColKey.TargetStart)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.TargetStart))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.TargetStart)" Sortable="true" SortBy="r => r.A == null ? null : r.A.TargetStart" Resizable="true"
+                                    Hidden="@HideSide(ColKey.TargetStart)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.TargetStart, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.TargetStart)" Sortable="true" SortBy="r => r.B == null ? null : r.B.TargetStart" Resizable="true"
+                                    Hidden="@HideSide(ColKey.TargetStart)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.TargetStart, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.TargetEnd" Sortable="true" SortBy="r => r.Current.TargetEnd" Resizable="true"
+                                    Hidden="@HideUnified(ColKey.TargetEnd)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.TargetEnd))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.TargetEnd)" Sortable="true" SortBy="r => r.A == null ? null : r.A.TargetEnd" Resizable="true"
+                                    Hidden="@HideSide(ColKey.TargetEnd)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.TargetEnd, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.TargetEnd)" Sortable="true" SortBy="r => r.B == null ? null : r.B.TargetEnd" Resizable="true"
+                                    Hidden="@HideSide(ColKey.TargetEnd)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.TargetEnd, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.StoryPoints" Sortable="true" SortBy="r => r.Current.StoryPoints" Resizable="true"
+                                    Hidden="@HideUnified(ColKey.StoryPoints)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.StoryPoints))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.StoryPoints)" Sortable="true" SortBy="r => r.A == null ? null : r.A.StoryPoints" Resizable="true"
+                                    Hidden="@HideSide(ColKey.StoryPoints)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.StoryPoints, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.StoryPoints)" Sortable="true" SortBy="r => r.B == null ? null : r.B.StoryPoints" Resizable="true"
+                                    Hidden="@HideSide(ColKey.StoryPoints)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.StoryPoints, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.RequirementStatus" Sortable="true" SortBy="r => r.Current.RequirementStatus" Resizable="true"
+                                    Hidden="@HideUnified(ColKey.RequirementStatus)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.RequirementStatus))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.RequirementStatus)" Sortable="true" SortBy="r => r.A == null ? null : r.A.RequirementStatus" Resizable="true"
+                                    Hidden="@HideSide(ColKey.RequirementStatus)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.RequirementStatus, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.RequirementStatus)" Sortable="true" SortBy="r => r.B == null ? null : r.B.RequirementStatus" Resizable="true"
+                                    Hidden="@HideSide(ColKey.RequirementStatus)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.RequirementStatus, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.FundingStatus" Sortable="true" SortBy="r => r.Current.FundingStatus" Resizable="true"
+                                    Hidden="@HideUnified(ColKey.FundingStatus)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.FundingStatus))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.FundingStatus)" Sortable="true" SortBy="r => r.A == null ? null : r.A.FundingStatus" Resizable="true"
+                                    Hidden="@HideSide(ColKey.FundingStatus)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.FundingStatus, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.FundingStatus)" Sortable="true" SortBy="r => r.B == null ? null : r.B.FundingStatus" Resizable="true"
+                                    Hidden="@HideSide(ColKey.FundingStatus)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.FundingStatus, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.BusinessOutcome" Sortable="true" SortBy="r => r.Current.BusinessOutcomeName" Resizable="true" CellStyle="min-width:120px; max-width:260px;"
+                                    Hidden="@HideUnified(ColKey.BusinessOutcome)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.BusinessOutcome))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.BusinessOutcome)" Sortable="true" SortBy="r => r.A == null ? null : r.A.BusinessOutcomeName" Resizable="true" CellStyle="min-width:120px; max-width:260px;"
+                                    Hidden="@HideSide(ColKey.BusinessOutcome)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.BusinessOutcome, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.BusinessOutcome)" Sortable="true" SortBy="r => r.B == null ? null : r.B.BusinessOutcomeName" Resizable="true" CellStyle="min-width:120px; max-width:260px;"
+                                    Hidden="@HideSide(ColKey.BusinessOutcome)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.BusinessOutcome, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.PiObjective" Sortable="true" SortBy="r => r.Current.PiObjective" Resizable="true" CellStyle="min-width:120px; max-width:320px;"
+                                    Hidden="@HideUnified(ColKey.PiObjective)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.PiObjective))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.PiObjective)" Sortable="true" SortBy="r => r.A == null ? null : r.A.PiObjective" Resizable="true" CellStyle="min-width:120px; max-width:320px;"
+                                    Hidden="@HideSide(ColKey.PiObjective)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.PiObjective, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.PiObjective)" Sortable="true" SortBy="r => r.B == null ? null : r.B.PiObjective" Resizable="true" CellStyle="min-width:120px; max-width:320px;"
+                                    Hidden="@HideSide(ColKey.PiObjective)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.PiObjective, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.RagExplain" Sortable="true" SortBy="r => r.Current.RagExplain" Resizable="true" CellStyle="min-width:120px; max-width:320px;"
+                                    Hidden="@HideUnified(ColKey.RagExplain)">
+                        <CellTemplate>@UnifiedCell(new DiffCellContext(context.Item, FeatureDeltaFields.RagExplain))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleA(PlanningDisplayNames.RagExplain)" Sortable="true" SortBy="r => r.A == null ? null : r.A.RagExplain" Resizable="true" CellStyle="min-width:120px; max-width:320px;"
+                                    Hidden="@HideSide(ColKey.RagExplain)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.RagExplain, true))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@TitleB(PlanningDisplayNames.RagExplain)" Sortable="true" SortBy="r => r.B == null ? null : r.B.RagExplain" Resizable="true" CellStyle="min-width:120px; max-width:320px;"
+                                    Hidden="@HideSide(ColKey.RagExplain)">
+                        <CellTemplate>@SideCell(new SideCellContext(context.Item, FeatureDeltaFields.RagExplain, false))</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="Long text" Sortable="false" Resizable="true" Hidden="!IsVisible(ColKey.LongText)">
+                        <CellTemplate>
+                            @if (context.Item.HasChange(FeatureDeltaFields.Summary))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">summary</MudChip>
+                            }
+                            @if (context.Item.HasChange(FeatureDeltaFields.AcceptanceCriteria))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">AC</MudChip>
+                            }
+                            @if (context.Item.HasChange(FeatureDeltaFields.Name))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">name</MudChip>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+
+                <ChildRowContent>
+                    <MudPaper Class="pa-3 ma-2" Elevation="0" Style="border:1px solid var(--mud-palette-lines-default)">
+                        @if (context.Item.Kind == FeatureDeltaChangeKind.Added)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                This feature is not present in A. It was added in B.
+                            </MudText>
+                        }
+                        else if (context.Item.Kind == FeatureDeltaChangeKind.Removed)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                This feature is present in A but no longer matches the ART and PI in B.
+                            </MudText>
+                        }
+                        else if (context.Item.Changes.Count == 0)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">No field changed.</MudText>
+                        }
+
+                        @if (context.Item.Changes.Count > 0)
+                        {
+                            <MudText Typo="Typo.overline" Class="mud-text-secondary">Field changes</MudText>
+                            <div class="d-flex flex-column gap-1 mb-3">
+                                @foreach (var change in context.Item.Changes.Where(c => !IsLongText(c.Field)))
+                                {
+                                    <div class="d-flex flex-wrap align-start gap-2">
+                                        <span class="mud-text-secondary" style="min-width:180px">@change.Field</span>
+                                        <span style="@OldStyle">@Display(change.OldValue)</span>
+                                        <span class="mud-text-secondary">→</span>
+                                        <span style="@NewStyle">@Display(change.NewValue)</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+
+                        @foreach (var field in LongTextFields)
+                        {
+                            @if (context.Item.HasChange(field) || context.Item.Kind is FeatureDeltaChangeKind.Added or FeatureDeltaChangeKind.Removed)
+                            {
+                                <div class="mb-4">
+                                    <MudText Typo="Typo.overline" Class="mud-text-secondary">@field · A</MudText>
+                                    <div class="mb-3" style="@LongTextOldStyle">
+                                        @Display(FeatureSnapshotDeltaService.FieldValue(context.Item.A, field))
+                                    </div>
+                                    <MudText Typo="Typo.overline" Class="mud-text-secondary">@field · B</MudText>
+                                    <div style="@LongTextNewStyle">
+                                        @Display(FeatureSnapshotDeltaService.FieldValue(context.Item.B, field))
+                                    </div>
+                                </div>
+                            }
+                        }
+                    </MudPaper>
+                </ChildRowContent>
+
+                <NoRecordsContent>
+                    <MudText Class="pa-6 mud-text-secondary">No rows match the current filter.</MudText>
+                </NoRecordsContent>
+                <PagerContent><MudDataGridPager T="FeatureDeltaRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+            </MudDataGrid>
+
+            <MudText Typo="Typo.caption" Class="mud-text-secondary pa-2 d-block">
+                Click a row to expand its field-level changes.
+            </MudText>
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private const string PageKey = "FeatureSnapshots";
+    private const string NowValue = "now";
+    private const string SideBySideValue = "side";
+    private const string OldStyle = "text-decoration:line-through; color:var(--mud-palette-error)";
+    private const string NewStyle = "color:var(--mud-palette-success); font-weight:500";
+
+    private const string LongTextBase =
+        "white-space:pre-wrap; overflow-wrap:anywhere; padding-left:12px; border-left:3px solid ";
+
+    private const string LongTextOldStyle = LongTextBase + "var(--mud-palette-error)";
+    private const string LongTextNewStyle = LongTextBase + "var(--mud-palette-success)";
+
+    private static readonly string[] LongTextFields =
+    [
+        FeatureDeltaFields.AcceptanceCriteria
+    ];
+
+    private FeatureDeltaResult? _result;
+    private List<FeatureDeltaRow> _visibleRows = new();
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+
+    private bool _loading = true;
+    private bool _exporting;
+    private string? _error;
+
+    private string? _artName;
+    private string? _piName;
+
+    private FeatureSnapshot? _snapshotA;
+    private FeatureSnapshot? _snapshotB;
+    private DateTime _comparedAtUtc = DateTime.UtcNow;
+
+    private string _labelA => _snapshotA is null ? "A" : NameOf(_snapshotA);
+
+    private string _labelB => _snapshotB is not null
+        ? NameOf(_snapshotB)
+        : $"Now — {UserTime.Format(_comparedAtUtc)}";
+
+    private string NameOf(FeatureSnapshot snapshot) =>
+        UserTime.SnapshotName(snapshot.Name, snapshot.PiName, snapshot.CreatedAt);
+
+    private int? _snapshotAId;
+    private string? _snapshotBRaw;
+
+    private bool _showChanged = true;
+    private bool _showAdded = true;
+    private bool _showRemoved = true;
+    private bool _showUnchanged;
+    private bool _sideBySide;
+    private string? _search;
+
+    private MudDataGrid<FeatureDeltaRow>? _grid;
+    private int _currentPage;
+    private int _pageSize = 25;
+
+    private static class ColKey
+    {
+        public const string Hierarchy = "hierarchy";
+        public const string Change = "change";
+        public const string JiraId = "jiraId";
+        public const string FeatureName = "featureName";
+        public const string Summary = "summary";
+        public const string Labels = "labels";
+        public const string Teams = "teams";
+        public const string TargetStart = "targetStart";
+        public const string TargetEnd = "targetEnd";
+        public const string StoryPoints = "storyPoints";
+        public const string RequirementStatus = "requirementStatus";
+        public const string FundingStatus = "fundingStatus";
+        public const string BusinessOutcome = "businessOutcome";
+        public const string PiObjective = "piObjective";
+        public const string RagExplain = "ragExplain";
+        public const string LongText = "longText";
+    }
+
+    private static readonly HashSet<string> SplitColumns = new(StringComparer.Ordinal)
+    {
+        ColKey.FeatureName,
+        ColKey.Summary,
+        ColKey.Labels,
+        ColKey.Teams,
+        ColKey.TargetStart,
+        ColKey.TargetEnd,
+        ColKey.StoryPoints,
+        ColKey.RequirementStatus,
+        ColKey.FundingStatus,
+        ColKey.BusinessOutcome,
+        ColKey.PiObjective,
+        ColKey.RagExplain
+    };
+
+    private static IEnumerable<string> ExpandKey(string key)
+    {
+        yield return key;
+
+        if (SplitColumns.Contains(key))
+        {
+            yield return key + "|a";
+            yield return key + "|b";
+        }
+    }
+
+    private static string TitleA(string title) => title + " A";
+
+    private static string TitleB(string title) => title + " B";
+
+    private bool HideUnified(string key) => !IsVisible(key) || _sideBySide;
+
+    private bool HideSide(string key) => !IsVisible(key) || !_sideBySide;
+
+    private record ColumnMeta(string Key, string Label, bool DefaultVisible);
+
+    private static readonly ColumnMeta[] AllColumns =
+    {
+        new(ColKey.Change, "Change", true),
+        new(ColKey.JiraId, PlanningDisplayNames.JiraId, true),
+        new(ColKey.FeatureName, PlanningDisplayNames.FeatureName, false),
+        new(ColKey.Summary, PlanningDisplayNames.Summary, true),
+        new(ColKey.Labels, PlanningDisplayNames.Labels, true),
+        new(ColKey.Teams, PlanningDisplayNames.Teams, false),
+        new(ColKey.TargetStart, PlanningDisplayNames.TargetStart, true),
+        new(ColKey.TargetEnd, PlanningDisplayNames.TargetEnd, true),
+        new(ColKey.StoryPoints, PlanningDisplayNames.StoryPoints, true),
+        new(ColKey.RequirementStatus, PlanningDisplayNames.RequirementStatus, true),
+        new(ColKey.FundingStatus, PlanningDisplayNames.FundingStatus, true),
+        new(ColKey.BusinessOutcome, PlanningDisplayNames.BusinessOutcome, true),
+        new(ColKey.PiObjective, PlanningDisplayNames.PiObjective, false),
+        new(ColKey.RagExplain, PlanningDisplayNames.RagExplain, false),
+        new(ColKey.LongText, "Long text", true),
+    };
+
+    private sealed class ColumnItem
+    {
+        public string Key { get; init; } = string.Empty;
+        public string Label { get; init; } = string.Empty;
+        public bool Visible { get; set; }
+        public int Order { get; set; }
+        public string Selector { get; set; } = ColumnZoneId;
+    }
+
+    private const string ColumnZoneId = "feature-delta-columns";
+    private const string ColumnPrefsKey = "featureSnapshotDelta.columns.v1";
+
+    private MudDropContainer<ColumnItem>? _columnDropContainer;
+    private string[] _markupOrderKeys = Array.Empty<string>();
+    private List<ColumnItem> _columnItems = new();
+    private bool _columnsPopoverOpen;
+    private bool _columnPrefsLoaded;
+    private bool _columnLayoutInitialized;
+
+    private sealed class ColumnPrefs
+    {
+        public List<string>? Order { get; set; }
+        public Dictionary<string, bool>? Visible { get; set; }
+    }
+
+    private bool IsVisible(string key)
+    {
+        var item = _columnItems.FirstOrDefault(c => c.Key == key);
+        return item is null || item.Visible;
+    }
+
+    private void InitColumnDefaults()
+    {
+        _markupOrderKeys = new[] { ColKey.Hierarchy }
+            .Concat(AllColumns.SelectMany(c => ExpandKey(c.Key)))
+            .ToArray();
+
+        _columnItems = AllColumns
+            .Select((c, idx) => new ColumnItem
+            {
+                Key = c.Key,
+                Label = c.Label,
+                Visible = c.DefaultVisible,
+                Order = idx,
+                Selector = ColumnZoneId,
+            })
+            .ToList();
+    }
+
+    private List<string> ColumnOrderForPrefs() =>
+        _columnItems.OrderBy(c => c.Order).Select(c => c.Key).ToList();
+
+    private List<string> OrderedKeys()
+    {
+        var keys = ColumnOrderForPrefs().SelectMany(ExpandKey).ToList();
+        keys.Insert(0, ColKey.Hierarchy);
+        return keys;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        InitColumnDefaults();
+
+        try
+        {
+            var userName = await WindowsAuth.GetUserName();
+            if (userName is not null)
+            {
+                _permissions = await UserPermissions.GetPermissionSetAsync(userName);
+            }
+
+            ReadUrlParams();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await base.OnAfterRenderAsync(firstRender);
+
+        if (firstRender)
+        {
+            await LoadColumnPrefsAsync();
+            StateHasChanged();
+        }
+
+        if (!_columnLayoutInitialized && _columnPrefsLoaded
+            && _grid is not null
+            && _grid.RenderedColumns.Count == _markupOrderKeys.Length)
+        {
+            AssignColumnIdentifiers();
+            ApplyColumnOrder();
+            _columnLayoutInitialized = true;
+            _columnDropContainer?.Refresh();
+            StateHasChanged();
+        }
+    }
+
+    private void AssignColumnIdentifiers()
+    {
+        if (_grid is null)
+        {
+            return;
+        }
+
+        var rendered = _grid.RenderedColumns;
+        if (rendered.Count != _markupOrderKeys.Length)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _markupOrderKeys.Length; i++)
+        {
+            rendered[i].Identifier = _markupOrderKeys[i];
+        }
+    }
+
+    private void ApplyColumnOrder()
+    {
+        if (_grid is null)
+        {
+            return;
+        }
+
+        var order = OrderedKeys();
+        var rendered = _grid.RenderedColumns;
+        var ordered = rendered
+            .OrderBy(c =>
+            {
+                var idx = order.IndexOf(c.Identifier ?? string.Empty);
+                return idx < 0 ? int.MaxValue : idx;
+            })
+            .ToList();
+
+        rendered.Clear();
+        rendered.AddRange(ordered);
+
+        _visibleRows = new List<FeatureDeltaRow>(_visibleRows);
+    }
+
+    private async Task OnColumnDroppedAsync(MudItemDropInfo<ColumnItem> dropInfo)
+    {
+        if (dropInfo.Item is null)
+        {
+            return;
+        }
+
+        dropInfo.Item.Selector = dropInfo.DropzoneIdentifier;
+        _columnItems.UpdateOrder(dropInfo, item => item.Order, 0);
+        _columnItems = _columnItems.OrderBy(c => c.Order).ToList();
+
+        ApplyColumnOrder();
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task OnColumnVisibilityChangedAsync(ColumnItem item, bool value)
+    {
+        item.Visible = value;
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task ResetColumnsAsync()
+    {
+        InitColumnDefaults();
+        ApplyColumnOrder();
+        _columnDropContainer?.Refresh();
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task LoadColumnPrefsAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", ColumnPrefsKey);
+            if (string.IsNullOrEmpty(json))
+            {
+                return;
+            }
+
+            var prefs = System.Text.Json.JsonSerializer.Deserialize<ColumnPrefs>(json);
+            if (prefs is null)
+            {
+                return;
+            }
+
+            if (prefs.Visible is not null)
+            {
+                foreach (var item in _columnItems)
+                {
+                    if (prefs.Visible.TryGetValue(item.Key, out var visible))
+                    {
+                        item.Visible = visible;
+                    }
+                }
+            }
+
+            if (prefs.Order is not null && prefs.Order.Count > 0)
+            {
+                var known = new HashSet<string>(_markupOrderKeys, StringComparer.Ordinal);
+                var newOrder = prefs.Order.Where(k => known.Contains(k)).Distinct().ToList();
+                foreach (var key in _markupOrderKeys)
+                {
+                    if (!newOrder.Contains(key))
+                    {
+                        newOrder.Add(key);
+                    }
+                }
+
+                foreach (var item in _columnItems)
+                {
+                    var idx = newOrder.IndexOf(item.Key);
+                    item.Order = idx < 0 ? int.MaxValue : idx;
+                }
+
+                _columnItems = _columnItems.OrderBy(c => c.Order).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load Feature delta column preferences");
+        }
+        finally
+        {
+            _columnPrefsLoaded = true;
+        }
+    }
+
+    private async Task SaveColumnPrefsAsync()
+    {
+        if (!_columnPrefsLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            var prefs = new ColumnPrefs
+            {
+                Order = ColumnOrderForPrefs(),
+                Visible = _columnItems.ToDictionary(c => c.Key, c => c.Visible, StringComparer.Ordinal)
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(prefs);
+            await JS.InvokeVoidAsync("localStorage.setItem", ColumnPrefsKey, json);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to save Feature delta column preferences");
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_snapshotAId is null)
+        {
+            _error = "No snapshot was selected. Open a delta from the Feature Snapshots page.";
+            return;
+        }
+
+        var snapshotA = await SnapshotService.GetByIdAsync(_snapshotAId.Value);
+
+        if (snapshotA is null)
+        {
+            _error = "The baseline snapshot no longer exists.";
+            return;
+        }
+
+        var jiraKeyMap = await TrainResolver.GetJiraKeyMapAsync();
+        if (!_permissions.CanView(PageKey, ScopeFor(snapshotA, jiraKeyMap)))
+        {
+            _error = "You do not have access to snapshots of this ART.";
+            return;
+        }
+
+        _artName = snapshotA.ArtName;
+        _piName = snapshotA.PiName;
+        _snapshotA = snapshotA;
+
+        var itemsA = await SnapshotService.GetItemsAsync(snapshotA.Id);
+        List<FeatureSnapshotItem> itemsB;
+
+        if (string.IsNullOrEmpty(_snapshotBRaw) || _snapshotBRaw == NowValue)
+        {
+            _snapshotBRaw = NowValue;
+            _comparedAtUtc = DateTime.UtcNow;
+            itemsB = await SnapshotService.CaptureCurrentAsync(
+                new FeatureSnapshotTarget(snapshotA.ArtName, snapshotA.ArtJiraKey, snapshotA.CapitalProjectId, snapshotA.PiName),
+                snapshotA.IncludedPiLabelMatches);
+        }
+        else if (int.TryParse(_snapshotBRaw, out var snapshotBId))
+        {
+            var snapshotB = await SnapshotService.GetByIdAsync(snapshotBId);
+
+            if (snapshotB is null)
+            {
+                _error = "The compared snapshot no longer exists.";
+                return;
+            }
+
+            if (!string.Equals(snapshotB.ArtName, snapshotA.ArtName, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(snapshotB.PiName, snapshotA.PiName, StringComparison.OrdinalIgnoreCase))
+            {
+                _error = "The two snapshots belong to a different ART or PI and cannot be compared.";
+                return;
+            }
+
+            _snapshotB = snapshotB;
+            itemsB = await SnapshotService.GetItemsAsync(snapshotB.Id);
+        }
+        else
+        {
+            _error = "The compared snapshot is not valid.";
+            return;
+        }
+
+        _result = DeltaService.Compare(itemsA, itemsB);
+        RecomputeVisibleRows();
+    }
+
+    private static TrainScope ScopeFor(FeatureSnapshot snapshot, IReadOnlyDictionary<string, int> jiraKeyMap)
+    {
+        var key = snapshot.ArtJiraKey?.Trim();
+
+        if (!string.IsNullOrEmpty(key) && jiraKeyMap.TryGetValue(key, out var capitalProjectId))
+        {
+            return TrainScope.ForTrains([capitalProjectId]);
+        }
+
+        return snapshot.CapitalProjectId is { } storedId
+            ? TrainScope.ForTrains([storedId])
+            : TrainScope.AdminOrGeneralOnly;
+    }
+
+    private void RecomputeVisibleRows()
+    {
+        if (_result is null)
+        {
+            _visibleRows = new List<FeatureDeltaRow>();
+            return;
+        }
+
+        _visibleRows = _result.Rows
+            .Where(IsKindVisible)
+            .Where(MatchesSearch)
+            .OrderBy(r => KindOrder(r.Kind))
+            .ThenBy(r => r.JiraId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private bool IsKindVisible(FeatureDeltaRow row) => row.Kind switch
+    {
+        FeatureDeltaChangeKind.Changed => _showChanged,
+        FeatureDeltaChangeKind.Added => _showAdded,
+        FeatureDeltaChangeKind.Removed => _showRemoved,
+        _ => _showUnchanged
+    };
+
+    private bool MatchesSearch(FeatureDeltaRow row)
+    {
+        if (string.IsNullOrWhiteSpace(_search))
+        {
+            return true;
+        }
+
+        var term = _search.Trim();
+
+        return Contains(row.Current.JiraId, term)
+            || Contains(row.Current.Summary, term)
+            || Contains(row.Current.Name, term)
+            || Contains(row.Current.Teams, term)
+            || Contains(row.Current.Labels, term)
+            || Contains(row.A?.Summary, term)
+            || Contains(row.A?.Teams, term)
+            || Contains(row.A?.Labels, term);
+    }
+
+    private static bool Contains(string? value, string term) =>
+        value is not null && value.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private static int KindOrder(FeatureDeltaChangeKind kind) => kind switch
+    {
+        FeatureDeltaChangeKind.Changed => 0,
+        FeatureDeltaChangeKind.Added => 1,
+        FeatureDeltaChangeKind.Removed => 2,
+        _ => 3
+    };
+
+    private static Color KindColor(FeatureDeltaChangeKind kind) => kind switch
+    {
+        FeatureDeltaChangeKind.Changed => Color.Warning,
+        FeatureDeltaChangeKind.Added => Color.Success,
+        FeatureDeltaChangeKind.Removed => Color.Error,
+        _ => Color.Default
+    };
+
+    private static Variant ChipVariant(bool selected) => selected ? Variant.Filled : Variant.Outlined;
+
+    private Variant ViewVariant(bool sideBySide) => _sideBySide == sideBySide ? Variant.Filled : Variant.Outlined;
+
+    private Color ViewColor(bool sideBySide) => _sideBySide == sideBySide ? Color.Primary : Color.Default;
+
+    private string? ViewIcon(bool sideBySide) =>
+        _sideBySide == sideBySide ? Icons.Material.Filled.Check : null;
+
+    private static bool IsLongText(string field) => LongTextFields.Contains(field);
+
+    private static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+    private RenderFragment<DiffCellContext> UnifiedCell => ctx => @<text>
+        @{
+            var change = ctx.Row.Change(ctx.Field);
+        }
+        @if (change is null)
+        {
+            <span>@FeatureSnapshotDeltaService.FieldValue(ctx.Row.Current, ctx.Field)</span>
+        }
+        else
+        {
+            <span style="@OldStyle">@Display(change.OldValue)</span>
+            <span class="mud-text-secondary mx-1">→</span>
+            <span style="@NewStyle">@Display(change.NewValue)</span>
+        }
+    </text>;
+
+    private RenderFragment<SideCellContext> SideCell => ctx => @<text>
+        @{
+            var item = ctx.IsA ? ctx.Row.A : ctx.Row.B;
+            var changed = ctx.Row.HasChange(ctx.Field);
+            var style = !changed ? null : (ctx.IsA ? OldStyle : NewStyle);
+        }
+        <span style="@style">@Display(FeatureSnapshotDeltaService.FieldValue(item, ctx.Field))</span>
+    </text>;
+
+    private record DiffCellContext(FeatureDeltaRow Row, string Field);
+
+    private record SideCellContext(FeatureDeltaRow Row, string Field, bool IsA);
+
+    private void SetSideBySide(bool value)
+    {
+        if (_sideBySide == value)
+        {
+            return;
+        }
+
+        _sideBySide = value;
+        UpdateUrl();
+    }
+
+    private void ToggleKind(FeatureDeltaChangeKind kind)
+    {
+        switch (kind)
+        {
+            case FeatureDeltaChangeKind.Changed:
+                _showChanged = !_showChanged;
+                break;
+            case FeatureDeltaChangeKind.Added:
+                _showAdded = !_showAdded;
+                break;
+            case FeatureDeltaChangeKind.Removed:
+                _showRemoved = !_showRemoved;
+                break;
+            default:
+                _showUnchanged = !_showUnchanged;
+                break;
+        }
+
+        _currentPage = 0;
+        RecomputeVisibleRows();
+        UpdateUrl();
+    }
+
+    private void ShowAll()
+    {
+        _showChanged = true;
+        _showAdded = true;
+        _showRemoved = true;
+        _showUnchanged = true;
+        _currentPage = 0;
+        RecomputeVisibleRows();
+        UpdateUrl();
+    }
+
+    private void OnSearchChanged(string? value)
+    {
+        _search = value;
+        _currentPage = 0;
+        RecomputeVisibleRows();
+        UpdateUrl();
+    }
+
+    private void ReadUrlParams()
+    {
+        var query = QueryHelpers.ParseQuery(Nav.ToAbsoluteUri(Nav.Uri).Query);
+
+        if (query.TryGetValue("a", out var a) && int.TryParse(a, out var parsedA))
+        {
+            _snapshotAId = parsedA;
+        }
+
+        if (query.TryGetValue("b", out var b) && !string.IsNullOrWhiteSpace(b))
+        {
+            _snapshotBRaw = b.ToString();
+        }
+
+        if (query.TryGetValue("show", out var show) && !string.IsNullOrWhiteSpace(show))
+        {
+            var kinds = show.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _showChanged = kinds.Contains("changed", StringComparer.OrdinalIgnoreCase);
+            _showAdded = kinds.Contains("added", StringComparer.OrdinalIgnoreCase);
+            _showRemoved = kinds.Contains("removed", StringComparer.OrdinalIgnoreCase);
+            _showUnchanged = kinds.Contains("unchanged", StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (query.TryGetValue("q", out var q) && !string.IsNullOrWhiteSpace(q))
+        {
+            _search = q.ToString();
+        }
+
+        if (query.TryGetValue("view", out var view) && !string.IsNullOrWhiteSpace(view))
+        {
+            _sideBySide = string.Equals(view, SideBySideValue, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (query.TryGetValue("size", out var size) && int.TryParse(size, out var parsedSize))
+        {
+            _pageSize = parsedSize;
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        var kinds = new List<string>();
+
+        if (_showChanged) { kinds.Add("changed"); }
+        if (_showAdded) { kinds.Add("added"); }
+        if (_showRemoved) { kinds.Add("removed"); }
+        if (_showUnchanged) { kinds.Add("unchanged"); }
+
+        var parameters = new Dictionary<string, object?>
+        {
+            ["a"] = _snapshotAId,
+            ["b"] = _snapshotBRaw,
+            ["show"] = kinds.Count == 0 ? "none" : string.Join(',', kinds),
+            ["q"] = string.IsNullOrWhiteSpace(_search) ? null : _search,
+            ["view"] = _sideBySide ? SideBySideValue : null,
+            ["size"] = _pageSize == 25 ? null : _pageSize
+        };
+
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(RoutingPath.FeatureSnapshotsDelta, parameters), replace: true);
+    }
+
+    private async Task ExportExcelAsync()
+    {
+        if (_result is null || _exporting)
+        {
+            return;
+        }
+
+        _exporting = true;
+
+        try
+        {
+            var bytes = FeatureDeltaExcelExportService.Build(
+                _visibleRows,
+                _artName ?? string.Empty,
+                _piName ?? string.Empty,
+                _labelA,
+                _labelB);
+
+            var fileName = $"feature-delta-{_artName}-{_piName}-{UserTime.ToLocal(DateTime.UtcNow):yyyyMMdd-HHmm}.xlsx"
+                .Replace(' ', '-')
+                .Replace('/', '-');
+
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+}
