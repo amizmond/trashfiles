@@ -1,0 +1,390 @@
+@attribute [Route(RoutingPath.CapitalProjectsNew)]
+@attribute [Route(RoutingPath.CapitalProjectsEdit)]
+
+@inject ICapitalProjectService ProjectService
+@inject ITeamService TeamService
+@inject IDepartmentService DepartmentService
+@inject IPiService PiService
+@inject IHolidayExportService HolidayExportService
+@inject IBrowserDownloadService DownloadService
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject IJSRuntime JS
+@inject IConfiguration Configuration
+@inject IPermissionGuard PermissionGuard
+
+@using Serilog
+@using Estimation.Core.Calendar.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="CapitalProjects" RequireEdit="true">
+<PageTitle>@(_isNew ? "New ART Level" : _model.Name)</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Navigation.NavigateTo(ListUrl))" />
+            <MudText Typo="Typo.h5">@(_isNew ? "New ART Level" : _model.Name)</MudText>
+            @if (!_isNew && !_loading)
+            {
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.EventBusy"
+                           Disabled="_exporting"
+                           OnClick="OpenExportHolidaysDialogAsync">
+                    Export holidays
+                </MudButton>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_saving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+            <div style="@(_saving ? "pointer-events:none;opacity:0.6" : "")">
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">@PlanningDisplayNames.Details</MudText>
+                        <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                            <DataAnnotationsValidator />
+
+                            <MudTextField @bind-Value="_model.JiraKey" Label="@PlanningDisplayNames.JiraKey" Variant="Variant.Outlined" MaxLength="10" Class="mb-3" />
+
+                            <MudTextField @bind-Value="_model.Name" Label="@($"{PlanningDisplayNames.Name} *")" Variant="Variant.Outlined" For="() => _model.Name" Class="mb-3" />
+
+                            <MudTextField @bind-Value="_model.Description" Label="@PlanningDisplayNames.Description" Variant="Variant.Outlined" Lines="3" Class="mb-3" />
+
+                            <SearchableDropdown T="int?"
+                                                Items="_departmentIds"
+                                                Value="_model.DepartmentId"
+                                                ValueChanged="@(v => _model.DepartmentId = v)"
+                                                ToStringFunc="@DepartmentName"
+                                                Label="@PlanningDisplayNames.Department"
+                                                Clearable="true"
+                                                Class="mb-4" />
+
+                            @if (!string.IsNullOrEmpty(_error))
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mb-3">@_error</MudAlert>
+                            }
+                            <div class="d-flex gap-2">
+                                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving" StartIcon="@Icons.Material.Filled.Save">
+                                    @(_isNew ? "Create" : "Save")
+                                </MudButton>
+
+                                @if (!_isNew)
+                                {
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                               OnClick="ConfirmDeleteAsync" Class="ml-auto"
+                                               StartIcon="@Icons.Material.Filled.Delete">Delete</MudButton>
+                                }
+
+                            </div>
+                        </EditForm>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.Teams</MudText>
+                            <MudSpacer />
+                            @if (!_isNew)
+                            {
+                                <SearchableDropdown T="int?"
+                                                    Items="_availableTeamIds"
+                                                    Value="_selectedTeamId"
+                                                    ValueChanged="@(v => _selectedTeamId = v)"
+                                                    ToStringFunc="@TeamName"
+                                                    Label="Select team"
+                                                    Margin="Margin.Dense"
+                                                    Clearable="true"
+                                                    Style="min-width:140px;" />
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           OnClick="AddTeamAsync"
+                                           Disabled="_selectedTeamId is null">
+                                    Add
+                                </MudButton>
+                            }
+                        </MudToolBar>
+                        @if (_isNew)
+                        {
+                            <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                                Save the record first to assign teams.
+                            </MudText>
+                        }
+                        else
+                        {
+                            <MudDataGrid T="CapitalProjectTeam" Items="_model.CapitalProjectTeams"
+                                         Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                                <Columns>
+                                    <PropertyColumn Property="x => x.Team.Name" Title="@PlanningDisplayNames.Name" Sortable="true" />
+                                    <PropertyColumn Property="x => x.Team.FullName" Title="@PlanningDisplayNames.FullName" Sortable="true" />
+                                    <PropertyColumn Property="x => x.Team.OptionalTeamTag" Title="@PlanningDisplayNames.Tag" Sortable="true" />
+                                    <PropertyColumn Property="x => x.Team.Description" Title="@PlanningDisplayNames.Description" Sortable="false" />
+                                    <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                        <CellTemplate>
+                                            <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                           Size="Size.Small"
+                                                           Color="Color.Primary"
+                                                           OnClick="@(() => OpenInNewTab($"{RoutingPath.Teams}/{context.Item.TeamId}"))" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="() => RemoveTeamAsync(context.Item.TeamId)" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                                <NoRecordsContent>
+                                    <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No teams assigned yet.</MudText>
+                                </NoRecordsContent>
+                                <PagerContent>
+                                    <MudDataGridPager T="CapitalProjectTeam" PageSizeOptions="new[] { 5, 10, 25 }" />
+                                </PagerContent>
+                            </MudDataGrid>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    private string ListUrl => ReturnUrl ?? RoutingPath.CapitalProjects;
+
+    private CapitalProject _model = new();
+    private List<Team> _allTeams = new();
+    private List<Department> _allDepartments = new();
+    private bool _loading = true;
+    private bool _saving;
+    private bool _exporting;
+    private string? _error;
+    private int? _selectedTeamId;
+    private bool _isNew => Id is null or 0;
+
+    private IEnumerable<Team> _availableTeams => _allTeams.Where(t => _model.CapitalProjectTeams.All(cpt => cpt.TeamId != t.Id));
+
+    private IEnumerable<int?> _departmentIds => _allDepartments.Select(d => (int?)d.Id);
+    private IEnumerable<int?> _availableTeamIds => _availableTeams.Select(t => (int?)t.Id);
+
+    private string DepartmentName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+
+        return _allDepartments.FirstOrDefault(d => d.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    private string TeamName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+
+        return _allTeams.FirstOrDefault(t => t.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        var teamsTask = TeamService.GetAllNamesAsync();
+        var deptsTask = DepartmentService.GetAllAsync();
+        await Task.WhenAll(teamsTask, deptsTask);
+        _allTeams = await teamsTask;
+        _allDepartments = await deptsTask;
+
+        if (!_isNew)
+        {
+            var existing = await ProjectService.GetByIdAsync(Id!.Value);
+            if (existing is null) { Navigation.NavigateTo(ListUrl); return; }
+
+            if (!await PermissionGuard.CanEditAsync("CapitalProjects", TrainScope.ForTrains([existing.Id])))
+            {
+                Snackbar.Add("You don't have edit permission for this Solution Train.", Severity.Warning);
+                Navigation.NavigateTo(ListUrl);
+                return;
+            }
+
+            _model = existing;
+        }
+        else 
+        { 
+            _model = new CapitalProject();
+        }
+
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        var trainScope = _isNew ? TrainScope.AdminOrGeneralOnly : TrainScope.ForTrains([_model.Id]);
+        if (!await PermissionGuard.CanEditAsync("CapitalProjects", trainScope))
+        {
+            Snackbar.Add("You don't have edit permission for this Solution Train.", Severity.Error);
+            return;
+        }
+
+        _saving = true; _error = null;
+
+        try
+        {
+            if (_isNew)
+            {
+                var c = await ProjectService.CreateAsync(_model);
+                var createUrl = ReturnUrl is not null
+                    ? Navigation.GetUriWithQueryParameters($"{RoutingPath.CapitalProjects}/{c.Id}",
+                        new Dictionary<string, object?> { ["returnUrl"] = ReturnUrl })
+                    : $"{RoutingPath.CapitalProjects}/{c.Id}";
+                Navigation.NavigateTo(createUrl, true);
+            }
+            else { _model = await ProjectService.UpdateAsync(_model); Snackbar.Add("Saved.", Severity.Success); }
+        }
+        catch (Exception ex)
+        { 
+            _error = ex.Message; 
+        }
+        finally 
+        { 
+            _saving = false; 
+        }
+    }
+
+    private async Task OpenInNewTab(string url)
+    {
+        await JS.InvokeVoidAsync("open", Navigation.ToAbsoluteUri(url).ToString(), "_blank");
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {_model.Name} ?"))
+            {
+                await ProjectService.DeleteAsync(_model.Id);
+                Navigation.NavigateTo(ListUrl);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task AddTeamAsync()
+    {
+        if (_selectedTeamId is null) return;
+
+        await ProjectService.AddTeamAsync(_model.Id, _selectedTeamId.Value);
+        var team = _allTeams.First(t => t.Id == _selectedTeamId);
+
+        _model.CapitalProjectTeams.Add(new CapitalProjectTeam
+        {
+            CapitalProjectId = _model.Id,
+            TeamId = _selectedTeamId.Value,
+            Team = team
+        });
+
+        _selectedTeamId = null;
+    }
+
+    private async Task RemoveTeamAsync(int teamId)
+    {
+        var name = _model.CapitalProjectTeams.FirstOrDefault(cpt => cpt.TeamId == teamId)?.Team.Name;
+        if (!await MessageService.Confirm($"Remove team {name} ?")) return;
+        await ProjectService.RemoveTeamAsync(_model.Id, teamId);
+        _model.CapitalProjectTeams = _model.CapitalProjectTeams.Where(cpt => cpt.TeamId != teamId).ToList();
+    }
+
+    private async Task OpenExportHolidaysDialogAsync()
+    {
+        var teams = _model.CapitalProjectTeams
+            .Select(cpt => cpt.Team)
+            .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (teams.Count == 0)
+        {
+            Snackbar.Add("Add at least one team before exporting holidays.", Severity.Warning);
+            return;
+        }
+
+        var pis = await PiService.GetAllLightAsync();
+        var withDates = pis
+            .Where(p => p.StartDate is not null && p.EndDate is not null)
+            .OrderByDescending(p => p.StartDate)
+            .ToList();
+
+        var parameters = new DialogParameters<ExportHolidaysDialog>
+        {
+            { x => x.Pis, withDates },
+            { x => x.Teams, teams },
+            { x => x.Art, _model.Name },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<ExportHolidaysDialog>("Export holidays", parameters, options);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not ExportHolidaysDialog.ExportHolidaysSpec spec)
+        {
+            return;
+        }
+
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = await HolidayExportService.GenerateAsync(_model.Id, spec.From, spec.To, spec.TeamIds);
+            if (bytes is null)
+            {
+                Snackbar.Add("Nothing to export — the selected teams have no active members.", Severity.Warning);
+                return;
+            }
+
+            var fileName = $"Holidays_{Sanitize(_model.Name)}_{Sanitize(spec.Label)}.xlsx";
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export holidays for capital project {Id}", _model.Id);
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string Sanitize(string value)
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        return new string(value.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+    }
+}
