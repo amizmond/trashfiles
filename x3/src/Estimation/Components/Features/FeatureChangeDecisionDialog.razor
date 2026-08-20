@@ -1,0 +1,37 @@
+<div class="pa-4" style="min-width:420px">
+    <MudText Typo="Typo.body2" Class="mb-4 mud-text-secondary">@Message</MudText>
+
+    <MudTextField T="string" @bind-Value="_comment"
+                  Label="Comment"
+                  HelperText="Optional, but a short reason helps whoever follows up on the change."
+                  Lines="3" MaxLength="1000"
+                  Immediate Clearable
+                  Dense Variant="Variant.Outlined" />
+
+    <div class="d-flex justify-end gap-2 mt-6">
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="@ActionColor" OnClick="Confirm">@ActionText</MudButton>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public string Message { get; set; } = string.Empty;
+
+    [Parameter]
+    public string ActionText { get; set; } = "Reject";
+
+    [Parameter]
+    public Color ActionColor { get; set; } = Color.Error;
+
+    private string? _comment;
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Confirm() => MudDialog.Close(DialogResult.Ok(new DecisionResult(_comment)));
+
+    public record DecisionResult(string? Comment);
+}

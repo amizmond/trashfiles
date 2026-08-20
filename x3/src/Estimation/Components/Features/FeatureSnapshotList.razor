@@ -1,0 +1,520 @@
+@attribute [Route(RoutingPath.FeatureSnapshots)]
+@inherits LocalTimeComponentBase
+
+@inject IFeatureSnapshotService SnapshotService
+@inject ICapitalProjectService CapitalProjectService
+@inject IPiService PiService
+@inject IUserPermissionService UserPermissions
+@inject IWindowsAuthService WindowsAuth
+@inject ISolutionTrainResolver TrainResolver
+@inject IDialogService DialogService
+@inject IModalDialogService MessageService
+@inject IBrowserDownloadService DownloadService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+
+@using Microsoft.AspNetCore.WebUtilities
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Shared.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<PageTitle>@PlanningDisplayNames.FeatureSnapshots</PageTitle>
+
+<AccessGuard PageKey="FeatureSnapshots">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.FeatureSnapshots</MudText>
+
+            <MudSelect T="string" Value="_filterArt" ValueChanged="OnFilterArtChanged"
+                       Label="@PlanningDisplayNames.Art"
+                       Dense Variant="Variant.Outlined" Clearable
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter" Style="width:240px">
+                @foreach (var art in _availableArts)
+                {
+                    <MudSelectItem T="string" Value="@art">@art</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSelect T="string" Value="_filterPi" ValueChanged="OnFilterPiChanged"
+                       Label="@PlanningDisplayNames.PI"
+                       Dense Variant="Variant.Outlined" Clearable
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter" Style="width:200px">
+                @foreach (var pi in _availablePis)
+                {
+                    <MudSelectItem T="string" Value="@pi">@pi</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSpacer />
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FactCheck"
+                       OnClick="@(() => Nav.NavigateTo(RoutingPath.FeatureChangeReviews))">
+                Change reviews
+            </MudButton>
+
+            @if (_canCreate)
+            {
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           Disabled="_loading || _creating"
+                           OnClick="OpenCreateDialogAsync">
+                    Create new
+                </MudButton>
+            }
+        </div>
+
+        <MudDivider />
+
+        @if (_creating)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+        }
+
+        <MudDataGrid T="SnapshotRow"
+                     Items="@_filteredRows"
+                     Hover="true"
+                     Striped="true"
+                     Dense="true"
+                     Elevation="0"
+                     Loading="_loading"
+                     LoadingProgressColor="Color.Primary"
+                     ColumnResizeMode="ResizeMode.Column"
+                     @bind-CurrentPage="_currentPage"
+                     @bind-RowsPerPage="_pageSize">
+            <Columns>
+                <TemplateColumn Title="Snapshot name" Sortable="true" SortBy="r => DisplayName(r)"
+                                Resizable="true" CellStyle="min-width:180px; max-width:340px;">
+                    <CellTemplate>@DisplayName(context.Item)</CellTemplate>
+                </TemplateColumn>
+
+                <PropertyColumn Property="r => r.ArtName" Title="@PlanningDisplayNames.Art" Sortable="true" />
+                <PropertyColumn Property="r => r.PiName" Title="@PlanningDisplayNames.PI" Sortable="true" />
+
+                <TemplateColumn Title="Created" Sortable="true" SortBy="r => r.CreatedAt">
+                    <CellTemplate>@UserTime.Format(context.Item.CreatedAt)</CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Source" Sortable="true" SortBy="r => r.IsAutomatic">
+                    <CellTemplate>
+                        @if (context.Item.IsAutomatic)
+                        {
+                            <MudTooltip Text="Captured automatically when the PI was locked">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">PI locked</MudChip>
+                            </MudTooltip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Text">Manual</MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <PropertyColumn Property="r => r.FeatureCount" Title="@PlanningDisplayNames.Features" Sortable="true" />
+
+                <PropertyColumn Property="r => r.CreatedBy" Title="@PlanningDisplayNames.CreatedBy" Sortable="true" />
+
+                <TemplateColumn Title="@PlanningDisplayNames.Actions" Sortable="false" Filterable="false" StickyRight="true">
+                    <CellTemplate>
+                        <MudTooltip Text="Compare this snapshot">
+                            <MudFab Class="m-2" Color="Color.Primary" StartIcon="@Icons.Material.Filled.CompareArrows"
+                                    Size="Size.Small" OnClick="@(() => OpenCompareDialogAsync(context.Item))" />
+                        </MudTooltip>
+                        <MudTooltip Text="Export every feature in this snapshot to Excel">
+                            <MudFab Class="m-2" Color="Color.Primary" StartIcon="@Icons.Material.Filled.FileDownload"
+                                    Size="Size.Small" Disabled="_exportingId is not null"
+                                    OnClick="@(() => ExportAsync(context.Item))" />
+                        </MudTooltip>
+                        @if (_canDelete)
+                        {
+                            <MudTooltip Text="Delete this snapshot">
+                                <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever"
+                                        IconColor="Color.Secondary" Size="Size.Small"
+                                        OnClick="@(() => ConfirmDeleteAsync(context.Item))" />
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No snapshots found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="SnapshotRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private const string PageKey = "FeatureSnapshots";
+
+    private List<SnapshotRow> _rows = new();
+    private List<SnapshotRow> _filteredRows = new();
+    private List<string> _availableArts = new();
+    private List<string> _availablePis = new();
+    private List<CapitalProject> _creatableArts = new();
+    private List<string> _allPiNames = new();
+
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private bool _loading = true;
+    private bool _creating;
+    private bool _canCreate;
+
+    private bool _canDelete;
+
+    private int? _exportingId;
+
+    private string? _filterArt;
+    private string? _filterPi;
+    private int _currentPage;
+    private int _pageSize = 10;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var userName = await WindowsAuth.GetUserName();
+            if (userName is not null)
+            {
+                _permissions = await UserPermissions.GetPermissionSetAsync(userName);
+            }
+
+            _canDelete = _permissions.IsAdmin;
+
+            var allArts = await CapitalProjectService.GetAllAsync();
+            _creatableArts = allArts
+                .Where(a => !string.IsNullOrWhiteSpace(a.JiraKey))
+                .Where(a => _permissions.CanEdit(PageKey, TrainScope.ForTrains([a.Id])))
+                .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            _canCreate = _creatableArts.Count > 0;
+
+            _allPiNames = (await PiService.GetAllLightAsync())
+                .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+                .GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g => new { Name = g.Key, StartDate = g.Max(p => p.StartDate) })
+                .OrderByDescending(p => p.StartDate ?? DateTime.MinValue)
+                .ThenByDescending(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(p => p.Name)
+                .ToList();
+
+            ReadUrlParams();
+            await LoadSnapshotsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string DisplayName(SnapshotRow row) =>
+        UserTime.SnapshotName(row.Name, row.PiName, row.CreatedAt);
+
+    private async Task LoadSnapshotsAsync()
+    {
+        var jiraKeyMap = await TrainResolver.GetJiraKeyMapAsync();
+        var snapshots = await SnapshotService.GetAllAsync();
+
+        _rows = snapshots
+            .Select(s => new { Snapshot = s, Scope = ScopeFor(s, jiraKeyMap) })
+            .Where(x => _permissions.CanView(PageKey, x.Scope))
+            .Select(x => new SnapshotRow(
+                x.Snapshot.Id,
+                x.Snapshot.ArtName,
+                x.Snapshot.PiName,
+                x.Snapshot.Name,
+                x.Snapshot.CreatedAt,
+                x.Snapshot.CreatedBy,
+                x.Snapshot.FeatureCount,
+                x.Snapshot.IsAutomatic))
+            .ToList();
+
+        _availableArts = _rows.Select(r => r.ArtName).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        _availablePis = _rows.Select(r => r.PiName).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+
+        RecomputeFilteredRows();
+    }
+
+    private static TrainScope ScopeFor(FeatureSnapshot snapshot, IReadOnlyDictionary<string, int> jiraKeyMap)
+    {
+        var key = snapshot.ArtJiraKey?.Trim();
+
+        if (!string.IsNullOrEmpty(key) && jiraKeyMap.TryGetValue(key, out var capitalProjectId))
+        {
+            return TrainScope.ForTrains([capitalProjectId]);
+        }
+
+        return snapshot.CapitalProjectId is { } storedId
+            ? TrainScope.ForTrains([storedId])
+            : TrainScope.AdminOrGeneralOnly;
+    }
+
+    private void RecomputeFilteredRows()
+    {
+        IEnumerable<SnapshotRow> rows = _rows;
+
+        if (!string.IsNullOrWhiteSpace(_filterArt))
+        {
+            rows = rows.Where(r => string.Equals(r.ArtName, _filterArt, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_filterPi))
+        {
+            rows = rows.Where(r => string.Equals(r.PiName, _filterPi, StringComparison.OrdinalIgnoreCase));
+        }
+
+        _filteredRows = rows.ToList();
+    }
+
+    private void OnFilterArtChanged(string? value)
+    {
+        _filterArt = value;
+        _currentPage = 0;
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private void OnFilterPiChanged(string? value)
+    {
+        _filterPi = value;
+        _currentPage = 0;
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private void ReadUrlParams()
+    {
+        var query = QueryHelpers.ParseQuery(Nav.ToAbsoluteUri(Nav.Uri).Query);
+
+        if (query.TryGetValue("art", out var art) && !string.IsNullOrWhiteSpace(art))
+        {
+            _filterArt = art.ToString();
+        }
+
+        if (query.TryGetValue("pi", out var pi) && !string.IsNullOrWhiteSpace(pi))
+        {
+            _filterPi = pi.ToString();
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["art"] = string.IsNullOrWhiteSpace(_filterArt) ? null : _filterArt,
+            ["pi"] = string.IsNullOrWhiteSpace(_filterPi) ? null : _filterPi
+        };
+
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(RoutingPath.FeatureSnapshots, parameters), replace: true);
+    }
+
+    private async Task OpenCreateDialogAsync()
+    {
+        try
+        {
+            var parameters = new DialogParameters<CreateFeatureSnapshotDialog>
+            {
+                { x => x.Arts, _creatableArts },
+                { x => x.PiNames, _allPiNames }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<CreateFeatureSnapshotDialog>("Create snapshot", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is null || result.Canceled)
+            {
+                return;
+            }
+
+            var selection = (CreateFeatureSnapshotDialog.CreateSnapshotResult)result.Data!;
+
+            _creating = true;
+            StateHasChanged();
+
+            var created = await SnapshotService.CreateAsync(
+                new FeatureSnapshotTarget(
+                    selection.ArtName,
+                    selection.ArtJiraKey,
+                    selection.CapitalProjectId,
+                    selection.PiName,
+                    selection.Name),
+                includePiLabelMatches: true);
+
+            await LoadSnapshotsAsync();
+
+            Snackbar.Add($"Snapshot created with {created.FeatureCount} feature(s).", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _creating = false;
+        }
+    }
+
+    private async Task OpenCompareDialogAsync(SnapshotRow row)
+    {
+        try
+        {
+            var source = await SnapshotService.GetByIdAsync(row.Id);
+
+            if (source is null)
+            {
+                return;
+            }
+
+            var others = _rows
+                .Where(r => r.Id != row.Id)
+                .Where(r => string.Equals(r.ArtName, row.ArtName, StringComparison.OrdinalIgnoreCase))
+                .Where(r => string.Equals(r.PiName, row.PiName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(r => r.CreatedAt)
+                .Select(r => new FeatureSnapshot
+                {
+                    Id = r.Id,
+                    ArtName = r.ArtName,
+                    PiName = r.PiName,
+                    Name = r.Name,
+                    CreatedAt = r.CreatedAt,
+                    FeatureCount = r.FeatureCount
+                })
+                .ToList();
+
+            var parameters = new DialogParameters<FeatureSnapshotCompareDialog>
+            {
+                { x => x.Source, source },
+                { x => x.Others, others }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<FeatureSnapshotCompareDialog>("Delta", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is null || result.Canceled)
+            {
+                return;
+            }
+
+            var target = (FeatureSnapshotCompareDialog.CompareResult)result.Data!;
+            Nav.NavigateTo(BuildDeltaUrl(row, target.SnapshotId));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private string BuildDeltaUrl(SnapshotRow row, int? targetId)
+    {
+        if (targetId is null)
+        {
+            return Nav.GetUriWithQueryParameters(
+                RoutingPath.FeatureSnapshotsDelta,
+                new Dictionary<string, object?> { ["a"] = row.Id, ["b"] = FeatureSnapshotCompareDialog.NowValue });
+        }
+
+        var target = _rows.First(r => r.Id == targetId.Value);
+        var olderId = target.CreatedAt < row.CreatedAt ? target.Id : row.Id;
+        var newerId = olderId == row.Id ? target.Id : row.Id;
+
+        return Nav.GetUriWithQueryParameters(
+            RoutingPath.FeatureSnapshotsDelta,
+            new Dictionary<string, object?> { ["a"] = olderId, ["b"] = newerId.ToString() });
+    }
+
+    private async Task ExportAsync(SnapshotRow row)
+    {
+        if (_exportingId is not null)
+        {
+            return;
+        }
+
+        _exportingId = row.Id;
+
+        try
+        {
+            var items = await SnapshotService.GetItemsAsync(row.Id);
+
+            var info = new FeatureSnapshotExcelExportService.SnapshotInfo(
+                DisplayName(row),
+                row.ArtName,
+                row.PiName,
+                UserTime.Format(row.CreatedAt),
+                row.CreatedBy,
+                row.IsAutomatic);
+
+            var bytes = FeatureSnapshotExcelExportService.Build(items, info);
+
+            await DownloadService.DownloadAsync(bytes, FileNameFor(row));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _exportingId = null;
+        }
+    }
+
+    private string FileNameFor(SnapshotRow row) =>
+        $"feature-snapshot-{row.ArtName}-{row.PiName}-{UserTime.ToLocal(row.CreatedAt):yyyyMMdd-HHmm}.xlsx"
+            .Replace(' ', '-')
+            .Replace('/', '-');
+
+    private async Task ConfirmDeleteAsync(SnapshotRow row)
+    {
+        try
+        {
+            if (!_canDelete)
+            {
+                return;
+            }
+
+            var label = $"{DisplayName(row)} ({row.ArtName} / {row.PiName})";
+
+            if (!await MessageService.Confirm($"Delete snapshot {label} ?"))
+            {
+                return;
+            }
+
+            await SnapshotService.DeleteAsync(row.Id);
+            await LoadSnapshotsAsync();
+            Snackbar.Add("Snapshot deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private record SnapshotRow(
+        int Id,
+        string ArtName,
+        string PiName,
+        string? Name,
+        DateTime CreatedAt,
+        string? CreatedBy,
+        int FeatureCount,
+        bool IsAutomatic);
+}
