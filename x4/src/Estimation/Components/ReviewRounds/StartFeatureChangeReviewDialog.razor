@@ -1,0 +1,205 @@
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+@using Estimation.Core.ReviewRounds.Services
+@using Estimation.Core.Train.Models
+
+@inject IFeatureSnapshotService SnapshotService
+@inject IFeatureChangeReviewService ReviewService
+@inject IUserTimeZoneService UserTime
+
+<div class="pa-4" style="min-width:460px">
+    <MudText Typo="Typo.body2" Class="mb-4 mud-text-secondary">
+        A change review captures the current state of the selected ART and PI as a new snapshot,
+        compares it with the baseline and lets you approve or reject every change.
+    </MudText>
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-3" />
+    }
+    else
+    {
+        <MudSelect T="string" Value="_artName" ValueChanged="OnArtChanged"
+                   Label="@PlanningDisplayNames.Art"
+                   Dense Variant="Variant.Outlined" Clearable
+                   AnchorOrigin="Origin.BottomCenter" Class="mb-4">
+            @foreach (var art in _artNames)
+            {
+                <MudSelectItem T="string" Value="@art">@art</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudSelect T="string" Value="_piName" ValueChanged="OnPiChanged"
+                   Label="@PlanningDisplayNames.PI"
+                   Dense Variant="Variant.Outlined" Clearable
+                   Disabled="@(_artName is null)"
+                   AnchorOrigin="Origin.BottomCenter" Class="mb-4">
+            @foreach (var pi in _piNames)
+            {
+                <MudSelectItem T="string" Value="@pi">@pi</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudSelect T="int?" @bind-Value="_baselineSnapshotId"
+                   Label="Baseline snapshot"
+                   HelperText="Changes are computed against this snapshot. It defaults to the snapshot of the last completed review, so a new review only shows what changed since then."
+                   Dense Variant="Variant.Outlined"
+                   Disabled="@(_baselineOptions.Count == 0)"
+                   AnchorOrigin="Origin.BottomCenter" Class="mb-4">
+            @foreach (var snapshot in _baselineOptions)
+            {
+                <MudSelectItem T="int?" Value="@snapshot.Id">
+                    @NameOf(snapshot) — @snapshot.FeatureCount feature(s)@(snapshot.IsAutomatic ? " — PI locked" : null)
+                </MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudTextField T="string" Value="_name" ValueChanged="OnNameChanged"
+                      Label="Review name"
+                      HelperText="Optional. Leave it empty to fall back to the PI and the creation time."
+                      MaxLength="200"
+                      Immediate Clearable
+                      Dense Variant="Variant.Outlined" />
+
+        @if (_artNames.Count == 0)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mt-4">
+                No snapshot exists for an ART you can edit. Create a feature snapshot first.
+            </MudAlert>
+        }
+        else if (_artName is not null && _piName is not null && _baselineOptions.Count == 0)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mt-4">
+                No snapshot exists for this ART and PI. Create a feature snapshot first.
+            </MudAlert>
+        }
+    }
+
+    <div class="d-flex justify-end gap-2 mt-6">
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!IsValid)" OnClick="Start">Start review</MudButton>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    /// <summary>ARTs the user is allowed to edit; only their snapshots are offered.</summary>
+    [Parameter]
+    public List<CapitalProject> Arts { get; set; } = new();
+
+    private List<FeatureSnapshot> _snapshots = new();
+    private List<string> _artNames = new();
+    private List<string> _piNames = new();
+    private List<FeatureSnapshot> _baselineOptions = new();
+
+    private bool _loading = true;
+    private string? _artName;
+    private string? _piName;
+    private int? _baselineSnapshotId;
+    private string? _name;
+    private bool _nameEditedByUser;
+
+    private bool IsValid => _baselineSnapshotId is not null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var all = await SnapshotService.GetAllAsync();
+            _snapshots = all.Where(s => Arts.Any(a => MatchesArt(s, a))).ToList();
+
+            _artNames = _snapshots
+                .Select(s => s.ArtName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (_artNames.Count == 1)
+            {
+                await SelectArtAsync(_artNames[0]);
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static bool MatchesArt(FeatureSnapshot snapshot, CapitalProject art)
+    {
+        if (!string.IsNullOrWhiteSpace(snapshot.ArtJiraKey) && !string.IsNullOrWhiteSpace(art.JiraKey))
+        {
+            return string.Equals(snapshot.ArtJiraKey.Trim(), art.JiraKey.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        return snapshot.CapitalProjectId == art.Id;
+    }
+
+    private string NameOf(FeatureSnapshot snapshot) =>
+        UserTime.SnapshotName(snapshot.Name, snapshot.PiName, snapshot.CreatedAt);
+
+    private Task OnArtChanged(string? value) => SelectArtAsync(value);
+
+    private async Task SelectArtAsync(string? artName)
+    {
+        _artName = artName;
+        _piNames = _snapshots
+            .Where(s => string.Equals(s.ArtName, _artName, StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.PiName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        await SelectPiAsync(_piNames.Count == 1 ? _piNames[0] : null);
+    }
+
+    private Task OnPiChanged(string? value) => SelectPiAsync(value);
+
+    private async Task SelectPiAsync(string? piName)
+    {
+        _piName = piName;
+        _baselineOptions = _snapshots
+            .Where(s => string.Equals(s.ArtName, _artName, StringComparison.OrdinalIgnoreCase))
+            .Where(s => string.Equals(s.PiName, _piName, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(s => s.CreatedAt)
+            .ThenByDescending(s => s.Id)
+            .ToList();
+
+        _baselineSnapshotId = null;
+
+        if (_artName is not null && _piName is not null && _baselineOptions.Count > 0)
+        {
+            var suggested = await ReviewService.SuggestBaselineSnapshotIdAsync(_artName, _piName);
+            _baselineSnapshotId = suggested is not null && _baselineOptions.Any(s => s.Id == suggested)
+                ? suggested
+                : _baselineOptions[0].Id;
+        }
+
+        if (!_nameEditedByUser)
+        {
+            _name = string.IsNullOrWhiteSpace(_piName) ? null : $"Review {UserTime.SuggestSnapshotName(_piName)}";
+        }
+    }
+
+    private void OnNameChanged(string? value)
+    {
+        _name = value;
+        _nameEditedByUser = true;
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void Start()
+    {
+        if (_baselineSnapshotId is not { } baselineId)
+        {
+            return;
+        }
+
+        MudDialog.Close(DialogResult.Ok(new StartReviewResult(baselineId, _name)));
+    }
+
+    public record StartReviewResult(int BaselineSnapshotId, string? Name);
+}

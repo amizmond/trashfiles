@@ -1,0 +1,99 @@
+@using Serilog
+@using Estimation.Core.Features.Services
+
+@inject IDialogService DialogService
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+
+<MudChip T="string" Size="Size.Small" Color="Color.Success"
+         Variant="@ChipVariant(State.ShowApproved)" OnClick="ToggleApprovedAsync">
+    Approved @State.ApprovedCount
+</MudChip>
+<MudChip T="string" Size="Size.Small" Color="Color.Warning"
+         Variant="@ChipVariant(State.ShowNotApproved)" OnClick="ToggleNotApprovedAsync">
+    Not approved @State.NotApprovedCount
+</MudChip>
+
+@if (CanEdit && PendingShown > 0)
+{
+    <MudButton Variant="Variant.Filled" Size="Size.Small" Color="Color.Success"
+               StartIcon="@Icons.Material.Filled.ThumbUp" Disabled="_busy"
+               OnClick="ApproveShownAsync">
+        Approve shown (@PendingShown)
+    </MudButton>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public DeltaApprovalState State { get; set; } = null!;
+
+    /// <summary>The rows currently passing the page filters; "Approve shown" approves the pending ones.</summary>
+    [Parameter]
+    public IReadOnlyList<FeatureDeltaRow> VisibleRows { get; set; } = [];
+
+    [Parameter]
+    public bool CanEdit { get; set; }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    private bool _busy;
+
+    private int PendingShown => State.PendingOf(VisibleRows).Count;
+
+    private static Variant ChipVariant(bool selected) => selected ? Variant.Filled : Variant.Outlined;
+
+    private Task ToggleApprovedAsync()
+    {
+        State.ShowApproved = !State.ShowApproved;
+        return OnChanged.InvokeAsync();
+    }
+
+    private Task ToggleNotApprovedAsync()
+    {
+        State.ShowNotApproved = !State.ShowNotApproved;
+        return OnChanged.InvokeAsync();
+    }
+
+    private async Task ApproveShownAsync()
+    {
+        var pending = PendingShown;
+
+        if (pending == 0 || _busy)
+        {
+            return;
+        }
+
+        try
+        {
+            var parameters = new DialogParameters<FeatureStateApproveDialog>
+            {
+                { x => x.Message, $"Approve the current state of {pending} shown change(s)?" }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<FeatureStateApproveDialog>("Approve changes", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is null || result.Canceled)
+            {
+                return;
+            }
+
+            var comment = ((FeatureStateApproveDialog.ApproveResult)result.Data!).Comment;
+
+            _busy = true;
+            var added = await State.ApproveAsync(VisibleRows, comment);
+            Snackbar.Add($"{added} change(s) approved.", Severity.Success);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

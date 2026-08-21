@@ -1,0 +1,118 @@
+@using Serilog
+@using Estimation.Core.Features.Services
+@using Estimation.Core.HashApprovals.Services
+
+@inject IUserTimeZoneService UserTime
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+
+@if (!DeltaApprovalState.NeedsApproval(Row))
+{
+    <span class="mud-text-secondary">—</span>
+}
+else if (State.ApprovalOf(Row) is { } info)
+{
+    <div class="d-flex align-center gap-1">
+        <MudTooltip Text="@Describe(info)">
+            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">APPROVED</MudChip>
+        </MudTooltip>
+        @if (CanEdit)
+        {
+            <MudTooltip Text="Withdraw this approval">
+                <MudIconButton Icon="@Icons.Material.Filled.Undo" Size="Size.Small" Color="Color.Default"
+                               Disabled="_busy" OnClick="WithdrawAsync" />
+            </MudTooltip>
+        }
+    </div>
+}
+else
+{
+    <div class="d-flex align-center gap-1">
+        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">NOT APPROVED</MudChip>
+        @if (CanEdit)
+        {
+            <MudTooltip Text="Approve the current state of this feature">
+                <MudIconButton Icon="@Icons.Material.Filled.ThumbUp" Size="Size.Small" Color="Color.Success"
+                               Disabled="_busy" OnClick="ApproveAsync" />
+            </MudTooltip>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public DeltaApprovalState State { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public FeatureDeltaRow Row { get; set; } = null!;
+
+    [Parameter]
+    public bool CanEdit { get; set; }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    private bool _busy;
+
+    private string Describe(FeatureStateApprovalInfo info)
+    {
+        var text = $"Approved by {info.ApprovedBy} on {UserTime.Format(info.ApprovedAt)}";
+        return string.IsNullOrWhiteSpace(info.Comment) ? text : $"{text} — {info.Comment}";
+    }
+
+    private async Task ApproveAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        try
+        {
+            _busy = true;
+            await State.ApproveAsync([Row], comment: null);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task WithdrawAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        try
+        {
+            var label = Row.JiraId ?? Row.Current.Name ?? Row.Key;
+
+            if (!await MessageService.Confirm($"Withdraw the approval of {label}? The change shows as not approved again."))
+            {
+                return;
+            }
+
+            _busy = true;
+            await State.WithdrawAsync(Row);
+            Snackbar.Add("Approval withdrawn.", Severity.Success);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

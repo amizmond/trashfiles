@@ -1,0 +1,441 @@
+@attribute [Route(RoutingPath.FeatureChangeReviews)]
+@inherits LocalTimeComponentBase
+
+@inject IFeatureChangeReviewService ReviewService
+@inject ICapitalProjectService CapitalProjectService
+@inject IUserPermissionService UserPermissions
+@inject IWindowsAuthService WindowsAuth
+@inject ISolutionTrainResolver TrainResolver
+@inject IDialogService DialogService
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+
+@using Microsoft.AspNetCore.WebUtilities
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+@using Estimation.Core.ReviewRounds.Models
+@using Estimation.Core.ReviewRounds.Services
+@using Estimation.Core.Shared.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<PageTitle>@ReviewRoundDisplayNames.Title</PageTitle>
+
+<AccessGuard PageKey="FeatureSnapshots">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                           OnClick="@(() => Nav.NavigateTo(RoutingPath.FeatureSnapshots))" />
+            <MudText Typo="Typo.h6" Class="mr-2">@ReviewRoundDisplayNames.Title</MudText>
+
+            <MudSelect T="string" Value="_filterArt" ValueChanged="OnFilterArtChanged"
+                       Label="@PlanningDisplayNames.Art"
+                       Dense Variant="Variant.Outlined" Clearable
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter" Style="width:240px">
+                @foreach (var art in _availableArts)
+                {
+                    <MudSelectItem T="string" Value="@art">@art</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSelect T="string" Value="_filterPi" ValueChanged="OnFilterPiChanged"
+                       Label="@PlanningDisplayNames.PI"
+                       Dense Variant="Variant.Outlined" Clearable
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter" Style="width:200px">
+                @foreach (var pi in _availablePis)
+                {
+                    <MudSelectItem T="string" Value="@pi">@pi</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSpacer />
+
+            @if (_canCreate)
+            {
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.FactCheck"
+                           Disabled="_loading || _creating"
+                           OnClick="OpenStartDialogAsync">
+                    Start review
+                </MudButton>
+            }
+        </div>
+
+        <MudDivider />
+
+        @if (_creating)
+        {
+            <div class="d-flex align-center gap-2 pa-2">
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="flex-grow-1" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">Capturing the current state…</MudText>
+            </div>
+        }
+
+        <MudDataGrid T="ReviewRow"
+                     Items="@_filteredRows"
+                     Hover="true"
+                     Striped="true"
+                     Dense="true"
+                     Elevation="0"
+                     Loading="_loading"
+                     LoadingProgressColor="Color.Primary"
+                     ColumnResizeMode="ResizeMode.Column"
+                     RowClass="cursor-pointer"
+                     RowClick="@(args => OpenDetail(args.Item))"
+                     @bind-CurrentPage="_currentPage"
+                     @bind-RowsPerPage="_pageSize">
+            <Columns>
+                <TemplateColumn Title="Review" Sortable="true" SortBy="r => DisplayName(r)"
+                                Resizable="true" CellStyle="min-width:180px; max-width:340px;">
+                    <CellTemplate>@DisplayName(context.Item)</CellTemplate>
+                </TemplateColumn>
+
+                <PropertyColumn Property="r => r.ArtName" Title="@PlanningDisplayNames.Art" Sortable="true" />
+                <PropertyColumn Property="r => r.PiName" Title="@PlanningDisplayNames.PI" Sortable="true" />
+
+                <TemplateColumn Title="@PlanningDisplayNames.Status" Sortable="true" SortBy="r => (int)r.Status">
+                    <CellTemplate>
+                        @if (context.Item.Status == FeatureChangeReviewStatus.Completed)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">Completed</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">Open</MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Changes" Sortable="true" SortBy="r => r.TotalCount">
+                    <CellTemplate>
+                        @if (context.Item.TotalCount == 0)
+                        {
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">none</MudText>
+                        }
+                        else
+                        {
+                            <div class="d-flex align-center gap-1">
+                                <MudTooltip Text="Approved">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Text">@context.Item.ApprovedCount</MudChip>
+                                </MudTooltip>
+                                <MudTooltip Text="Rejected">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Text">@context.Item.RejectedCount</MudChip>
+                                </MudTooltip>
+                                <MudTooltip Text="Pending">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Text">@context.Item.PendingCount</MudChip>
+                                </MudTooltip>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">of @context.Item.TotalCount</MudText>
+                            </div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="Created" Sortable="true" SortBy="r => r.CreatedAt">
+                    <CellTemplate>@UserTime.Format(context.Item.CreatedAt)</CellTemplate>
+                </TemplateColumn>
+
+                <PropertyColumn Property="r => r.CreatedBy" Title="@PlanningDisplayNames.CreatedBy" Sortable="true" />
+
+                <TemplateColumn Title="Completed" Sortable="true" SortBy="r => r.CompletedAt">
+                    <CellTemplate>
+                        @if (context.Item.CompletedAt is { } completedAt)
+                        {
+                            <MudTooltip Text="@($"by {context.Item.CompletedBy}")">
+                                <span>@UserTime.Format(completedAt)</span>
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+
+                <TemplateColumn Title="@PlanningDisplayNames.Actions" Sortable="false" Filterable="false" StickyRight="true">
+                    <CellTemplate>
+                        <MudTooltip Text="Open this review">
+                            <MudFab Class="m-2" Color="Color.Primary" StartIcon="@Icons.Material.Filled.OpenInNew"
+                                    Size="Size.Small" OnClick="@(() => OpenDetail(context.Item))" />
+                        </MudTooltip>
+                        @if (CanDelete(context.Item))
+                        {
+                            <MudTooltip Text="Delete this review">
+                                <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever"
+                                        IconColor="Color.Secondary" Size="Size.Small"
+                                        OnClick="@(() => ConfirmDeleteAsync(context.Item))" />
+                            </MudTooltip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No change reviews found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="ReviewRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private const string PageKey = "FeatureSnapshots";
+
+    private List<ReviewRow> _rows = new();
+    private List<ReviewRow> _filteredRows = new();
+    private List<string> _availableArts = new();
+    private List<string> _availablePis = new();
+    private List<CapitalProject> _creatableArts = new();
+
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private IReadOnlyDictionary<string, int> _jiraKeyMap = new Dictionary<string, int>();
+
+    private bool _loading = true;
+    private bool _creating;
+    private bool _canCreate;
+
+    private string? _filterArt;
+    private string? _filterPi;
+    private int _currentPage;
+    private int _pageSize = 10;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var userName = await WindowsAuth.GetUserName();
+            if (userName is not null)
+            {
+                _permissions = await UserPermissions.GetPermissionSetAsync(userName);
+            }
+
+            var allArts = await CapitalProjectService.GetAllAsync();
+            _creatableArts = allArts
+                .Where(a => !string.IsNullOrWhiteSpace(a.JiraKey))
+                .Where(a => _permissions.CanEdit(PageKey, TrainScope.ForTrains([a.Id])))
+                .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            _canCreate = _creatableArts.Count > 0;
+
+            _jiraKeyMap = await TrainResolver.GetJiraKeyMapAsync();
+
+            ReadUrlParams();
+            await LoadReviewsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string DisplayName(ReviewRow row) =>
+        UserTime.SnapshotName(row.Name, row.PiName, row.CreatedAt);
+
+    private async Task LoadReviewsAsync()
+    {
+        var summaries = await ReviewService.GetAllAsync();
+
+        _rows = summaries
+            .Select(s => new { Summary = s, Scope = ScopeFor(s.Review) })
+            .Where(x => _permissions.CanView(PageKey, x.Scope))
+            .Select(x => new ReviewRow(
+                x.Summary.Review.Id,
+                x.Summary.Review.ArtName,
+                x.Summary.Review.PiName,
+                x.Summary.Review.Name,
+                x.Summary.Review.Status,
+                x.Summary.Review.CreatedAt,
+                x.Summary.Review.CreatedBy,
+                x.Summary.Review.CompletedAt,
+                x.Summary.Review.CompletedBy,
+                x.Summary.TotalCount,
+                x.Summary.ApprovedCount,
+                x.Summary.RejectedCount,
+                x.Summary.PendingCount,
+                x.Scope))
+            .ToList();
+
+        _availableArts = _rows.Select(r => r.ArtName).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        _availablePis = _rows.Select(r => r.PiName).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+
+        RecomputeFilteredRows();
+    }
+
+    private TrainScope ScopeFor(FeatureChangeReview review)
+    {
+        var key = review.ArtJiraKey?.Trim();
+
+        if (!string.IsNullOrEmpty(key) && _jiraKeyMap.TryGetValue(key, out var capitalProjectId))
+        {
+            return TrainScope.ForTrains([capitalProjectId]);
+        }
+
+        return review.CapitalProjectId is { } storedId
+            ? TrainScope.ForTrains([storedId])
+            : TrainScope.AdminOrGeneralOnly;
+    }
+
+    private bool CanDelete(ReviewRow row) =>
+        _permissions.IsAdmin
+        || (row.Status == FeatureChangeReviewStatus.Open && _permissions.CanEdit(PageKey, row.Scope));
+
+    private void RecomputeFilteredRows()
+    {
+        IEnumerable<ReviewRow> rows = _rows;
+
+        if (!string.IsNullOrWhiteSpace(_filterArt))
+        {
+            rows = rows.Where(r => string.Equals(r.ArtName, _filterArt, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_filterPi))
+        {
+            rows = rows.Where(r => string.Equals(r.PiName, _filterPi, StringComparison.OrdinalIgnoreCase));
+        }
+
+        _filteredRows = rows.ToList();
+    }
+
+    private void OnFilterArtChanged(string? value)
+    {
+        _filterArt = value;
+        _currentPage = 0;
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private void OnFilterPiChanged(string? value)
+    {
+        _filterPi = value;
+        _currentPage = 0;
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private void ReadUrlParams()
+    {
+        var query = QueryHelpers.ParseQuery(Nav.ToAbsoluteUri(Nav.Uri).Query);
+
+        if (query.TryGetValue("art", out var art) && !string.IsNullOrWhiteSpace(art))
+        {
+            _filterArt = art.ToString();
+        }
+
+        if (query.TryGetValue("pi", out var pi) && !string.IsNullOrWhiteSpace(pi))
+        {
+            _filterPi = pi.ToString();
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["art"] = string.IsNullOrWhiteSpace(_filterArt) ? null : _filterArt,
+            ["pi"] = string.IsNullOrWhiteSpace(_filterPi) ? null : _filterPi
+        };
+
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(RoutingPath.FeatureChangeReviews, parameters), replace: true);
+    }
+
+    private void OpenDetail(ReviewRow row) =>
+        Nav.NavigateTo(Nav.GetUriWithQueryParameters(
+            RoutingPath.FeatureChangeReviewDetail,
+            new Dictionary<string, object?> { ["id"] = row.Id }));
+
+    private async Task OpenStartDialogAsync()
+    {
+        try
+        {
+            var parameters = new DialogParameters<StartFeatureChangeReviewDialog>
+            {
+                { x => x.Arts, _creatableArts }
+            };
+            var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+            var dialog = await DialogService.ShowAsync<StartFeatureChangeReviewDialog>("Start change review", parameters, options);
+            var result = await dialog.Result;
+
+            if (result is null || result.Canceled)
+            {
+                return;
+            }
+
+            var selection = (StartFeatureChangeReviewDialog.StartReviewResult)result.Data!;
+
+            _creating = true;
+            StateHasChanged();
+
+            var created = await ReviewService.CreateAsync(selection.BaselineSnapshotId, selection.Name);
+
+            Snackbar.Add(
+                created.Items.Count == 0
+                    ? "Review created. No changes were detected."
+                    : $"Review created with {created.Items.Count} change(s) to decide.",
+                Severity.Success);
+
+            Nav.NavigateTo(Nav.GetUriWithQueryParameters(
+                RoutingPath.FeatureChangeReviewDetail,
+                new Dictionary<string, object?> { ["id"] = created.Id }));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+        finally
+        {
+            _creating = false;
+        }
+    }
+
+    private async Task ConfirmDeleteAsync(ReviewRow row)
+    {
+        try
+        {
+            if (!CanDelete(row))
+            {
+                return;
+            }
+
+            var label = $"{DisplayName(row)} ({row.ArtName} / {row.PiName})";
+
+            if (!await MessageService.Confirm($"Delete change review {label} ? The recorded decisions are lost. The two snapshots are kept."))
+            {
+                return;
+            }
+
+            await ReviewService.DeleteAsync(row.Id);
+            await LoadReviewsAsync();
+            Snackbar.Add("Change review deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private record ReviewRow(
+        int Id,
+        string ArtName,
+        string PiName,
+        string? Name,
+        FeatureChangeReviewStatus Status,
+        DateTime CreatedAt,
+        string? CreatedBy,
+        DateTime? CompletedAt,
+        string? CompletedBy,
+        int TotalCount,
+        int ApprovedCount,
+        int RejectedCount,
+        int PendingCount,
+        TrainScope Scope);
+}
