@@ -1,0 +1,440 @@
+@attribute [Route(RoutingPath.FeatureHygiene)]
+@inherits FeatureHygieneScopedPageBase
+
+@inject IFeatureHygieneService Hygiene
+@inject IBrowserDownloadService DownloadService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+@inject IConfiguration Configuration
+
+@using Serilog
+@using Estimation.Core.Features.Hygiene.Models
+@using Estimation.Core.Features.Hygiene.Services
+
+<PageTitle>@PlanningDisplayNames.FeatureHygiene</PageTitle>
+
+<AccessGuard PageKey="@PageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.FeatureHygiene</MudText>
+
+            <MudSelect T="int?"
+                       Value="ArtId"
+                       ValueChanged="OnArtChangedAsync"
+                       Label="@PlanningDisplayNames.Art"
+                       Variant="Variant.Outlined"
+                       Dense
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:260px">
+                @foreach (var art in Arts)
+                {
+                    <MudSelectItem T="int?" Value="@art.Id">@art.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSelect T="int?"
+                       Value="PiId"
+                       ValueChanged="OnPiChangedAsync"
+                       Label="@PlanningDisplayNames.PI"
+                       Variant="Variant.Outlined"
+                       Dense
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:180px">
+                @foreach (var pi in Pis)
+                {
+                    <MudSelectItem T="int?" Value="@pi.Id">@pi.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudTooltip Text="Also check features that belong to the PI through its label rules, not only by their PI field.">
+                <MudSwitch T="bool"
+                           Value="_includeLabelMatches"
+                           ValueChanged="OnIncludeLabelMatchesChangedAsync"
+                           Label="Include label matches"
+                           Color="Color.Primary"
+                           Dense
+                           Disabled="_loading" />
+            </MudTooltip>
+
+            <MudSpacer />
+
+            <MudSwitch T="bool"
+                       Value="_showHealthy"
+                       ValueChanged="OnShowHealthyChanged"
+                       Label="Show healthy"
+                       Color="Color.Success"
+                       Dense />
+
+            <MudTooltip Text="Exports the rows shown, one column per rule.">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="@(_report is null || !_report.HasRules || _exporting)"
+                           OnClick="ExportToExcelAsync">
+                    Export to excel
+                </MudButton>
+            </MudTooltip>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Rule"
+                       Disabled="ArtId is null"
+                       OnClick="GoToRules">
+                Rules
+            </MudButton>
+        </div>
+
+        @if (!ScopeReady || _loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-3" />
+        }
+        else if (Arts.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                No ART with a Jira key is available to you on this page.
+            </MudAlert>
+        }
+        else if (ArtId is null || PiId is null)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                Select an ART and a PI to check their features.
+            </MudAlert>
+        }
+        else if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="ma-2">@_error</MudAlert>
+        }
+        else if (_report is not null && !_report.HasRules)
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="ma-2">
+                No hygiene rules for <b>@_report.ArtName</b> yet.
+                @(CanEdit ? "Open Rules to set them up." : "Someone with edit rights for this ART can set them up under Rules.")
+            </MudAlert>
+        }
+        else if (_report is not null)
+        {
+            <div class="d-flex flex-wrap align-center gap-6 px-3 py-2">
+                <div>
+                    <MudText Typo="Typo.h6">@_report.Total</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">features in @_report.PiName</MudText>
+                </div>
+                <div>
+                    <MudText Typo="Typo.h6" Color="Color.Success">@_report.Healthy</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">healthy@(_report.Total > 0 ? $" · {HealthyPercent}%" : "")</MudText>
+                </div>
+                <div>
+                    <MudText Typo="Typo.h6" Color="@(_report.Unhealthy > 0 ? Color.Error : Color.Default)">@_report.Unhealthy</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">not healthy</MudText>
+                </div>
+                <div>
+                    <MudText Typo="Typo.h6">@EnabledRules.Count</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">rules checked</MudText>
+                </div>
+            </div>
+
+            <div class="d-flex flex-wrap align-center gap-1 px-3 pb-2">
+                @foreach (var rule in EnabledRules)
+                {
+                    var current = rule;
+                    var count = _report.FailureCount(current.Id);
+                    <MudTooltip Text="@(_ruleFilter == current.Id ? "Showing only features failing this rule. Click to show all." : "Click to show only features failing this rule.")">
+                        <MudChip T="string"
+                                 Size="Size.Small"
+                                 Color="@(count > 0 ? Color.Error : Color.Success)"
+                                 Variant="@(_ruleFilter == current.Id ? Variant.Filled : Variant.Outlined)"
+                                 OnClick="@(() => ToggleRuleFilter(current.Id))">
+                            @HygieneRuleText.Describe(current) · @count
+                        </MudChip>
+                    </MudTooltip>
+                }
+            </div>
+
+            <div class="d-flex flex-wrap align-center gap-2 px-3 pb-2">
+                <MudTextField T="string"
+                              Value="_search"
+                              ValueChanged="OnSearchChanged"
+                              Placeholder="Search Jira ID, name, summary, team or failed check"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Clearable
+                              Immediate
+                              DebounceInterval="300"
+                              Dense
+                              Variant="Variant.Outlined"
+                              Style="width:360px" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    @_visibleRows.Count of @_report.Total feature(s) shown
+                </MudText>
+            </div>
+
+            <MudDataGrid T="FeatureHygieneRow"
+                         Items="_visibleRows"
+                         Dense="true"
+                         Hover="true"
+                         Striped="true"
+                         Elevation="0"
+                         SortMode="SortMode.Single"
+                         ColumnResizeMode="ResizeMode.Container"
+                         RowsPerPage="25">
+                <Columns>
+                    <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="true" SortBy="r => r.JiraId" Resizable="true">
+                        <CellTemplate>
+                            @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                            {
+                                <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                        @context.Item.JiraId
+                                    </MudChip>
+                                </a>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.FeatureName" Sortable="true" SortBy="r => r.Name" Resizable="true" CellStyle="min-width:160px; max-width:320px;">
+                        <CellTemplate>@context.Item.Name</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Summary" Sortable="true" SortBy="r => r.Summary" Resizable="true" CellStyle="min-width:200px; max-width:420px;">
+                        <CellTemplate><MudText Class="font-weight-bold">@context.Item.Summary</MudText></CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Status" Sortable="true" SortBy="r => r.Status" Resizable="true">
+                        <CellTemplate>
+                            @if (!string.IsNullOrEmpty(context.Item.Status))
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="@JiraStatusHelper.StatusColor(context.Item.Status)">@context.Item.Status</MudChip>
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="@PlanningDisplayNames.Teams" Sortable="true" SortBy="r => r.Teams" Resizable="true">
+                        <CellTemplate>@context.Item.Teams</CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="Failed checks" Sortable="true" SortBy="r => r.Failures.Count" Resizable="true" CellStyle="min-width:240px;">
+                        <CellTemplate>
+                            @if (context.Item.IsHealthy)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">Healthy</MudChip>
+                            }
+                            else
+                            {
+                                @foreach (var failure in context.Item.Failures)
+                                {
+                                    <MudTooltip Text="@FailureTooltip(failure)">
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined">@failure.Label</MudChip>
+                                    </MudTooltip>
+                                }
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+
+                    <TemplateColumn Title="" Sortable="false" Resizable="false">
+                        <CellTemplate>
+                            <MudTooltip Text="Open the feature">
+                                <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                               Size="Size.Small"
+                                               Color="Color.Primary"
+                                               OnClick="@(() => OpenFeature(context.Item.FeatureId))" />
+                            </MudTooltip>
+                        </CellTemplate>
+                    </TemplateColumn>
+                </Columns>
+                <NoRecordsContent>
+                    <MudText Class="pa-6 mud-text-secondary">
+                        @if (_report.Total == 0)
+                        {
+                            <span>No features of @_report.ArtName are in @_report.PiName.</span>
+                        }
+                        else if (_report.Unhealthy == 0 && !_showHealthy)
+                        {
+                            <span>All @_report.Total feature(s) pass every rule. Switch on <b>Show healthy</b> to list them.</span>
+                        }
+                        else
+                        {
+                            <span>No feature matches the current filter.</span>
+                        }
+                    </MudText>
+                </NoRecordsContent>
+                <PagerContent>
+                    <MudDataGridPager T="FeatureHygieneRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+                </PagerContent>
+            </MudDataGrid>
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private bool _loading;
+    private bool _exporting;
+    private string? _error;
+    private FeatureHygieneReport? _report;
+    private List<FeatureHygieneRow> _visibleRows = new();
+    private bool _includeLabelMatches = true;
+    private bool _showHealthy;
+    private int? _ruleFilter;
+    private string? _search;
+
+    private IReadOnlyList<FeatureHygieneRule> EnabledRules =>
+        _report?.Rules.Where(r => r.IsEnabled).ToList() ?? [];
+
+    private int HealthyPercent =>
+        _report is { Total: > 0 } ? (int)Math.Round(100.0 * _report.Healthy / _report.Total) : 0;
+
+    protected override Task OnScopeChangedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _ruleFilter = null;
+
+        if (ArtId is not int artId || PiId is not int piId)
+        {
+            _report = null;
+            _visibleRows = new();
+            return;
+        }
+
+        _loading = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            _report = await Hygiene.EvaluateAsync(artId, piId, _includeLabelMatches);
+
+            if (_report is null)
+            {
+                _error = "The selected ART or PI no longer exists.";
+            }
+
+            Recompute();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to evaluate feature hygiene for ART {ArtId} and PI {PiId}", artId, piId);
+            _report = null;
+            _visibleRows = new();
+            _error = "The hygiene rules could not be evaluated. Try again or check the rules for this ART.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Recompute()
+    {
+        if (_report is null)
+        {
+            _visibleRows = new();
+            return;
+        }
+
+        IEnumerable<FeatureHygieneRow> rows = _report.Rows;
+
+        if (!_showHealthy)
+        {
+            rows = rows.Where(r => !r.IsHealthy);
+        }
+
+        if (_ruleFilter is int ruleId)
+        {
+            rows = rows.Where(r => r.Failures.Any(f => f.RuleId == ruleId));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            var needle = _search.Trim();
+            rows = rows.Where(r =>
+                Contains(r.JiraId, needle)
+                || Contains(r.Name, needle)
+                || Contains(r.Summary, needle)
+                || Contains(r.Teams, needle)
+                || r.Failures.Any(f => Contains(f.Label, needle)));
+        }
+
+        _visibleRows = rows.ToList();
+    }
+
+    private static bool Contains(string? value, string needle) =>
+        value?.Contains(needle, StringComparison.OrdinalIgnoreCase) ?? false;
+
+    private async Task OnIncludeLabelMatchesChangedAsync(bool value)
+    {
+        _includeLabelMatches = value;
+        await LoadAsync();
+    }
+
+    private void OnShowHealthyChanged(bool value)
+    {
+        _showHealthy = value;
+        Recompute();
+    }
+
+    private void OnSearchChanged(string? value)
+    {
+        _search = value;
+        Recompute();
+    }
+
+    private void ToggleRuleFilter(int ruleId)
+    {
+        _ruleFilter = _ruleFilter == ruleId ? null : ruleId;
+        Recompute();
+    }
+
+    private static string FailureTooltip(HygieneFailure failure)
+    {
+        var parts = new List<string> { failure.RuleText };
+
+        if (failure.Message is not null)
+        {
+            parts.Add(failure.Message);
+        }
+
+        parts.Add(failure.ActualValue is null ? "Current value: empty" : $"Current value: {failure.ActualValue}");
+
+        return string.Join(" — ", parts);
+    }
+
+    private void OpenFeature(int featureId) => Nav.NavigateTo($"{RoutingPath.Features}/{featureId}");
+
+    private void GoToRules() => Nav.NavigateTo(RoutingPath.FeatureHygieneRules);
+
+    private async Task ExportToExcelAsync()
+    {
+        if (_report is null || _exporting)
+        {
+            return;
+        }
+
+        _exporting = true;
+
+        try
+        {
+            var bytes = FeatureHygieneExcelExportService.Build(_report, _visibleRows);
+            var fileName = $"feature-hygiene-{SafeFileName(_report.ArtName)}-{SafeFileName(_report.PiName)}-{DateTime.UtcNow:yyyyMMdd}.xlsx";
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export feature hygiene to Excel");
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private static string SafeFileName(string value)
+    {
+        var chars = value.Trim().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        var name = new string(chars).Trim('-');
+        return name.Length == 0 ? "export" : name;
+    }
+}
