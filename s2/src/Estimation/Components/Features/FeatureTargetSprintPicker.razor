@@ -1,0 +1,178 @@
+@inject IArtSprintService ArtSprintService
+
+@using Estimation.Core.Features.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+@if (_art is not null && _candidates.Count > 0 && _sprints.Count > 0)
+{
+    <MudPaper Elevation="0" Class="pa-3 rounded-lg" Style="border:1px solid var(--mud-palette-divider)">
+        <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+            <MudIcon Icon="@Icons.Material.Filled.DateRange" Size="Size.Small" Color="Color.Primary" />
+            <MudText Typo="Typo.subtitle2">Planned sprints</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">@_art.Name</MudText>
+            <MudSpacer />
+            @if (_candidates.Count > 1)
+            {
+                <SearchableDropdown T="int?"
+                                    Items="_candidateIds"
+                                    Value="_selectedPiId"
+                                    ValueChanged="OnPiChangedAsync"
+                                    ToStringFunc="@PiName"
+                                    Label="PI"
+                                    Margin="Margin.Dense"
+                                    Style="min-width:160px" />
+            }
+            else
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">@_candidates[0].Name</MudChip>
+            }
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mb-2">
+            @foreach (var sprint in _sprints)
+            {
+                var selected = _selected.Contains(sprint.Id);
+                <MudChip T="string"
+                         Size="Size.Small"
+                         Color="@(selected ? Color.Primary : Color.Default)"
+                         Variant="@(selected ? Variant.Filled : Variant.Outlined)"
+                         OnClick="@(() => ToggleAsync(sprint.Id))"
+                         Style="cursor:pointer">
+                    @sprint.Name
+                    @if (sprint.IsIpSprint)
+                    {
+                        <span class="ml-1" style="opacity:.75">· IP</span>
+                    }
+                    <span class="ml-1 mud-text-secondary" style="font-size:.75rem">
+                        @sprint.StartDate.ToString("MMM d") – @sprint.EndDate.ToString("MMM d")
+                    </span>
+                </MudChip>
+            }
+        </div>
+
+        @if (_range.Start is not null && _range.End is not null)
+        {
+            <MudText Typo="Typo.body2">
+                Target @_range.Start.Value.ToString("yyyy-MM-dd") → @_range.End.Value.ToString("yyyy-MM-dd")
+                <span class="mud-text-secondary">· spans @_spanned sprint(s)</span>
+            </MudText>
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                Select one or more sprints to set the target dates.
+            </MudText>
+        }
+    </MudPaper>
+}
+
+@code {
+    [Parameter] public string? ProjectKey { get; set; }
+
+    [Parameter] public string? JiraId { get; set; }
+
+    [Parameter] public int? PiId { get; set; }
+
+    [Parameter] public string? Labels { get; set; }
+
+    [Parameter] public DateTime? TargetStart { get; set; }
+
+    [Parameter] public EventCallback<DateTime?> TargetStartChanged { get; set; }
+
+    [Parameter] public DateTime? TargetEnd { get; set; }
+
+    [Parameter] public EventCallback<DateTime?> TargetEndChanged { get; set; }
+
+    [Parameter] public IReadOnlyDictionary<string, CapitalProjectRef> ArtByJiraKey { get; set; } =
+        new Dictionary<string, CapitalProjectRef>();
+
+    [Parameter] public IReadOnlyList<Pi> Pis { get; set; } = [];
+
+    private CapitalProjectRef? _art;
+    private List<Pi> _candidates = [];
+    private List<CapitalProjectSprint> _sprints = [];
+    private HashSet<int> _selected = [];
+    private int? _selectedPiId;
+
+    private string? _loadedKey;
+
+    private (DateTime? Start, DateTime? End) _range =>
+        FeatureTargetSprintPlanner.ComputeRange(_sprints.Where(s => _selected.Contains(s.Id)));
+
+    private int _spanned => FeatureTargetSprintPlanner.CountSpanned(_sprints, _range.Start, _range.End);
+
+    private IEnumerable<int?> _candidateIds => _candidates.Select(p => (int?)p.Id);
+
+    private string PiName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+
+        return _candidates.FirstOrDefault(p => p.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _art = ArtHelper.ResolveArtByJiraId(ProjectKey, JiraId, ArtByJiraKey);
+        _candidates = _art is null
+            ? []
+            : FeatureTargetSprintPlanner.ResolvePiCandidates(PiId, Labels, Pis);
+
+        if (_art is null || _candidates.Count == 0)
+        {
+            _sprints = [];
+            _selected = [];
+            _selectedPiId = null;
+            _loadedKey = null;
+            return;
+        }
+
+        if (_selectedPiId is null || _candidates.All(p => p.Id != _selectedPiId.Value))
+        {
+            _selectedPiId = _candidates[0].Id;
+        }
+
+        var key = BuildKey(TargetStart, TargetEnd);
+        if (key == _loadedKey)
+        {
+            return;
+        }
+
+        _loadedKey = key;
+        _sprints = await ArtSprintService.GetForProjectAndPiAsync(_art.Id, _selectedPiId!.Value);
+        _selected = FeatureTargetSprintPlanner.DeriveSelection(_sprints, TargetStart, TargetEnd);
+    }
+
+    private async Task OnPiChangedAsync(int? piId)
+    {
+        if (piId is null || _art is null)
+        {
+            return;
+        }
+
+        _selectedPiId = piId;
+        _sprints = await ArtSprintService.GetForProjectAndPiAsync(_art.Id, piId.Value);
+        _selected = FeatureTargetSprintPlanner.DeriveSelection(_sprints, TargetStart, TargetEnd);
+        _loadedKey = BuildKey(TargetStart, TargetEnd);
+    }
+
+    private string BuildKey(DateTime? start, DateTime? end) =>
+        $"{_art?.Id}:{_selectedPiId}:{start:yyyyMMdd}:{end:yyyyMMdd}";
+
+    private async Task ToggleAsync(int sprintId)
+    {
+        if (!_selected.Remove(sprintId))
+        {
+            _selected.Add(sprintId);
+        }
+
+        var (start, end) = _range;
+        _loadedKey = BuildKey(start, end);
+        await TargetStartChanged.InvokeAsync(start);
+        await TargetEndChanged.InvokeAsync(end);
+    }
+}
