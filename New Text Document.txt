@@ -1,0 +1,14 @@
+BEGIN TRANSACTION;
+
+-- Preview the rows that will change
+SELECT Id, JiraId, Name, TechnicalApprovalId
+FROM dbo.Features
+WHERE PiId = 3
+  AND TechnicalApprovalId IS NOT NULL;
+
+UPDATE dbo.Features
+SET TechnicalApprovalId = NULL
+WHERE PiId = 3
+  AND TechnicalApprovalId IS NOT NULL;
+
+SELECT @@ROWCOUNT AS RowsUpdated;
