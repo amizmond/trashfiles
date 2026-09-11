@@ -1,0 +1,2130 @@
+﻿@implements IAsyncDisposable
+
+@inject ITeamService TeamService
+@inject IPiService PiService
+@inject ITeamCapacityService CapacityService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IModalDialogService ModalDialogService
+@inject IDialogService DialogService
+@inject IConfiguration Configuration
+@inject IFeatureCommentService CommentService
+@inject IWindowsAuthService WindowsAuth
+@inject IUserPermissionService UserPermissions
+@inject IFeatureHygieneService HygieneService
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Capacity.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+@using Estimation.Core.Features.Hygiene.Services
+@using Serilog
+
+<PageTitle>@($"{_team?.Name} — Capacity")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+            <MudText Typo="Typo.h6">@($"{_team?.Name} — Team Capacity")</MudText>
+            <MudSpacer />
+            <MudSelect T="int?"
+                       Value="_selectedPiId"
+                       ValueChanged="OnPiChangedAsync"
+                       Label="Select PI"
+                       Variant="Variant.Outlined"
+                       Dense
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:260px">
+                @foreach (var pi in _allPis)
+                {
+                    <MudSelectItem T="int?" Value="pi.Id">@pi.Name</MudSelectItem>
+                }
+            </MudSelect>
+            @if (SelectedPiLocked)
+            {
+                <MudTooltip Text="@(_canEditLockedPi ? "This PI is locked, but your profile allows editing locked PIs." : "This PI is locked. Capacity planning is read-only for it.")">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                             Icon="@Icons.Material.Filled.Lock">
+                        Locked
+                    </MudChip>
+                </MudTooltip>
+            }
+            @if (CanEditCapacity)
+            {
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Search"
+                           Disabled="@(_selectedPiId is null || _result is null)"
+                           OnClick="OpenFindAsync">
+                    Find
+                </MudButton>
+            }
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Tune"
+                       Disabled="@(_selectedPiId is null)"
+                       OnClick="@(() => Navigation.NavigateTo(CoefficientsUrl))">
+                Coefficients
+            </MudButton>
+            @if (CanEditCapacity)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Success"
+                           StartIcon="@Icons.Material.Filled.Save"
+                           Disabled="@((!_hasUnsavedChanges && !_hasNewFeatures) || _saving)"
+                           OnClick="SaveAsync">
+                    Save
+                </MudButton>
+            }
+        </div>
+
+        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.HelpOutline" Color="Color.Primary" OnClick="ShowHelpAsync">How is capacity calculated?</MudButton>
+            <MudSwitch T="bool"
+                       Value="_includeIpSprints"
+                       ValueChanged="OnIncludeIpSprintsChangedAsync"
+                       Label="Include IP sprint in the calculation"
+                       Color="Color.Primary" />
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_team is null)
+        {
+            <MudAlert Severity="Severity.Warning">Team not found.</MudAlert>
+        }
+        else if (_selectedPiId is null)
+        {
+            <MudText Class="mud-text-secondary">Select a PI to view capacity.</MudText>
+        }
+        else if (_result is null)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_saving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+
+            @if (SelectedPiLocked && !CanEditCapacity)
+            {
+                <MudAlert Severity="Severity.Warning" Class="mb-3">
+                    This PI is locked. Capacity planning is read-only — saving, moving features above or below
+                    the line, reordering, adding and removing features are all disabled.
+                </MudAlert>
+            }
+            else if (SelectedPiLocked)
+            {
+                <MudAlert Severity="Severity.Info" Class="mb-3">
+                    This PI is locked, but your profile ("Edit locked PI") allows capacity changes.
+                </MudAlert>
+            }
+
+            @if (!_driftDismissed && _result.Drifts.Count > 0)
+            {
+                <MudAlert Severity="Severity.Info" Class="mb-3"
+                          ShowCloseIcon="true" CloseIconClicked="@(() => _driftDismissed = true)">
+                    <MudText Typo="Typo.body2" Class="font-weight-bold mb-1">
+                        Some added features changed their PI since you added them:
+                    </MudText>
+                    <ul style="margin:0 0 0 18px; padding:0">
+                        @foreach (var d in _result.Drifts)
+                        {
+                            <li>
+                                <MudText Typo="Typo.body2" Component="span">
+                                    @(string.IsNullOrEmpty(d.JiraId) ? "" : $"{d.JiraId} — ")@d.Name:
+                                    added as <b>@(d.AddedPiName ?? "No PI")</b>,
+                                    now <b>@(d.CurrentPiName ?? "No PI")</b>.
+                                </MudText>
+                            </li>
+                        }
+                    </ul>
+                    @if (CanEditCapacity)
+                    {
+                        <div class="d-flex align-center gap-2 mt-2 flex-wrap">
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Save"
+                                       Disabled="@_saving"
+                                       OnClick="ResaveDriftAsync">
+                                Resave with current PI
+                            </MudButton>
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                Records each feature's current PI so this notice won't show again.
+                            </MudText>
+                        </div>
+                    }
+                </MudAlert>
+            }
+
+            <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-3" Style="border:1px solid var(--mud-palette-lines-default)">
+                <div class="d-flex align-center gap-2 flex-wrap">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined"
+                             Icon="@Icons.Material.Filled.Groups">
+                        @_result.Members.Count members
+                    </MudChip>
+                    @if (NoStackMemberCount > 0)
+                    {
+                        <MudTooltip Text="These members count toward team capacity but belong to none of the team's technology stacks, so they can't be reserved against any feature that has a stack split. Assign them a stack on the Team page.">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                                     Icon="@Icons.Material.Filled.PersonOff">
+                                @NoStackMemberCount member@(NoStackMemberCount != 1 ? "s" : "") with no stack
+                            </MudChip>
+                        </MudTooltip>
+                    }
+                    @if (MultiStackMemberCount > 0)
+                    {
+                        <MudTooltip Text="These members belong to more than one stack. Their days are a shared pool, so every stack they belong to counts their full capacity — which is why the stack capacities overlap.">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined"
+                                     Icon="@Icons.Material.Filled.Layers">
+                                @MultiStackMemberCount in multiple stacks
+                            </MudChip>
+                        </MudTooltip>
+                    }
+                    @if (UnbackedFeatureCount > 0)
+                    {
+                        <MudTooltip Text="Included features with no team technology-stack story points entered. Their effort can't be reserved against any stack.">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined"
+                                     Icon="@Icons.Material.Filled.Warning">
+                                @UnbackedEffort SP not backed by a stack (@UnbackedFeatureCount feature@(UnbackedFeatureCount != 1 ? "s" : ""))
+                            </MudChip>
+                        </MudTooltip>
+                    }
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Groups"
+                               OnClick="ShowMembersAsync">
+                        Member capacity
+                    </MudButton>
+                    <MudChip T="string" Size="Size.Small" Color="@WindowChipColor" Variant="Variant.Outlined">
+                        Window: @_result.WindowMode @WindowRangeText
+                    </MudChip>
+                </div>
+            </MudPaper>
+
+            <MudGrid Spacing="2" Class="mb-3">
+                @if (BuildStackRows() is { Count: > 0 } resourceRows)
+                {
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg" Style="border:1px solid var(--mud-palette-lines-default); height:100%">
+                            <div class="d-flex align-center mb-2">
+                                <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Resource capacity</MudText>
+                                <MudSpacer />
+                                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Assessment"
+                                           OnClick="ShowMemberAllocationAsync">
+                                    Member allocation
+                                </MudButton>
+                            </div>
+                            <div style="overflow-x:auto">
+                                <table class="stack-capacity-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Stack</th>
+                                            <th title="Effective member-days of the members in this exact stack combination.">Capacity</th>
+                                            <th title="Days of these members already booked (on any feature, across every stack they belong to).">Allocated</th>
+                                            <th title="Free days of these members (Capacity − Allocated). 0 when they are all fully booked.">Remaining</th>
+                                            <th>Members</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var row in resourceRows)
+                                        {
+                                            var remaining = row.Capacity - row.Allocated;
+                                            <tr @key="row.Key" class="@(row.IsNoStack ? "no-stack-row" : "")">
+                                                <td>
+                                                    @if (row.IsNoStack)
+                                                    {
+                                                        <MudIcon Icon="@Icons.Material.Filled.PersonOff" Size="Size.Small"
+                                                                 Color="Color.Warning" Style="vertical-align:-5px" />
+                                                    }
+                                                    <span class="@(row.IsNoStack ? "" : "font-weight-bold")">@row.Name</span>
+                                                </td>
+                                                <td>@row.Capacity.ToString("0.##")</td>
+                                                <td>@row.Allocated.ToString("0.##")</td>
+                                                <td style="@(remaining < 0m ? "color:var(--mud-palette-error)" : "")">@remaining.ToString("0.##")</td>
+                                                <td>@row.MemberCount</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                    <tfoot>
+                                        <tr class="total-row">
+                                            <td title="Team's overall capacity — the sum of all rows above (each member counted once).">Total capacity</td>
+                                            <td>@_result.TotalCapacity.ToString("0.##")</td>
+                                            <td>@TotalAllocatedDays.ToString("0.##")</td>
+                                            <td>@(((decimal)_result.TotalCapacity - TotalAllocatedDays).ToString("0.##"))</td>
+                                            <td>@_result.Members.Count</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </MudPaper>
+                    </MudItem>
+                }
+
+                @if (BuildDemandRows() is { Count: > 0 } demandRows)
+                {
+                    <MudItem xs="12" md="6">
+                        <MudPaper Elevation="0" Class="pa-3 rounded-lg" Style="border:1px solid var(--mud-palette-lines-default); height:100%">
+                            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Demand capacity</MudText>
+                            <div style="overflow-x:auto">
+                                <table class="stack-capacity-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Stack</th>
+                                            <th title="Story points the above-the-line features ask of this stack.">Demand</th>
+                                            <th title="Story points reserved against this stack, capped by member availability.">Allocated</th>
+                                            <th title="Demand minus Allocated — unmet demand (green = covered, amber = partial, red = none).">Remaining</th>
+                                            <th title="Story points demanded by below-the-line (excluded) features.">Below the line</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var row in demandRows)
+                                        {
+                                            <tr @key="row.StackId">
+                                                <td><span class="font-weight-bold">@row.Name</span></td>
+                                                <td>@row.Demand.ToString("0.##")</td>
+                                                <td>@row.Allocated.ToString("0.##")</td>
+                                                <td style="color:@DemandRemainingColor(row.Demand, row.Allocated)">@row.Remaining.ToString("0.##")</td>
+                                                <td>@row.BelowLine.ToString("0.##")</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                    <tfoot>
+                                        <tr class="total-row">
+                                            <td>Total</td>
+                                            <td>@(demandRows.Sum(r => r.Demand).ToString("0.##"))</td>
+                                            <td>@(demandRows.Sum(r => r.Allocated).ToString("0.##"))</td>
+                                            <td style="color:@DemandRemainingColor(demandRows)">@((demandRows.Sum(r => r.Demand) - demandRows.Sum(r => r.Allocated)).ToString("0.##"))</td>
+                                            <td>@(demandRows.Sum(r => r.BelowLine).ToString("0.##"))</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </MudPaper>
+                    </MudItem>
+                }
+            </MudGrid>
+
+            @if (FeaturesByLabelCount > 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                    @FeaturesByPiCount feature(s) linked by PI, @FeaturesByLabelCount by label.
+                </MudAlert>
+            }
+
+            @if (_filter.IsActive)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                    A filter is hiding some issues, so drag-and-drop reordering is off — clear the filter to reorder.
+                    Moving issues above or below the line still works.
+                </MudAlert>
+            }
+
+            <FeatureCardFilterPanel Title="Above the line" Features="_features"
+                                    Filter="_filter" FilterChanged="StateHasChanged"
+                                    ShowHygiene="true">
+                <Actions>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Visibility"
+                               EndIcon="@(_detailsOpen ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                               OnClick="() => _detailsOpen = !_detailsOpen">
+                        Details
+                    </MudButton>
+                </Actions>
+            </FeatureCardFilterPanel>
+
+            <MudCollapse Expanded="_detailsOpen">
+                <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-2" Style="border:1px solid var(--mud-palette-lines-default)">
+                    <MudText Typo="Typo.subtitle2" Class="font-weight-bold mb-2">Show on each card</MudText>
+                    <MudGrid Spacing="1">
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showStatus" ValueChanged="OnShowStatusChanged" Label="Status" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showHygiene" ValueChanged="OnShowHygieneChanged" Label="@PlanningDisplayNames.Hygiene" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showTeams" ValueChanged="OnShowTeamsChanged" Label="Teams" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showLabels" ValueChanged="OnShowLabelsChanged" Label="Labels" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showRequirementStatus" ValueChanged="OnShowRequirementStatusChanged" Label="Requirement Status" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showTechnicalApproval" ValueChanged="OnShowTechnicalApprovalChanged" Label="Design Approval" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showSummary" ValueChanged="OnShowSummaryChanged" Label="Summary" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showTargetStart" ValueChanged="OnShowTargetStartChanged" Label="Target Start" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showTargetEnd" ValueChanged="OnShowTargetEndChanged" Label="Target End" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showAcceptanceCriteria" ValueChanged="OnShowAcceptanceCriteriaChanged" Label="Acceptance Criteria" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showRagExplain" ValueChanged="OnShowRagExplainChanged" Label="RAG Explain" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showDependencies" ValueChanged="OnShowDependenciesChanged" Label="Dependencies" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showExternalDependencies" ValueChanged="OnShowExternalDependenciesChanged" Label="External Dependencies" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showPiObjective" ValueChanged="OnShowPiObjectiveChanged" Label="PI Objective" Color="Color.Primary" Dense /></MudItem>
+                        <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showPi" ValueChanged="OnShowPiChanged" Label="PI" Color="Color.Primary" Dense /></MudItem>
+                    </MudGrid>
+                </MudPaper>
+            </MudCollapse>
+            <div class="team-capacity-list" data-pi-id="@_selectedPiId">
+                @{
+                    var allIncluded = _features.Where(f => f.IsIncluded).ToList();
+                    var includedRank = RankMap(allIncluded);
+                    var includedFeatures = _filter.Apply(allIncluded);
+                }
+                @if (includedFeatures.Count == 0)
+                {
+                    <MudText Class="pa-3 mud-text-secondary">
+                        @(_features.Count == 0
+                            ? "No features assigned to this team for the selected PI."
+                            : _filter.IsActive
+                                ? "No issues above the line match the current filter."
+                                : "All issues are below the line.")
+                    </MudText>
+                }
+                else
+                {
+                    @foreach (var f in includedFeatures)
+                    {
+                        var alloc = _allocations.GetValueOrDefault(f.FeatureId);
+                        @FeatureCard(f, true, alloc, AllocClass(alloc), includedRank.GetValueOrDefault(f.FeatureId))
+                    }
+                }
+            </div>
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mt-4 mb-1">Below the line</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary mb-1 d-block">
+                Issues here do not participate in the capacity calculation.
+            </MudText>
+            <div class="team-capacity-list below-the-line" data-pi-id="@_selectedPiId">
+                @{
+                    var allExcluded = _features.Where(f => !f.IsIncluded).ToList();
+                    var excludedRank = RankMap(allExcluded);
+                    var excludedFeatures = _filter.Apply(allExcluded);
+                }
+                @if (excludedFeatures.Count == 0)
+                {
+                    <MudText Class="pa-3 mud-text-secondary">
+                        @(_filter.IsActive
+                            ? "No issues below the line match the current filter."
+                            : "No issues below the line.")
+                    </MudText>
+                }
+                else
+                {
+                    @foreach (var f in excludedFeatures)
+                    {
+                        @FeatureCard(f, false, null, "", excludedRank.GetValueOrDefault(f.FeatureId))
+                    }
+                }
+            </div>
+        }
+    </MudPaper>
+</div>
+
+<style>
+    .team-capacity-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+        background: var(--mud-palette-background-grey);
+        min-height: 100px;
+    }
+
+    .team-capacity-list.stack-drag-over {
+        background: var(--mud-palette-action-default-hover);
+        outline: 2px dashed var(--mud-palette-primary);
+        outline-offset: -4px;
+        border-radius: 4px;
+    }
+
+    .team-capacity-card {
+        position: relative;
+        padding: 10px 12px 10px 16px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+        background: var(--mud-palette-surface);
+        cursor: grab;
+        transition: box-shadow 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+        user-select: none;
+    }
+
+    .team-capacity-order {
+        position: absolute;
+        top: 6px;
+        left: 8px;
+        min-width: 22px;
+        padding: 1px 6px;
+        border-radius: 10px;
+        background: var(--mud-palette-action-default-hover);
+        color: var(--mud-palette-text-secondary);
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1.5;
+        text-align: center;
+        user-select: none;
+    }
+
+    .team-capacity-card:hover {
+        box-shadow: var(--mud-elevation-2);
+    }
+
+    .team-capacity-card.readonly {
+        cursor: default;
+    }
+
+    .team-capacity-card.dragging {
+        opacity: 0.4;
+    }
+
+    .team-capacity-card.drag-over {
+        border-color: var(--mud-palette-primary);
+        box-shadow: 0 0 0 2px var(--mud-palette-primary);
+    }
+
+    .team-capacity-card.below-line {
+        background: #ffd5d5;
+        border-color: #f1a9a9;
+    }
+
+    .team-capacity-card.capacity-ok {
+        border-bottom: 3px solid var(--mud-palette-success);
+        border-left: 4px solid var(--mud-palette-success);
+    }
+
+    .team-capacity-card.capacity-partial {
+        border-bottom: 3px solid var(--mud-palette-warning);
+        border-left: 4px solid var(--mud-palette-warning);
+    }
+
+    .team-capacity-card.capacity-fail {
+        border-bottom: 3px solid var(--mud-palette-error);
+        border-left: 4px solid var(--mud-palette-error);
+    }
+
+    .team-capacity-card.capacity-warning {
+        border-left: 4px dashed var(--mud-palette-warning);
+    }
+
+    .stack-capacity-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .stack-capacity-table th,
+    .stack-capacity-table td {
+        padding: 6px 10px;
+        font-size: 0.85rem;
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    .stack-capacity-table th:first-child,
+    .stack-capacity-table td:first-child {
+        text-align: left;
+        white-space: normal;
+    }
+
+    .stack-capacity-table thead th {
+        color: var(--mud-palette-text-secondary);
+        font-weight: 600;
+        border-bottom: 1px solid var(--mud-palette-lines-default);
+    }
+
+    .stack-capacity-table tbody td {
+        border-bottom: 1px solid var(--mud-palette-lines-default);
+    }
+
+    .stack-capacity-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .stack-capacity-table tbody tr.no-stack-row td {
+        background: rgba(var(--mud-palette-warning-rgb), 0.12);
+        color: var(--mud-palette-warning);
+    }
+
+    .stack-capacity-table tfoot td {
+        font-weight: 600;
+        border-top: 2px solid var(--mud-palette-lines-default);
+    }
+</style>
+
+@code {
+    private RenderFragment FeatureCard(TeamCapacityFeatureRow f, bool included, FeatureAllocVm? alloc, string capacityClass, int orderNumber) =>
+        @<div class="team-capacity-card @(included ? capacityClass : "below-line") @(CanReorder ? "" : "readonly")"
+              @key="f.FeatureId"
+              data-feature-id="@f.FeatureId"
+              draggable="@(CanReorder ? "true" : "false")">
+            <span class="team-capacity-order">@orderNumber</span>
+            <div class="d-flex align-center gap-3" style="width:100%">
+                @if (CanReorder)
+                {
+                    <MudIcon Icon="@Icons.Material.Filled.DragIndicator"
+                             Size="Size.Small"
+                             Class="mud-text-secondary" Style="cursor:grab" />
+                }
+                <MudCheckBox T="bool"
+                             Value="f.IsIncluded"
+                             ValueChanged="@((bool v) => ToggleIncludedAsync(f, v))"
+                             ReadOnly="@(!CanEditCapacity)"
+                             Color="Color.Primary"
+                             Dense />
+                <div class="flex-grow-1" style="min-width:0">
+                    <div class="d-flex align-center gap-2 mb-1">
+                        <span style="min-width:55px; display:inline-block">Feature:</span>
+                        @if (!string.IsNullOrEmpty(f.JiraId))
+                        {
+                            <a href="@(_jiraTaskUrl + f.JiraId)" target="_blank" style="text-decoration:none" @onclick:stopPropagation>
+                                <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                    @f.JiraId
+                                </MudChip>
+                            </a>
+                        }
+                        <MudText Typo="Typo.body2">@f.Name</MudText>
+                        @if (!string.IsNullOrWhiteSpace(f.Name))
+                        {
+                            <span @onclick:stopPropagation>
+                                <MudTooltip Text="Copy feature name">
+                                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                                   Size="Size.Small"
+                                                   Color="Color.Default"
+                                                   aria-label="Copy feature name"
+                                                   OnClick="@(() => CopyFeatureNameAsync(f.Name))" />
+                                </MudTooltip>
+                            </span>
+                        }
+                        @if (f.FeaturePiId != _selectedPiId)
+                        {
+                            @if (f.MatchedByLabel && f.FeaturePiId is not null)
+                            {
+                                <MudTooltip Text="@MappedByLabelOtherPiTooltip(f)">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                                             Icon="@Icons.Material.Filled.Warning" Class="ml-1">
+                                        Mapped by label — assigned to @(f.FeaturePiName ?? "another PI")
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                            else if (f.MatchedByLabel)
+                            {
+                                <MudTooltip Text="Linked to this PI by its label rule — it can't be removed from capacity planning while its labels match.">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined" Class="ml-1">
+                                        Mapped by label
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                            else
+                            {
+                                <MudTooltip Text="@NotMappedTooltip(f)">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Outlined" Class="ml-1">
+                                        Not mapped to PI
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                        }
+                        @if (IsNewUnsavedFeature(f))
+                        {
+                            <MudTooltip Text="This feature now belongs to the PI (by PI assignment or label) but hasn't been saved into this team's capacity yet. Save to keep it.">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled" Class="ml-1">
+                                    New
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                        @if (included && BelowLineElsewhere(f.FeatureId) is { Count: > 0 } belowTeams)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Warning" Class="ml-1">
+                                Below the line: @(string.Join(", ", belowTeams.Select(t => t.TeamName)))
+                            </MudChip>
+                        }
+                    </div>
+                    @if (!string.IsNullOrEmpty(f.BusinessOutcomeJiraId) || !string.IsNullOrEmpty(f.BusinessOutcomeSummary))
+                    {
+                        <div class="d-flex align-center gap-2">
+                            <span style="min-width:55px; display:inline-block">BO:</span>
+                            @if (!string.IsNullOrEmpty(f.BusinessOutcomeJiraId))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                                    @f.BusinessOutcomeJiraId
+                                </MudChip>
+                            }
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.BusinessOutcomeSummary</MudText>
+                        </div>
+                    }
+                    @if (_showStatus && !string.IsNullOrWhiteSpace(f.Status))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Status:</span>
+                            <MudChip T="string" Size="Size.Small" Color="@FeatureStatusColors.ForStatus(f.Status)" Variant="Variant.Filled">@f.Status</MudChip>
+                        </div>
+                    }
+                    @if (_showHygiene && _hygieneFailures.TryGetValue(f.FeatureId, out var hygiene))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1" style="flex-wrap:wrap">
+                            <span style="min-width:55px; display:inline-block">@PlanningDisplayNames.Hygiene:</span>
+                            @if (hygiene.Count == 0)
+                            {
+                                <MudTooltip Text="Passes every hygiene rule of its ART">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">OK</MudChip>
+                                </MudTooltip>
+                            }
+                            else
+                            {
+                                @foreach (var failure in hygiene)
+                                {
+                                    <MudTooltip Text="@HygieneFailureTooltip(failure)">
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">@failure.Display</MudChip>
+                                    </MudTooltip>
+                                }
+                            }
+                        </div>
+                    }
+                    @if (_showTeams && f.Teams is { Count: > 0 })
+                    {
+                        <div class="d-flex align-center gap-2 mt-1" style="flex-wrap:wrap">
+                            <span style="min-width:55px; display:inline-block">Teams:</span>
+                            @foreach (var t in f.Teams)
+                            {
+                                <MudTooltip Text="@(t.IsPrimary ? "Primary team" : "Assigned team")">
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                             Color="@(t.IsPrimary ? Color.Primary : Color.Default)"
+                                             Icon="@(t.IsPrimary ? Icons.Material.Filled.Star : null)">
+                                        @t.Name
+                                    </MudChip>
+                                </MudTooltip>
+                            }
+                        </div>
+                    }
+                    @if (_showDependencies && !string.IsNullOrWhiteSpace(f.Dependencies))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Depends:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.Dependencies</MudText>
+                        </div>
+                    }
+                    @if (_showExternalDependencies && f.ExternalDependencies)
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">External:</span>
+                            <MudIcon Icon="@Icons.Material.Filled.Check" Size="Size.Small" Color="Color.Success" />
+                        </div>
+                    }
+                    @if (_showRagExplain && !string.IsNullOrWhiteSpace(f.RagExplain))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">RAG:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.RagExplain</MudText>
+                        </div>
+                    }
+                    @if (_showLabels && !string.IsNullOrWhiteSpace(f.Labels))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1" style="flex-wrap:wrap">
+                            <span style="min-width:55px; display:inline-block">Labels:</span>
+                            @foreach (var label in f.Labels.Split(',', System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">@label</MudChip>
+                            }
+                        </div>
+                    }
+                    @if (_showRequirementStatus && !string.IsNullOrWhiteSpace(f.RequirementStatus))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Req status:</span>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@f.RequirementStatus</MudChip>
+                        </div>
+                    }
+                    @if (_showTechnicalApproval && !string.IsNullOrWhiteSpace(f.TechnicalApproval))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Tech appr:</span>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@f.TechnicalApproval</MudChip>
+                        </div>
+                    }
+                    @if (_showSummary && !string.IsNullOrWhiteSpace(f.Summary))
+                    {
+                        <div class="d-flex align-start gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Summary:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.Summary</MudText>
+                        </div>
+                    }
+                    @if (_showTargetStart && f.TargetStart is not null)
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Target start:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.TargetStart.Value.ToString("dd MMM yyyy")</MudText>
+                        </div>
+                    }
+                    @if (_showTargetEnd && f.TargetEnd is not null)
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">Target end:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.TargetEnd.Value.ToString("dd MMM yyyy")</MudText>
+                        </div>
+                    }
+                    @if (_showAcceptanceCriteria && !string.IsNullOrWhiteSpace(f.AcceptanceCriteria))
+                    {
+                        <div class="d-flex align-start gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">AC:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary" Style="white-space:pre-wrap">@f.AcceptanceCriteria</MudText>
+                        </div>
+                    }
+                    @if (_showPiObjective && !string.IsNullOrWhiteSpace(f.PiObjective))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">PI obj:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.PiObjective</MudText>
+                        </div>
+                    }
+                    @if (_showPi && !string.IsNullOrWhiteSpace(f.FeaturePiName))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span style="min-width:55px; display:inline-block">PI:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@f.FeaturePiName</MudText>
+                        </div>
+                    }
+                </div>
+                <div class="d-flex flex-column align-end gap-1" style="text-align:right; min-width:160px">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">
+                        Effort: @f.Effort
+                    </MudChip>
+                    @if (included && alloc is not null)
+                    {
+                        @if (alloc.IsValid)
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                     Color="@(alloc.IsFullyReserved ? Color.Success : alloc.Reserved > 0m ? Color.Warning : Color.Error)">
+                                Reserved @alloc.Reserved.ToString("0.##")/@alloc.Required.ToString("0.##")
+                            </MudChip>
+                        }
+                        else
+                        {
+                            <MudTooltip Text="Capacity is calculated only when this team has a technology stack with story points entered on this feature. Add a technology stack and enter its story points in the feature.">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning"
+                                         Icon="@Icons.Material.Filled.Warning">
+                                    No stack capacity
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                    }
+                    @if (HygieneFailuresOf(f) is { Count: > 0 } failed)
+                    {
+                        <MudTooltip Text="@HygieneWarningTooltip(failed)">
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error"
+                                     Icon="@Icons.Material.Filled.Warning">
+                                @failed.Count failed hygiene check@(failed.Count == 1 ? "" : "s")
+                            </MudChip>
+                        </MudTooltip>
+                    }
+                </div>
+                <MudBadge Content="@(_commentCounts.GetValueOrDefault(f.FeatureId))"
+                          Color="Color.Info" Overlap="true" Bordered="true"
+                          Visible="@(_commentCounts.GetValueOrDefault(f.FeatureId) > 0)">
+                    <MudTooltip Text="Status Comment">
+                        <MudIconButton Icon="@Icons.Material.Filled.Comment"
+                                       Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                       OnClick="@(() => ShowCommentsAsync(f))" />
+                    </MudTooltip>
+                </MudBadge>
+                <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                               Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               OnClick="@(() => OpenFeatureInNewWindow(f.FeatureId))" />
+                @if (included && alloc is not null && alloc.IsValid)
+                {
+                    <MudTooltip Text="Explain capacity">
+                        <MudIconButton Icon="@Icons.Material.Filled.Assessment"
+                                       Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small"
+                                       OnClick="@(() => ShowFeatureCapacityAsync(f, alloc))" />
+                    </MudTooltip>
+                }
+                @if (CanRemoveFeature(f))
+                {
+                    <MudTooltip Text="Remove from Team Capacity — this feature does not belong to the selected PI">
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                       Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small"
+                                       OnClick="@(() => RemoveFeatureAsync(f))" />
+                    </MudTooltip>
+                }
+            </div>
+        </div>;
+
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public string PageKey { get; set; } = "Teams";
+
+    [Parameter] public bool? CanEditOverride { get; set; }
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private bool _canEdit;
+
+    private bool _canEditLockedPi;
+
+    private bool SelectedPiLocked => _allPis.FirstOrDefault(p => p.Id == _selectedPiId)?.IsLocked == true;
+    private bool CanEditCapacity => _canEdit && (!SelectedPiLocked || _canEditLockedPi);
+
+    private bool CanReorder => CanEditCapacity && !_filter.IsActive;
+
+    private static Dictionary<int, int> RankMap(List<TeamCapacityFeatureRow> rows) =>
+        rows.Select((f, index) => (f.FeatureId, Rank: index + 1))
+            .ToDictionary(x => x.FeatureId, x => x.Rank);
+
+    private const string SelectedPiStorageKey = "teamCapacity.selectedPiId";
+
+    private const string DetailTogglesStorageKey = "teamCapacity.detailToggles";
+
+    private Team? _team;
+    private List<Pi> _allPis = new();
+    private int? _selectedPiId;
+    private TeamCapacityResult? _result;
+    private List<TeamCapacityFeatureRow> _features = new();
+    private Dictionary<int, FeatureAllocVm> _allocations = new();
+    private HashSet<int> _ownedStackIds = new();
+    private Dictionary<int, List<FeatureOtherTeamLine>> _otherTeamLines = new();
+    private readonly HashSet<int> _applyToAllTeams = new();
+    private bool _loading = true;
+    private bool _saving;
+    private bool _hasUnsavedChanges;
+    private bool _wasEverSaved;
+    private bool _hasNewFeatures;
+    private bool _driftDismissed;
+    private bool _piRestored;
+    private bool _includeIpSprints;
+    private string? _jiraTaskUrl;
+
+    private bool _detailsOpen;
+    private bool _showStatus;
+    private bool _showHygiene = true;
+
+    private IReadOnlyDictionary<int, IReadOnlyList<HygieneFailure>> _hygieneFailures = new Dictionary<int, IReadOnlyList<HygieneFailure>>();
+    private bool _showTeams;
+    private bool _showDependencies;
+    private bool _showExternalDependencies;
+    private bool _showRagExplain;
+    private bool _showLabels;
+    private bool _showRequirementStatus;
+    private bool _showTechnicalApproval;
+    private bool _showSummary;
+    private bool _showTargetStart;
+    private bool _showTargetEnd;
+    private bool _showAcceptanceCriteria;
+    private bool _showPiObjective;
+    private bool _showPi;
+
+    private Dictionary<int, int> _commentCounts = new();
+    private string? _currentUserName;
+
+    private FeatureCardFilter _filter = new();
+
+    private IJSObjectReference? _jsModule;
+    private DotNetObjectReference<TeamCapacityView>? _dotNetRef;
+    private IDisposable? _locationChangingRegistration;
+    private int? _dragSourceId;
+    private bool _moveInProgress;
+
+    private string CoefficientsUrl => $"{RoutingPath.Teams}/{TeamId}/coefficients";
+
+    private string WindowRangeText
+    {
+        get
+        {
+            if (_result?.WindowStart is null || _result?.WindowEnd is null)
+            {
+                return "";
+            }
+            return $"({_result.WindowStart:dd MMM yyyy} – {_result.WindowEnd:dd MMM yyyy})";
+        }
+    }
+
+    private MudBlazor.Color WindowChipColor => _result?.WindowMode switch
+    {
+        "Sprints" => MudBlazor.Color.Success,
+        "PI" => MudBlazor.Color.Warning,
+        _ => MudBlazor.Color.Error,
+    };
+
+    private MudBlazor.Color UsedChipColor
+    {
+        get
+        {
+            if (_result is null)
+            {
+                return MudBlazor.Color.Default;
+            }
+            var used = ConsumedEffort;
+            if (_result.TotalCapacity <= 0)
+            {
+                return MudBlazor.Color.Default;
+            }
+            return used > _result.TotalCapacity ? MudBlazor.Color.Error : MudBlazor.Color.Success;
+        }
+    }
+
+    private int ConsumedEffort => _features.Where(f => f.IsIncluded).Sum(f => f.Effort);
+
+    private int FeaturesByPiCount => _features.Count(f => f.FeaturePiId == _selectedPiId);
+    private int FeaturesByLabelCount => _features.Count(f => f.MatchedByLabel);
+
+    private string _consumedDisplay => ConsumedEffort.ToString();
+    private string _remainingDisplay
+    {
+        get
+        {
+            if (_result is null)
+            {
+                return "—";
+            }
+            var remaining = _result.TotalCapacity - ConsumedEffort;
+            return FormatDays(remaining);
+        }
+    }
+
+    private static string FormatDays(double v) => v.ToString("F1");
+
+    protected override void OnInitialized()
+    {
+        _canEdit = CanEditOverride ?? (UserPageAccess.TryGetValue(PageKey, out var access) && access == AccessLevel.Edit);
+
+        _canEditLockedPi = IsAdmin;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        var teamTask = TeamService.GetByIdAsync(TeamId);
+        var pisTask = PiService.GetAllLightAsync();
+        await Task.WhenAll(teamTask, pisTask);
+        _team = teamTask.Result;
+        _allPis = pisTask.Result;
+        _jiraTaskUrl = Configuration["JiraTaskUrl"];
+
+        if (_team is null || _piRestored)
+        {
+            _loading = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            _jsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/piDragDrop.js");
+            await _jsModule.InvokeVoidAsync("init", _dotNetRef);
+            _locationChangingRegistration = Navigation.RegisterLocationChangingHandler(OnLocationChanging);
+
+            _currentUserName = await WindowsAuth.GetUserName();
+            if (!_canEditLockedPi && _currentUserName is not null)
+            {
+                var permissions = await UserPermissions.GetPermissionSetAsync(_currentUserName);
+                _canEditLockedPi = permissions.IsActionAvailable(AppActionKeys.EditLockedPi);
+            }
+
+            await RestoreDetailTogglesAsync();
+
+            await RestoreSelectedPiAsync();
+        }
+    }
+
+    private async Task RestoreSelectedPiAsync()
+    {
+        if (_piRestored)
+        {
+            return;
+        }
+        _piRestored = true;
+        if (_team is null)
+        {
+            return;
+        }
+
+        int? storedPiId = null;
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", SelectedPiStorageKey);
+            if (int.TryParse(raw, out var id))
+            {
+                storedPiId = id;
+            }
+        }
+        catch
+        {
+        }
+
+        var resolved = storedPiId is not null && _allPis.Any(p => p.Id == storedPiId)
+            ? storedPiId
+            : _allPis.FirstOrDefault()?.Id;
+
+        _selectedPiId = resolved;
+        _loading = false;
+        if (resolved is not null)
+        {
+            await LoadAsync(resolved.Value);
+        }
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _locationChangingRegistration?.Dispose();
+        if (_jsModule is not null)
+        {
+            try
+            {
+                await _jsModule.InvokeVoidAsync("dispose");
+                await _jsModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+        }
+        _dotNetRef?.Dispose();
+    }
+
+    private async ValueTask OnLocationChanging(LocationChangingContext context)
+    {
+        if (!_hasUnsavedChanges)
+        {
+            return;
+        }
+        var confirmed = await ModalDialogService.Confirm(
+            "You have unsaved changes. Do you want to leave without saving?",
+            "Unsaved Changes",
+            "Leave");
+        if (!confirmed)
+        {
+            context.PreventNavigation();
+        }
+    }
+
+    private async Task OnPiChangedAsync(int? piId)
+    {
+        if (piId == _selectedPiId)
+        {
+            return;
+        }
+        if (_hasUnsavedChanges)
+        {
+            var confirmed = await ModalDialogService.Confirm(
+                "Changing the PI will discard unsaved changes. Continue?",
+                "Unsaved Changes",
+                "Discard");
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+        _selectedPiId = piId;
+        _hasUnsavedChanges = false;
+        await PersistSelectedPiAsync();
+        if (piId is null)
+        {
+            _result = null;
+            _features = new();
+            _otherTeamLines = new();
+            _applyToAllTeams.Clear();
+            _commentCounts = new();
+            return;
+        }
+        await LoadAsync(piId.Value);
+    }
+
+    private async Task OnIncludeIpSprintsChangedAsync(bool value)
+    {
+        if (value == _includeIpSprints)
+        {
+            return;
+        }
+        if (_hasUnsavedChanges)
+        {
+            var confirmed = await ModalDialogService.Confirm(
+                "Changing this option reloads the data and will discard unsaved changes. Continue?",
+                "Unsaved Changes",
+                "Discard");
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+        _includeIpSprints = value;
+        _hasUnsavedChanges = false;
+        if (_selectedPiId is not null)
+        {
+            await LoadAsync(_selectedPiId.Value);
+        }
+    }
+
+    private async Task PersistSelectedPiAsync()
+    {
+        try
+        {
+            if (_selectedPiId is null)
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", SelectedPiStorageKey);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", SelectedPiStorageKey, _selectedPiId.Value.ToString());
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task OnShowStatusChanged(bool value)
+    {
+        _showStatus = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowTeamsChanged(bool value)
+    {
+        _showTeams = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowHygieneChanged(bool value)
+    {
+        _showHygiene = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowDependenciesChanged(bool value)
+    {
+        _showDependencies = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowExternalDependenciesChanged(bool value)
+    {
+        _showExternalDependencies = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowRagExplainChanged(bool value)
+    {
+        _showRagExplain = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowLabelsChanged(bool value)
+    {
+        _showLabels = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowTechnicalApprovalChanged(bool value)
+    {
+        _showTechnicalApproval = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowRequirementStatusChanged(bool value)
+    {
+        _showRequirementStatus = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowSummaryChanged(bool value)
+    {
+        _showSummary = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowTargetStartChanged(bool value)
+    {
+        _showTargetStart = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowTargetEndChanged(bool value)
+    {
+        _showTargetEnd = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowAcceptanceCriteriaChanged(bool value)
+    {
+        _showAcceptanceCriteria = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowPiObjectiveChanged(bool value)
+    {
+        _showPiObjective = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task OnShowPiChanged(bool value)
+    {
+        _showPi = value;
+        await PersistDetailTogglesAsync();
+    }
+
+    private async Task CopyFeatureNameAsync(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", name);
+            Snackbar.Add("Feature name copied.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not copy the feature name: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private sealed class DetailTogglePrefs
+    {
+        public bool Status { get; set; }
+        public bool Hygiene { get; set; } = true;
+        public bool Teams { get; set; }
+        public bool Dependencies { get; set; }
+        public bool ExternalDependencies { get; set; }
+        public bool RagExplain { get; set; }
+        public bool Labels { get; set; }
+        public bool RequirementStatus { get; set; }
+        public bool TechnicalApproval { get; set; }
+        public bool Summary { get; set; }
+        public bool TargetStart { get; set; }
+        public bool TargetEnd { get; set; }
+        public bool AcceptanceCriteria { get; set; }
+        public bool PiObjective { get; set; }
+        public bool Pi { get; set; }
+    }
+
+    private async Task RestoreDetailTogglesAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", DetailTogglesStorageKey);
+            if (string.IsNullOrEmpty(raw))
+            {
+                return;
+            }
+            var prefs = System.Text.Json.JsonSerializer.Deserialize<DetailTogglePrefs>(raw);
+            if (prefs is not null)
+            {
+                _showStatus = prefs.Status;
+                _showHygiene = prefs.Hygiene;
+                _showTeams = prefs.Teams;
+                _showDependencies = prefs.Dependencies;
+                _showExternalDependencies = prefs.ExternalDependencies;
+                _showRagExplain = prefs.RagExplain;
+                _showLabels = prefs.Labels;
+                _showRequirementStatus = prefs.RequirementStatus;
+                _showTechnicalApproval = prefs.TechnicalApproval;
+                _showSummary = prefs.Summary;
+                _showTargetStart = prefs.TargetStart;
+                _showTargetEnd = prefs.TargetEnd;
+                _showAcceptanceCriteria = prefs.AcceptanceCriteria;
+                _showPiObjective = prefs.PiObjective;
+                _showPi = prefs.Pi;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task PersistDetailTogglesAsync()
+    {
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(new DetailTogglePrefs
+            {
+                Status = _showStatus,
+                Hygiene = _showHygiene,
+                Teams = _showTeams,
+                Dependencies = _showDependencies,
+                ExternalDependencies = _showExternalDependencies,
+                RagExplain = _showRagExplain,
+                Labels = _showLabels,
+                RequirementStatus = _showRequirementStatus,
+                TechnicalApproval = _showTechnicalApproval,
+                Summary = _showSummary,
+                TargetStart = _showTargetStart,
+                TargetEnd = _showTargetEnd,
+                AcceptanceCriteria = _showAcceptanceCriteria,
+                PiObjective = _showPiObjective,
+                Pi = _showPi,
+            });
+            await JS.InvokeVoidAsync("localStorage.setItem", DetailTogglesStorageKey, json);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task LoadHygieneAsync()
+    {
+        try
+        {
+            _hygieneFailures = await HygieneService.GetFailuresByFeatureAsync(
+                _features.Select(f => f.FeatureId).ToList());
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Hygiene rules could not be evaluated; the cards stay without hygiene");
+            _hygieneFailures = new Dictionary<int, IReadOnlyList<HygieneFailure>>();
+        }
+
+        _features = _features
+            .Select(f => f with
+            {
+                HygieneFailureCount = _hygieneFailures.TryGetValue(f.FeatureId, out var failures)
+                    ? failures.Count
+                    : null
+            })
+            .ToList();
+    }
+
+    private IReadOnlyList<HygieneFailure>? HygieneFailuresOf(TeamCapacityFeatureRow feature) =>
+        _hygieneFailures.TryGetValue(feature.FeatureId, out var failures) ? failures : null;
+
+    private static string HygieneWarningTooltip(IReadOnlyList<HygieneFailure> failures) =>
+        "Fails the hygiene rules of its ART: " + string.Join(" · ", failures.Select(f => f.Display));
+
+    private static string HygieneFailureTooltip(HygieneFailure failure)
+    {
+        var parts = new List<string>();
+
+        if (failure.Message is not null && failure.Label != failure.RuleText)
+        {
+            parts.Add(failure.Label);
+        }
+
+        parts.Add(failure.RuleText);
+        parts.Add(failure.ActualValue is null ? "current value: empty" : $"current value: {failure.ActualValue}");
+
+        return string.Join(" — ", parts);
+    }
+
+    private async Task LoadAsync(int piId)
+    {
+        try
+        {
+            _driftDismissed = false;
+            _filter = new FeatureCardFilter();
+            _result = await CapacityService.GetAsync(TeamId, piId, _includeIpSprints);
+            _ownedStackIds = _result.StackCapacities.Select(s => s.TechnologyStackId).ToHashSet();
+            _features = _result.Features.ToList();
+            await LoadHygieneAsync();
+            _commentCounts = await CommentService.GetCountsAsync(_features.Select(f => f.FeatureId).ToList());
+            RecomputeAllocations();
+            _applyToAllTeams.Clear();
+            _otherTeamLines = await CapacityService.GetFeatureOtherTeamLinesAsync(
+                TeamId, piId, _features.Select(f => f.FeatureId).ToList());
+            _wasEverSaved = _features.Any(f => f.IsSaved);
+            _hasNewFeatures = _features.Any(IsNewUnsavedFeature);
+            if (_result.Drifts.Count > 0)
+            {
+                Snackbar.Add(
+                    $"{_result.Drifts.Count} added feature(s) changed their PI since being added. See the notice above the list.",
+                    Severity.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load team capacity");
+            Snackbar.Add($"Failed to load: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ToggleIncludedAsync(TeamCapacityFeatureRow row, bool value)
+    {
+        if (!CanEditCapacity)
+        {
+            return;
+        }
+
+        var otherTeams = _otherTeamLines.GetValueOrDefault(row.FeatureId);
+        if (otherTeams is { Count: > 0 })
+        {
+            var choice = await PromptMoveScopeAsync(row, value, otherTeams);
+            if (choice == MoveScopeChoice.Cancel)
+            {
+                StateHasChanged();
+                return;
+            }
+            if (choice == MoveScopeChoice.AllTeams)
+            {
+                _applyToAllTeams.Add(row.FeatureId);
+            }
+            else
+            {
+                _applyToAllTeams.Remove(row.FeatureId);
+            }
+        }
+        else
+        {
+            _applyToAllTeams.Remove(row.FeatureId);
+        }
+
+        var index = _features.FindIndex(f => f.FeatureId == row.FeatureId);
+        if (index < 0)
+        {
+            return;
+        }
+        _features[index] = _features[index] with { IsIncluded = value };
+        _hasUnsavedChanges = true;
+        RecomputeAllocations();
+        StateHasChanged();
+    }
+
+    private async Task<MoveScopeChoice> PromptMoveScopeAsync(
+        TeamCapacityFeatureRow row, bool include, List<FeatureOtherTeamLine> otherTeams)
+    {
+        var name = string.IsNullOrWhiteSpace(row.Name) ? "(no name)" : row.Name;
+        var featureLabel = string.IsNullOrEmpty(row.JiraId) ? name : $"{row.JiraId} — {name}";
+        var currentTeam = _team?.Name ?? "this team";
+        var direction = include ? "above the line" : "below the line";
+
+        var teamItems = string.Join("", otherTeams.Select(t =>
+            $"<li>{System.Net.WebUtility.HtmlEncode(t.TeamName)}{(t.IsIncluded ? "" : " <i>(below the line)</i>")}</li>"));
+        var message =
+            $"<b>{System.Net.WebUtility.HtmlEncode(featureLabel)}</b> is assigned to other team(s) that also plan it in this PI:"
+            + $"<ul style=\"margin:6px 0 6px 18px; padding:0\">{teamItems}</ul>"
+            + $"Move it {direction} for all these teams as well, or only for "
+            + $"<b>{System.Net.WebUtility.HtmlEncode(currentTeam)}</b>?";
+
+        var choice = await ModalDialogService.ConfirmChoice(
+            message,
+            include ? "Move above the line" : "Move below the line",
+            "All assigned teams",
+            "Only this team",
+            "Cancel");
+
+        return choice switch
+        {
+            ModalDialogChoice.Primary => MoveScopeChoice.AllTeams,
+            ModalDialogChoice.Secondary => MoveScopeChoice.CurrentTeamOnly,
+            _ => MoveScopeChoice.Cancel,
+        };
+    }
+
+    private List<FeatureOtherTeamLine> BelowLineElsewhere(int featureId) =>
+        _otherTeamLines.GetValueOrDefault(featureId)?.Where(t => !t.IsIncluded).ToList()
+            ?? new List<FeatureOtherTeamLine>();
+
+    private bool CanRemoveFeature(TeamCapacityFeatureRow f) =>
+        CanEditCapacity && f.FeaturePiId != _selectedPiId && !f.MatchedByLabel;
+
+    private static string NotMappedTooltip(TeamCapacityFeatureRow f) =>
+        f.FeaturePiName is not null
+            ? $"Not mapped to this PI — this feature's PI is {f.FeaturePiName}. You can remove it from capacity planning."
+            : "Not mapped to this PI. You can remove it from capacity planning.";
+
+    private static string MappedByLabelOtherPiTooltip(TeamCapacityFeatureRow f) =>
+        $"This feature is assigned to {(f.FeaturePiName ?? "another PI")}, but its label matches this PI's rule, "
+        + "so it is included here for capacity planning. It can't be removed while its labels match — "
+        + "change the feature's PI or its labels to drop it.";
+
+    private bool IsNewUnsavedFeature(TeamCapacityFeatureRow f) =>
+        _wasEverSaved && !f.IsSaved && (f.FeaturePiId == _selectedPiId || f.MatchedByLabel);
+
+    private async Task RemoveFeatureAsync(TeamCapacityFeatureRow f)
+    {
+        if (!CanRemoveFeature(f))
+        {
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(f.Name) ? "(no name)" : f.Name;
+        var label = string.IsNullOrEmpty(f.JiraId) ? name : $"{f.JiraId} — {name}";
+        var confirmed = await ModalDialogService.Confirm(
+            $"Remove \"{label}\" from Team Capacity? It does not belong to the selected PI. The change applies after you Save.",
+            "Remove feature",
+            "Remove");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        var index = _features.FindIndex(x => x.FeatureId == f.FeatureId);
+        if (index < 0)
+        {
+            return;
+        }
+        _features.RemoveAt(index);
+        _hasUnsavedChanges = true;
+        RecomputeAllocations();
+        Snackbar.Add("Feature removed. Remember to Save.", Severity.Success);
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnJsDragStart(int featureId, int sourcePiId)
+    {
+        if (!CanReorder)
+        {
+            return;
+        }
+        _dragSourceId = featureId;
+    }
+
+    [JSInvokable]
+    public Task OnJsDrop(int targetFeatureId, int targetPiId)
+    {
+        if (!CanReorder || !_dragSourceId.HasValue || _moveInProgress)
+        {
+            return Task.CompletedTask;
+        }
+        _moveInProgress = true;
+        try
+        {
+            var sourceId = _dragSourceId.Value;
+            _dragSourceId = null;
+
+            var sourceIndex = _features.FindIndex(f => f.FeatureId == sourceId);
+            if (sourceIndex < 0)
+            {
+                return Task.CompletedTask;
+            }
+
+            int targetIndex;
+            if (targetFeatureId == -1)
+            {
+                targetIndex = _features.Count - 1;
+            }
+            else if (targetFeatureId == sourceId)
+            {
+                return Task.CompletedTask;
+            }
+            else
+            {
+                targetIndex = _features.FindIndex(f => f.FeatureId == targetFeatureId);
+                if (targetIndex < 0)
+                {
+                    return Task.CompletedTask;
+                }
+            }
+
+            var item = _features[sourceIndex];
+            _features.RemoveAt(sourceIndex);
+            if (targetIndex > _features.Count)
+            {
+                targetIndex = _features.Count;
+            }
+            _features.Insert(targetIndex, item);
+            _hasUnsavedChanges = true;
+            RecomputeAllocations();
+            StateHasChanged();
+        }
+        finally
+        {
+            _moveInProgress = false;
+        }
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public void OnJsDragEnd()
+    {
+        _dragSourceId = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!CanEditCapacity || _selectedPiId is null)
+        {
+            return;
+        }
+        _saving = true;
+        try
+        {
+            var rows = _features
+                .Select((f, i) => new TeamCapacityOrderRow(f.FeatureId, i + 1, f.IsIncluded, f.IsManuallyAdded))
+                .ToList();
+            await CapacityService.SaveOrderAsync(TeamId, _selectedPiId.Value, rows);
+
+            if (_applyToAllTeams.Count > 0)
+            {
+                var inclusion = _features
+                    .Where(f => _applyToAllTeams.Contains(f.FeatureId))
+                    .ToDictionary(f => f.FeatureId, f => f.IsIncluded);
+                await CapacityService.PropagateInclusionToOtherTeamsAsync(TeamId, _selectedPiId.Value, inclusion);
+                _otherTeamLines = await CapacityService.GetFeatureOtherTeamLinesAsync(
+                    TeamId, _selectedPiId.Value, _features.Select(f => f.FeatureId).ToList());
+                _applyToAllTeams.Clear();
+            }
+
+            _features = _features
+                .Select((f, i) => f with { SortOrder = i + 1, IsSaved = true })
+                .ToList();
+            _hasUnsavedChanges = false;
+            _wasEverSaved = true;
+            _hasNewFeatures = false;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save team capacity order");
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ResaveDriftAsync()
+    {
+        if (!CanEditCapacity || _selectedPiId is null || _result is null || _result.Drifts.Count == 0)
+        {
+            return;
+        }
+        _saving = true;
+        try
+        {
+            var driftFeatureIds = _result.Drifts.Select(d => d.FeatureId).ToList();
+            var rows = _features
+                .Select((f, i) => new TeamCapacityOrderRow(f.FeatureId, i + 1, f.IsIncluded, f.IsManuallyAdded))
+                .ToList();
+            await CapacityService.SaveOrderAsync(TeamId, _selectedPiId.Value, rows, driftFeatureIds);
+            _hasUnsavedChanges = false;
+            Snackbar.Add("Saved. The added features now reflect their current PI.", Severity.Success);
+            await LoadAsync(_selectedPiId.Value);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to resave team capacity drift");
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task OpenFeatureInNewWindow(int featureId)
+    {
+        await JS.InvokeVoidAsync("open", $"{RoutingPath.Features}/{featureId}", "_blank");
+    }
+
+    private async Task ShowCommentsAsync(TeamCapacityFeatureRow f)
+    {
+        var title = string.IsNullOrEmpty(f.JiraId) ? (f.Name ?? "Feature") : $"{f.JiraId} — {f.Name}";
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(FeatureCommentsDialog.FeatureId), f.FeatureId },
+            { nameof(FeatureCommentsDialog.FeatureTitle), title },
+            { nameof(FeatureCommentsDialog.CurrentUser), _currentUserName },
+        };
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.False, FullWidth = false };
+        var dialogRef = await ModalDialogService.Component<FeatureCommentsDialog>("Status Comments", parameters, options);
+        await dialogRef.Result;
+
+        try
+        {
+            var counts = await CommentService.GetCountsAsync(new[] { f.FeatureId });
+            _commentCounts[f.FeatureId] = counts.GetValueOrDefault(f.FeatureId);
+        }
+        catch
+        {
+        }
+        StateHasChanged();
+    }
+
+    private async Task OpenFindAsync()
+    {
+        if (!CanEditCapacity || _selectedPiId is null || _result is null)
+        {
+            return;
+        }
+
+        FeatureFindMetadata metadata;
+        try
+        {
+            metadata = await CapacityService.GetFeatureFindMetadataAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load feature find metadata");
+            Snackbar.Add($"Failed to open Find: {ex.Message}", Severity.Error);
+            return;
+        }
+
+        var parameters = new MudBlazor.DialogParameters<FeatureFindDialog>
+        {
+            { x => x.TeamId, TeamId },
+            { x => x.PiId, _selectedPiId.Value },
+            { x => x.TeamName, _team?.Name ?? string.Empty },
+            { x => x.Metadata, metadata },
+        };
+        var options = new MudBlazor.DialogOptions
+        {
+            MaxWidth = MudBlazor.MaxWidth.ExtraLarge,
+            FullWidth = true,
+            CloseButton = true,
+        };
+        var dialog = await DialogService.ShowAsync<FeatureFindDialog>("Find features to add", parameters, options);
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled || result.Data is not List<FeatureFindRow> selected || selected.Count == 0)
+        {
+            return;
+        }
+
+        AddFoundFeatures(selected);
+    }
+
+    private void AddFoundFeatures(List<FeatureFindRow> selected)
+    {
+        var existingIds = _features.Select(f => f.FeatureId).ToHashSet();
+        var nextSort = _features.Count == 0 ? 1 : _features.Max(f => f.SortOrder) + 1;
+        var added = 0;
+        foreach (var row in selected)
+        {
+            if (existingIds.Contains(row.FeatureId))
+            {
+                continue;
+            }
+            _features.Add(new TeamCapacityFeatureRow(
+                row.FeatureId,
+                row.JiraId,
+                row.Name,
+                null,
+                null,
+                row.Effort,
+                true,
+                nextSort++,
+                true,
+                row.PiId,
+                row.PiName,
+                Status: row.Status));
+            existingIds.Add(row.FeatureId);
+            added++;
+        }
+
+        if (added > 0)
+        {
+            _hasUnsavedChanges = true;
+            RecomputeAllocations();
+            Snackbar.Add($"Added {added} feature(s). Remember to Save.", Severity.Success);
+        }
+        else
+        {
+            Snackbar.Add("Selected feature(s) are already in the list.", Severity.Info);
+        }
+    }
+
+    private static string AllocClass(FeatureAllocVm? a)
+    {
+        if (a is null)
+        {
+            return "";
+        }
+        if (!a.IsValid)
+        {
+            return "capacity-warning";
+        }
+        if (a.Required <= 0m)
+        {
+            return "";
+        }
+        if (a.IsFullyReserved)
+        {
+            return "capacity-ok";
+        }
+        return a.Reserved > 0m ? "capacity-partial" : "capacity-fail";
+    }
+
+    private decimal StackUsed(int stackId) =>
+        _allocations.Values.SelectMany(a => a.Skills).Where(s => s.StackId == stackId).Sum(s => s.Reserved);
+
+    private decimal StackDemand(int stackId) =>
+        _allocations.Values.SelectMany(a => a.Skills).Where(s => s.StackId == stackId).Sum(s => s.Required);
+
+    private int OwnedStackCount(TeamMemberMeta m) => m.StackIds.Count(_ownedStackIds.Contains);
+
+    private List<TeamMemberMeta> NoStackMembers =>
+        _result?.MemberMeta.Where(m => OwnedStackCount(m) == 0).ToList() ?? new();
+    private int NoStackMemberCount => NoStackMembers.Count;
+    private double NoStackCapacity => NoStackMembers.Sum(m => m.EffectiveDays);
+
+    private int MultiStackMemberCount =>
+        _result?.MemberMeta.Count(m => OwnedStackCount(m) > 1) ?? 0;
+
+    private IEnumerable<TeamCapacityFeatureRow> UnbackedFeatures =>
+        _features.Where(f => f.IsIncluded && _allocations.GetValueOrDefault(f.FeatureId)?.IsValid != true);
+    private int UnbackedFeatureCount => UnbackedFeatures.Count();
+    private int UnbackedEffort => UnbackedFeatures.Sum(f => f.Effort);
+
+    private static string DemandRemainingColor(decimal demand, decimal allocated)
+    {
+        if (demand - allocated <= 0m)
+        {
+            return "var(--mud-palette-success)";
+        }
+        if (allocated > 0m)
+        {
+            return "var(--mud-palette-warning)";
+        }
+        return "var(--mud-palette-error)";
+    }
+
+    private static string DemandRemainingColor(IEnumerable<DemandRowVm> rows) =>
+        DemandRemainingColor(rows.Sum(r => r.Demand), rows.Sum(r => r.Allocated));
+
+    private Dictionary<int, decimal> AllocatedDaysByMember()
+    {
+        var map = new Dictionary<int, decimal>();
+        foreach (var mem in _allocations.Values.SelectMany(a => a.Skills).SelectMany(s => s.Members))
+        {
+            if (mem.AllocatedDays <= 0m)
+            {
+                continue;
+            }
+            map[mem.HumanResourceId] = map.GetValueOrDefault(mem.HumanResourceId) + mem.AllocatedDays;
+        }
+        return map;
+    }
+
+    private decimal TotalAllocatedDays => _allocations.Values.Sum(a => a.Reserved);
+
+    private record StackRowVm(
+        string Key, string Name, decimal Capacity, decimal Allocated, int MemberCount, bool IsNoStack);
+
+    private List<StackRowVm> BuildStackRows()
+    {
+        var list = new List<StackRowVm>();
+        if (_result is null)
+        {
+            return list;
+        }
+
+        var owned = _ownedStackIds;
+        var nameById = _result.StackCapacities.ToDictionary(s => s.TechnologyStackId, s => s.StackName);
+        var allocByMember = AllocatedDaysByMember();
+        string ComboName(List<int> ids) => string.Join(" / ", ids.Select(id => nameById.GetValueOrDefault(id, "?")));
+
+        var acc = new Dictionary<string, (List<int> Ids, decimal Capacity, decimal Allocated, int Count)>();
+        foreach (var m in _result.MemberMeta)
+        {
+            var ids = m.StackIds.Where(owned.Contains)
+                .OrderBy(id => nameById.GetValueOrDefault(id, string.Empty)).ThenBy(id => id).ToList();
+            var key = ids.Count == 0 ? string.Empty : string.Join("|", ids);
+            var cur = acc.GetValueOrDefault(key, (Ids: ids, Capacity: 0m, Allocated: 0m, Count: 0));
+            cur.Capacity += (decimal)m.EffectiveDays;
+            cur.Allocated += allocByMember.GetValueOrDefault(m.HumanResourceId);
+            cur.Count += 1;
+            acc[key] = cur;
+        }
+
+        foreach (var kv in acc.Where(k => k.Key.Length > 0)
+            .OrderBy(k => k.Value.Ids.Count).ThenBy(k => ComboName(k.Value.Ids)))
+        {
+            list.Add(new StackRowVm(kv.Key, ComboName(kv.Value.Ids), kv.Value.Capacity, kv.Value.Allocated, kv.Value.Count, false));
+        }
+        if (acc.TryGetValue(string.Empty, out var ns) && ns.Count > 0)
+        {
+            list.Add(new StackRowVm("__nostack__", "No stack", ns.Capacity, ns.Allocated, ns.Count, true));
+        }
+        return list;
+    }
+
+    private record DemandRowVm(
+        int StackId, string Name, decimal Demand, decimal Allocated, decimal Remaining, decimal BelowLine);
+
+    private List<DemandRowVm> BuildDemandRows()
+    {
+        var rows = new List<DemandRowVm>();
+        if (_result is null)
+        {
+            return rows;
+        }
+
+        var names = new Dictionary<int, string>();
+        foreach (var s in _allocations.Values.SelectMany(a => a.Skills))
+        {
+            names[s.StackId] = s.Label;
+        }
+
+        var belowByStack = new Dictionary<int, decimal>();
+        foreach (var f in _features.Where(x => !x.IsIncluded))
+        {
+            var demand = _result.Demands.GetValueOrDefault(f.FeatureId);
+            if (demand is null)
+            {
+                continue;
+            }
+            foreach (var s in demand.Stacks)
+            {
+                var sp = (decimal)(s.StoryPoints ?? 0);
+                if (sp <= 0m)
+                {
+                    continue;
+                }
+                names.TryAdd(s.TechnologyStackId, s.StackName);
+                belowByStack[s.TechnologyStackId] = belowByStack.GetValueOrDefault(s.TechnologyStackId) + sp;
+            }
+        }
+
+        foreach (var (stackId, name) in names.OrderBy(kv => kv.Value))
+        {
+            var demand = StackDemand(stackId);
+            var allocated = StackUsed(stackId);
+            rows.Add(new DemandRowVm(
+                stackId, name, demand, allocated, demand - allocated,
+                belowByStack.GetValueOrDefault(stackId)));
+        }
+        return rows;
+    }
+
+    private void RecomputeAllocations()
+    {
+        _allocations = new Dictionary<int, FeatureAllocVm>();
+        if (_result is null)
+        {
+            return;
+        }
+
+        var included = _features.Where(x => x.IsIncluded).Select(f => f.FeatureId).ToList();
+        var allocations = TeamBoardAllocator.Allocate(included, _result.Demands, _result.MemberMeta);
+        foreach (var featureId in included)
+        {
+            _allocations[featureId] = ToAllocationVm(allocations[featureId]);
+        }
+    }
+
+    private static FeatureAllocVm ToAllocationVm(TeamBoardFeatureAllocation a) => new()
+    {
+        FeatureId = a.FeatureId,
+        IsValid = a.IsValid,
+        Required = a.Required,
+        Reserved = a.Reserved,
+        IsFullyReserved = a.IsFullyReserved,
+        Skills = a.Stacks
+            .Select(s => new SkillAllocVm
+            {
+                StackId = s.TechnologyStackId,
+                Label = s.StackName,
+                Required = s.Required,
+                Reserved = s.Reserved,
+                Members = s.Members
+                    .Select(m => new MemberAllocVm
+                    {
+                        HumanResourceId = m.HumanResourceId,
+                        Name = m.FullName,
+                        AllocatedDays = m.Days,
+                    })
+                    .ToList(),
+            })
+            .ToList(),
+    };
+
+    private async Task ShowFeatureCapacityAsync(TeamCapacityFeatureRow f, FeatureAllocVm alloc)
+    {
+        var name = string.IsNullOrEmpty(f.JiraId) ? (f.Name ?? "Feature") : $"{f.JiraId} — {f.Name}";
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(TeamFeatureCapacityModal.Allocation), alloc },
+            { nameof(TeamFeatureCapacityModal.FeatureName), name },
+        };
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.Large, FullWidth = true };
+        await ModalDialogService.Component<TeamFeatureCapacityModal>("Capacity explanation", parameters, options);
+    }
+
+    private async Task ShowHelpAsync()
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(TeamCapacityHelpDialog.TeamId), TeamId }
+        };
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.Medium, FullWidth = true };
+        await ModalDialogService.Component<TeamCapacityHelpDialog>("How capacity is calculated", parameters, options);
+    }
+
+    private async Task ShowMembersAsync()
+    {
+        if (_result is null)
+        {
+            return;
+        }
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(TeamCapacityMembersDialog.Result), _result }
+        };
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.Medium, FullWidth = true };
+        await ModalDialogService.Component<TeamCapacityMembersDialog>(
+            $"{_team?.Name} — Member capacity", parameters, options);
+    }
+
+    private async Task ShowMemberAllocationAsync()
+    {
+        if (_result is null)
+        {
+            return;
+        }
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(TeamMemberAllocationDialog.Members), BuildMemberAllocations() },
+        };
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.Large, FullWidth = true };
+        await ModalDialogService.Component<TeamMemberAllocationDialog>(
+            $"{_team?.Name} — Member allocation", parameters, options);
+    }
+
+    private List<MemberCapacityDetailVm> BuildMemberAllocations()
+    {
+        var result = new List<MemberCapacityDetailVm>();
+        if (_result is null)
+        {
+            return result;
+        }
+
+        var featureById = _features.ToDictionary(f => f.FeatureId);
+        var allocatedByMember = new Dictionary<int, decimal>();
+        var linesByMember = new Dictionary<int, List<MemberAllocationLine>>();
+
+        foreach (var (featureId, alloc) in _allocations)
+        {
+            foreach (var skill in alloc.Skills)
+            {
+                foreach (var mem in skill.Members)
+                {
+                    if (mem.AllocatedDays <= 0m)
+                    {
+                        continue;
+                    }
+                    allocatedByMember[mem.HumanResourceId] =
+                        allocatedByMember.GetValueOrDefault(mem.HumanResourceId) + mem.AllocatedDays;
+                    if (!linesByMember.TryGetValue(mem.HumanResourceId, out var lines))
+                    {
+                        lines = new List<MemberAllocationLine>();
+                        linesByMember[mem.HumanResourceId] = lines;
+                    }
+                    var f = featureById.GetValueOrDefault(featureId);
+                    lines.Add(new MemberAllocationLine
+                    {
+                        StackName = skill.Label,
+                        FeatureName = f?.Name ?? string.Empty,
+                        JiraId = f?.JiraId,
+                        Days = mem.AllocatedDays,
+                    });
+                }
+            }
+        }
+
+        foreach (var m in _result.Members)
+        {
+            var lines = linesByMember.GetValueOrDefault(m.HumanResourceId) ?? new List<MemberAllocationLine>();
+            result.Add(new MemberCapacityDetailVm
+            {
+                HumanResourceId = m.HumanResourceId,
+                Name = m.FullName,
+                Role = m.RoleName,
+                Capacity = (decimal)m.EffectiveDays,
+                Allocated = allocatedByMember.GetValueOrDefault(m.HumanResourceId),
+                Lines = lines.OrderBy(l => l.StackName).ThenBy(l => l.FeatureName).ToList(),
+            });
+        }
+        return result;
+    }
+}

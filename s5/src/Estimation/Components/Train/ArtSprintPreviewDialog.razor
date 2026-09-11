@@ -1,0 +1,88 @@
+@using Estimation.Core.Train.Services
+
+<MudDialog>
+    <TitleContent>@Title</TitleContent>
+    <DialogContent>
+        @if (Warnings.Count > 0)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-3">
+                @foreach (var warning in Warnings)
+                {
+                    <div>@warning</div>
+                }
+            </MudAlert>
+        }
+
+        @if (Actions.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                No team sprints are affected.
+            </MudText>
+        }
+        else
+        {
+            @if (_deleteCount > 0)
+            {
+                <MudAlert Severity="Severity.Error" Dense="true" Class="mb-3">
+                    @_deleteCount existing team sprint(s) will be deleted. Their capacity windows change accordingly.
+                </MudAlert>
+            }
+
+            <MudSimpleTable Dense="true" Striped="true" Bordered="true" Style="max-height:340px; overflow:auto;">
+                <thead>
+                    <tr>
+                        <th>Team</th>
+                        <th>Action</th>
+                        <th>Sprint</th>
+                        <th>Dev dates</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var action in Actions)
+                    {
+                        <tr>
+                            <td>@action.TeamName</td>
+                            <td>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@ActionColor(action.Kind)">
+                                    @action.Kind
+                                </MudChip>
+                            </td>
+                            <td>@action.SprintName</td>
+                            <td>@action.StartDate.ToString("yyyy-MM-dd") – @action.EndDate.ToString("yyyy-MM-dd")</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Confirm">@ConfirmText</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public string Title { get; set; } = "Apply to teams";
+
+    [Parameter] public string ConfirmText { get; set; } = "Apply";
+
+    [Parameter] public List<ArtSprintCascadeAction> Actions { get; set; } = new();
+
+    [Parameter] public List<string> Warnings { get; set; } = new();
+
+    private int _deleteCount => Actions.Count(a => a.Kind == ArtSprintCascadeKind.Deleted);
+
+    private static Color ActionColor(ArtSprintCascadeKind kind) => kind switch
+    {
+        ArtSprintCascadeKind.Created => Color.Success,
+        ArtSprintCascadeKind.Updated => Color.Info,
+        ArtSprintCascadeKind.Deleted => Color.Error,
+        _ => Color.Default,
+    };
+
+    private void Confirm() => MudDialog.Close(DialogResult.Ok(true));
+
+    private void Cancel() => MudDialog.Cancel();
+}

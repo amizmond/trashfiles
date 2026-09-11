@@ -1,0 +1,248 @@
+@inject IDashboardService DashboardService
+@inject IPermissionGuard PermissionGuard
+@inject IJSRuntime JS
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Dashboard.Services
+@using Serilog
+
+<MudPaper Class="pa-4 rounded-lg" Elevation="2">
+    <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+        <MudText Typo="Typo.h6">ART Sprints</MudText>
+        <MudSpacer />
+        @if (_options.Count > 0)
+        {
+            <SearchableDropdown T="int?"
+                                Items="_optionIds"
+                                Value="_selectedArtId"
+                                ValueChanged="OnArtChangedAsync"
+                                ToStringFunc="@ArtName"
+                                Label="ART"
+                                Clearable="false"
+                                Margin="Margin.Dense"
+                                Style="min-width:200px" />
+        }
+    </div>
+
+    @if (_loading)
+    {
+        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+    }
+    else if (_options.Count == 0)
+    {
+        <MudText Typo="Typo.body2" Color="Color.Default">No ART sprints available</MudText>
+    }
+    else
+    {
+        @if (_pastCount > 0)
+        {
+            <div class="d-flex align-center mb-2">
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    @(_showPast ? $"Showing {_pastCount} past sprint(s)" : $"{_pastCount} past sprint(s) hidden")
+                </MudText>
+                <MudSpacer />
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => _showPast = !_showPast)">
+                    @(_showPast ? "Hide past" : "Show past")
+                </MudButton>
+            </div>
+        }
+
+        @if (_visible.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Color="Color.Default">
+                @(_sprints.Count == 0 ? "This ART has no sprints yet" : "All sprints of this ART have ended")
+            </MudText>
+        }
+        else
+        {
+            <div style="max-height: 400px; overflow-y: auto;">
+                <MudTimeline TimelinePosition="TimelinePosition.Start">
+                    @foreach (var sprint in _visible)
+                    {
+                        <MudTimelineItem Color="@DotColor(sprint)"
+                                         Variant="Variant.Filled"
+                                         Size="@(sprint.IsCurrent ? Size.Medium : Size.Small)">
+                            <ItemContent>
+                                <MudCard Elevation="@(sprint.IsCurrent ? 3 : 1)"
+                                         Class="@(sprint.IsCurrent ? "border-solid border mud-border-success" : "")"
+                                         Style="@(sprint.IsPast ? "opacity:.7" : "")">
+                                    <MudCardContent Class="pa-3">
+                                        <div class="d-flex align-center gap-1 flex-wrap mb-1">
+                                            <MudText Typo="Typo.subtitle1"><b>@sprint.Name</b></MudText>
+                                            @if (sprint.PiName is not null)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">@sprint.PiName</MudChip>
+                                            }
+                                            @if (sprint.IsIpSprint)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">IP</MudChip>
+                                            }
+                                            @if (sprint.IsCurrent)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Success">Current</MudChip>
+                                            }
+                                        </div>
+                                        <div style="display:grid; grid-template-columns:auto 1fr; gap:2px 12px;">
+                                            <MudText Typo="Typo.body2" Class="mud-text-secondary">Dev</MudText>
+                                            <MudText Typo="Typo.body2">@FormatRange(sprint.DevStart, sprint.DevEnd)</MudText>
+                                            <MudText Typo="Typo.body2" Class="mud-text-secondary">UAT</MudText>
+                                            <MudText Typo="Typo.body2">@FormatRange(sprint.UatStart, sprint.UatEnd)</MudText>
+                                            <MudText Typo="Typo.body2" Class="mud-text-secondary">Sign-off</MudText>
+                                            <MudText Typo="Typo.body2">@FormatDate(sprint.SignOffDate)</MudText>
+                                            <MudText Typo="Typo.body2" Class="mud-text-secondary">Release Date</MudText>
+                                            <MudText Typo="Typo.body2">@FormatDate(sprint.ReleaseDate)</MudText>
+                                            @if (!string.IsNullOrWhiteSpace(sprint.FixVersion))
+                                            {
+                                                <MudText Typo="Typo.body2" Class="mud-text-secondary">Fix version</MudText>
+                                                <MudText Typo="Typo.body2">@sprint.FixVersion</MudText>
+                                            }
+                                        </div>
+                                    </MudCardContent>
+                                </MudCard>
+                            </ItemContent>
+                        </MudTimelineItem>
+                    }
+                </MudTimeline>
+            </div>
+        }
+    }
+</MudPaper>
+
+@code {
+    private const string SelectedArtStorageKey = "dashboard.artSprints.selectedArtId";
+
+    private static readonly string[] SprintPageKeys = ["CapitalProjects", "TeamPlanningSprints"];
+
+    private List<CapitalProjectOption> _options = new();
+    private List<ArtSprintTimelineItem> _sprints = new();
+    private int? _selectedArtId;
+    private bool _showPast;
+    private bool _loading = true;
+    private bool _restored;
+
+    private IEnumerable<int?> _optionIds => _options.Select(o => (int?)o.Id);
+
+    private int _pastCount => _sprints.Count(s => s.IsPast);
+
+    private List<ArtSprintTimelineItem> _visible => _showPast ? _sprints : _sprints.Where(s => !s.IsPast).ToList();
+
+    private string ArtName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+
+        return _options.FirstOrDefault(o => o.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var permissions = await PermissionGuard.GetPermissionsAsync();
+            _options = await DashboardService.GetArtSprintOptionsAsync(AllowedArtIds(permissions));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load ART sprint options for the dashboard");
+            _options = new();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _restored)
+        {
+            return;
+        }
+        _restored = true;
+
+        int? storedArtId = null;
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", SelectedArtStorageKey);
+            if (int.TryParse(raw, out var id))
+            {
+                storedArtId = id;
+            }
+        }
+        catch
+        {
+        }
+
+        _selectedArtId = storedArtId is not null && _options.Any(o => o.Id == storedArtId)
+            ? storedArtId
+            : _options.FirstOrDefault()?.Id;
+
+        await LoadSprintsAsync();
+        _loading = false;
+        StateHasChanged();
+    }
+
+    private async Task OnArtChangedAsync(int? artId)
+    {
+        if (artId is null || artId == _selectedArtId)
+        {
+            return;
+        }
+
+        _selectedArtId = artId;
+        _showPast = false;
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", SelectedArtStorageKey, artId.Value.ToString());
+        }
+        catch
+        {
+        }
+
+        await LoadSprintsAsync();
+    }
+
+    private async Task LoadSprintsAsync()
+    {
+        if (_selectedArtId is null)
+        {
+            _sprints = new();
+            return;
+        }
+
+        try
+        {
+            _sprints = await DashboardService.GetArtSprintTimelineAsync(_selectedArtId.Value);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load ART sprints for the dashboard, ART {ArtId}", _selectedArtId);
+            _sprints = new();
+        }
+    }
+
+    private static IReadOnlyCollection<int>? AllowedArtIds(Estimation.Core.Administration.Services.UserPermissionSet permissions)
+    {
+        var allowed = new HashSet<int>();
+        foreach (var pageKey in SprintPageKeys)
+        {
+            var trains = permissions.GetAllowedTrains(pageKey, AccessLevel.ReadOnly);
+            if (trains is null)
+            {
+                return null;
+            }
+
+            allowed.UnionWith(trains);
+        }
+
+        return allowed;
+    }
+
+    private static Color DotColor(ArtSprintTimelineItem sprint) =>
+        sprint.IsCurrent ? Color.Success : sprint.IsPast ? Color.Default : Color.Primary;
+
+    private static string FormatDate(DateTime? date) => date?.ToString("MMM d, yyyy") ?? "—";
+
+    private static string FormatRange(DateTime start, DateTime end) =>
+        start.Year == end.Year
+            ? $"{start:MMM d} – {end:MMM d, yyyy}"
+            : $"{start:MMM d, yyyy} – {end:MMM d, yyyy}";
+}

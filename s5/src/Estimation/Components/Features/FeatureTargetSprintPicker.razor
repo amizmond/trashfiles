@@ -1,0 +1,129 @@
+@using Estimation.Core.Features.Services
+@using Estimation.Core.PlanningIncrement.Models
+
+<div class="mt-3">
+    <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+        <MudIcon Icon="@Icons.Material.Filled.DateRange" Size="Size.Small" Color="Color.Primary" />
+        <MudText Typo="Typo.body2" Style="font-weight:500">Planned sprints</MudText>
+        <MudSpacer />
+        @if (_teamRange.Start is not null && _teamRange.End is not null)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                @_teamRange.Start.Value.ToString("yyyy-MM-dd") → @_teamRange.End.Value.ToString("yyyy-MM-dd") (UAT end)
+            </MudText>
+        }
+    </div>
+
+    @if (Pis.Count == 0)
+    {
+        <MudText Typo="Typo.body2" Class="mud-text-secondary">
+            Assign the feature to a PI, or give it a PI label, to plan sprints.
+        </MudText>
+    }
+    else
+    {
+        <div class="d-flex flex-wrap gap-1 mb-2">
+            @foreach (var pi in Pis)
+            {
+                var active = pi.Id == _activePiId;
+                var count = SelectedCountIn(pi);
+                <MudChip T="string"
+                         Size="Size.Small"
+                         Color="@(active ? Color.Primary : Color.Default)"
+                         Variant="@(active ? Variant.Filled : Variant.Outlined)"
+                         OnClick="@(() => _activePiId = pi.Id)"
+                         Style="cursor:pointer">
+                    @pi.Name
+                    @if (count > 0)
+                    {
+                        <span class="ml-1" style="font-weight:600">· @count</span>
+                    }
+                </MudChip>
+            }
+        </div>
+
+        @if (_activeSprints.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                No sprints for this team in @(_activePi?.Name).
+            </MudText>
+        }
+        else
+        {
+            <div class="d-flex flex-wrap gap-2">
+                @foreach (var sprint in _activeSprints)
+                {
+                    var selected = Selected.Contains(sprint.Id);
+                    <MudTooltip Text="@SprintTooltip(sprint)" Placement="Placement.Top">
+                        <MudChip T="string"
+                                 Size="Size.Small"
+                                 Color="@(selected ? Color.Primary : Color.Default)"
+                                 Variant="@(selected ? Variant.Filled : Variant.Outlined)"
+                                 OnClick="@(() => ToggleAsync(sprint.Id))"
+                                 Style="cursor:pointer">
+                            @sprint.Name
+                            @if (sprint.IsIpSprint == true)
+                            {
+                                <span class="ml-1" style="opacity:.75">· IP</span>
+                            }
+                            <span class="ml-1" style="font-size:.75rem;opacity:.8">
+                                @sprint.StartDate.ToString("MMM d") – @sprint.EndDate.ToString("MMM d")
+                            </span>
+                        </MudChip>
+                    </MudTooltip>
+                }
+            </div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<Pi> Pis { get; set; } = [];
+
+    [Parameter] public IReadOnlyList<Sprint> TeamSprints { get; set; } = [];
+
+    [Parameter] public IReadOnlyCollection<int> Selected { get; set; } = [];
+
+    [Parameter] public EventCallback<IReadOnlyCollection<int>> SelectedChanged { get; set; }
+
+    private int? _activePiId;
+
+    private Pi? _activePi => Pis.FirstOrDefault(p => p.Id == _activePiId);
+
+    private List<Sprint> _activeSprints => _activePi is null
+        ? []
+        : FeatureTargetSprintPlanner.SprintsForPi(TeamSprints, _activePi);
+
+    private (DateTime? Start, DateTime? End) _teamRange =>
+        FeatureTargetSprintPlanner.ComputeTargets(TeamSprints.Where(s => Selected.Contains(s.Id)));
+
+    protected override void OnParametersSet()
+    {
+        if (_activePiId is not null && Pis.Any(p => p.Id == _activePiId))
+        {
+            return;
+        }
+
+        _activePiId = (Pis.FirstOrDefault(p => SelectedCountIn(p) > 0) ?? Pis.FirstOrDefault())?.Id;
+    }
+
+    private int SelectedCountIn(Pi pi) =>
+        TeamSprints.Count(s => Selected.Contains(s.Id) && FeatureTargetSprintPlanner.BelongsToPi(s, pi));
+
+    private static string SprintTooltip(Sprint sprint)
+    {
+        var tooltip = $"Dev {sprint.StartDate:yyyy-MM-dd} – {sprint.EndDate:yyyy-MM-dd} · UAT {sprint.UatStart:yyyy-MM-dd} – {sprint.UatEnd:yyyy-MM-dd}";
+        return string.IsNullOrWhiteSpace(sprint.FixVersion) ? tooltip : $"{tooltip} · Fix version {sprint.FixVersion}";
+    }
+
+    private async Task ToggleAsync(int sprintId)
+    {
+        var next = Selected.ToHashSet();
+        if (!next.Remove(sprintId))
+        {
+            next.Add(sprintId);
+        }
+
+        await SelectedChanged.InvokeAsync(next);
+    }
+}

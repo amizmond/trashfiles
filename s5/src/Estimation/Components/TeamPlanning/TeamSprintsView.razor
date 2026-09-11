@@ -1,0 +1,356 @@
+@inject ITeamService TeamService
+@inject ISprintService SprintService
+@inject IPiService PiService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+
+<PageTitle>Sprints - @(_team?.Name ?? "Team")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4 flex-wrap">
+            <MudText Typo="Typo.h6">Sprints - @(_team?.Name)</MudText>
+            @if (_team?.IsArtSharedTeam == true)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">Shared between ARTs</MudChip>
+            }
+            <MudSpacer />
+            @if (_canEdit && _canAddSprint)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="@(() => OpenEditAsync(null))"
+                           Disabled="_loading">
+                    Add sprint
+                </MudButton>
+            }
+        </div>
+
+        @if (_canEdit && !_canAddSprint)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                Sprints for this team are managed from its ART. Name, IP sprint and comment stay editable here.
+            </MudAlert>
+        }
+
+        <MudDataGrid T="Sprint"
+                     Items="_sprints"
+                     Hover="true"
+                     Striped="true"
+                     Dense="true"
+                     Elevation="0"
+                     Loading="_loading"
+                     LoadingProgressColor="Color.Primary"
+                     ColumnResizeMode="ResizeMode.Column">
+            <Columns>
+                <TemplateColumn Title="Name" Resizable="true" SortBy="x => x.Name" CellStyle="min-width:120px; max-width:300px;">
+                    <CellTemplate>
+                        <div class="d-flex align-center gap-2">
+                            @if (DetailUrl is not null)
+                            {
+                                <MudLink Href="@DetailUrl(context.Item)" Class="font-weight-bold">@context.Item.Name</MudLink>
+                            }
+                            else
+                            {
+                                <MudText Class="font-weight-bold">@context.Item.Name</MudText>
+                            }
+                            @if (IsCurrent(context.Item))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">Current</MudChip>
+                            }
+                            @if (context.Item.SourceArtSprintId is not null)
+                            {
+                                <MudTooltip Text="Created from an ART sprint. Dates and PI are managed by the ART.">
+                                    <MudIcon Icon="@Icons.Material.Filled.Link" Size="Size.Small" Color="Color.Info" />
+                                </MudTooltip>
+                            }
+                        </div>
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.StartDate" Title="Dev start" Format="yyyy-MM-dd" Resizable="true" />
+                <PropertyColumn Property="x => x.EndDate" Title="Dev end" Format="yyyy-MM-dd" Resizable="true" />
+                <PropertyColumn Property="x => x.UatStart" Title="UAT start" Format="yyyy-MM-dd" Resizable="true" />
+                <PropertyColumn Property="x => x.UatEnd" Title="UAT end" Format="yyyy-MM-dd" Resizable="true" />
+                <PropertyColumn Property="x => x.SignOffDate" Title="Sign-off" Format="yyyy-MM-dd" Resizable="true" />
+                <PropertyColumn Property="x => x.ReleaseDate" Title="Release Date" Format="yyyy-MM-dd" Resizable="true" />
+                <TemplateColumn Title="PI" Resizable="true">
+                    <CellTemplate>
+                        @(context.Item.Pi?.Name ?? "—")
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="IP sprint" Resizable="true">
+                    <CellTemplate>
+                        @if (context.Item.IsIpSprint == true)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">IP</MudChip>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <PropertyColumn Property="x => x.FixVersion" Title="Fix version" Resizable="true" />
+                <PropertyColumn Property="x => x.Comment" Title="Comment" Resizable="true" />
+                @if (_canEdit || DetailUrl is not null)
+                {
+                    <TemplateColumn Title="Actions" Sortable="false" Filterable="false" StickyRight="true">
+                        <CellTemplate>
+                            @if (DetailUrl is not null)
+                            {
+                                <MudFab Class="m-2" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Visibility" Size="Size.Small"
+                                        OnClick="@(() => Navigation.NavigateTo(DetailUrl(context.Item)))" />
+                            }
+                            @if (_canEdit)
+                            {
+                                <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                        OnClick="@(() => OpenEditAsync(context.Item))" />
+                                @if (context.Item.SourceArtSprintId is null)
+                                {
+                                    <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Error" Size="Size.Small"
+                                            OnClick="@(() => DeleteAsync(context.Item))" />
+                                }
+                            }
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent>
+                <MudText Class="pa-6 mud-text-secondary">No sprints yet.</MudText>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudDataGridPager T="Sprint" PageSizeOptions="new[] { 10, 25, 50, 100 }" />
+            </PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+@if (_editing is not null)
+{
+    <MudDialog @bind-Visible="_editDialogOpen" Options="@(new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true })">
+        <TitleContent>@(_editing.Id == 0 ? "New Sprint" : "Edit Sprint")</TitleContent>
+        <DialogContent>
+            @if (_editIsArtOwned)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                    Dev and UAT dates, sign-off, release date, fix version and PI come from the ART sprint and cannot be changed here.
+                </MudAlert>
+            }
+            <MudTextField @bind-Value="_editing.Name" Label="Name *" Variant="Variant.Outlined" Class="mb-3" />
+            <div class="d-flex gap-2">
+                <MudDatePicker Label="Dev start *" @bind-Date="_editStart" Variant="Variant.Outlined" Class="mb-3" ReadOnly="_editIsArtOwned" Disabled="_editIsArtOwned" />
+                <MudDatePicker Label="Dev end *" @bind-Date="_editEnd" Variant="Variant.Outlined" Class="mb-3" ReadOnly="_editIsArtOwned" Disabled="_editIsArtOwned" />
+            </div>
+            <div class="d-flex gap-2">
+                <MudDatePicker Label="UAT start *" @bind-Date="_editUatStart" Variant="Variant.Outlined" Class="mb-3" ReadOnly="_editIsArtOwned" Disabled="_editIsArtOwned" />
+                <MudDatePicker Label="UAT end *" @bind-Date="_editUatEnd" Variant="Variant.Outlined" Class="mb-3" ReadOnly="_editIsArtOwned" Disabled="_editIsArtOwned" />
+            </div>
+            <div class="d-flex gap-2">
+                <MudDatePicker Label="Sign-off" @bind-Date="_editing.SignOffDate" Variant="Variant.Outlined" Clearable="true" Class="mb-3" ReadOnly="_editIsArtOwned" Disabled="_editIsArtOwned" />
+                <MudDatePicker Label="Release Date" @bind-Date="_editing.ReleaseDate" Variant="Variant.Outlined" Clearable="true" Class="mb-3" ReadOnly="_editIsArtOwned" Disabled="_editIsArtOwned" />
+            </div>
+            <MudTextField @bind-Value="_editing.FixVersion" Label="Fix version" Variant="Variant.Outlined" MaxLength="50" Class="mb-3" Disabled="_editIsArtOwned" />
+            <MudSelect T="int?" @bind-Value="_editing.PiId" Label="PI (optional)" Variant="Variant.Outlined" Clearable="true" Class="mb-3" Disabled="_editIsArtOwned">
+                <MudSelectItem T="int?" Value="@((int?)null)">— None —</MudSelectItem>
+                @foreach (var pi in _pis)
+                {
+                    <MudSelectItem T="int?" Value="@((int?)pi.Id)">@pi.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <MudTextField @bind-Value="_editing.Comment" Label="Comment" Variant="Variant.Outlined" Lines="2" />
+            <MudCheckBox T="bool" @bind-Value="_editIsIp">IP sprint</MudCheckBox>
+            @if (!string.IsNullOrEmpty(_editError))
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-2">@_editError</MudAlert>
+            }
+        </DialogContent>
+        <DialogActions>
+            <MudButton OnClick="@(() => _editDialogOpen = false)">Cancel</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveEditAsync">Save</MudButton>
+        </DialogActions>
+    </MudDialog>
+}
+
+@code {
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public string PageKey { get; set; } = "Teams";
+
+    [Parameter] public bool? CanEditOverride { get; set; }
+
+    [Parameter] public Func<Sprint, string>? DetailUrl { get; set; }
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private bool _canEdit;
+
+    private Team? _team;
+    private List<Sprint> _sprints = new();
+    private List<Pi> _pis = new();
+    private bool _loading = true;
+
+    private Sprint? _editing;
+    private bool _editDialogOpen;
+    private DateTime? _editStart;
+    private DateTime? _editEnd;
+    private DateTime? _editUatStart;
+    private DateTime? _editUatEnd;
+    private bool _editIsIp;
+    private bool _editIsArtOwned;
+    private string? _editError;
+
+    private bool _canAddSprint => _team is not null
+        && (_team.IsArtSharedTeam || _team.CapitalProjectTeams.Count == 0);
+
+    protected override void OnInitialized()
+    {
+        _canEdit = CanEditOverride ?? (UserPageAccess.TryGetValue(PageKey, out var access) && access == AccessLevel.Edit);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _team = await TeamService.GetByIdAsync(TeamId);
+        if (_team is null)
+        {
+            Navigation.NavigateTo(RoutingPath.Teams);
+            return;
+        }
+        _pis = await PiService.GetAllLightAsync();
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        _sprints = await SprintService.GetForTeamAsync(TeamId);
+    }
+
+    private static bool IsCurrent(Sprint sprint)
+    {
+        var today = DateTime.Today;
+        return sprint.StartDate.Date <= today && today <= sprint.EndDate.Date;
+    }
+
+    private Task OpenEditAsync(Sprint? sprint)
+    {
+        if (!_canEdit)
+        {
+            return Task.CompletedTask;
+        }
+        _editError = null;
+        if (sprint is null)
+        {
+            if (!_canAddSprint)
+            {
+                return Task.CompletedTask;
+            }
+            _editing = new Sprint { TeamId = TeamId, StartDate = DateTime.UtcNow.Date, EndDate = DateTime.UtcNow.Date.AddDays(13) };
+        }
+        else
+        {
+            _editing = new Sprint
+            {
+                Id = sprint.Id,
+                TeamId = sprint.TeamId,
+                PiId = sprint.PiId,
+                Name = sprint.Name,
+                StartDate = sprint.StartDate,
+                EndDate = sprint.EndDate,
+                UatStart = sprint.UatStart,
+                UatEnd = sprint.UatEnd,
+                FixVersion = sprint.FixVersion,
+                SignOffDate = sprint.SignOffDate,
+                ReleaseDate = sprint.ReleaseDate,
+                ColorHex = sprint.ColorHex,
+                Comment = sprint.Comment,
+                IsIpSprint = sprint.IsIpSprint,
+                SourceArtSprintId = sprint.SourceArtSprintId,
+            };
+        }
+        _editStart = _editing.StartDate;
+        _editEnd = _editing.EndDate;
+        _editUatStart = _editing.UatStart == default ? null : _editing.UatStart;
+        _editUatEnd = _editing.UatEnd == default ? null : _editing.UatEnd;
+        _editIsIp = _editing.IsIpSprint == true;
+        _editIsArtOwned = _editing.SourceArtSprintId is not null;
+        _editDialogOpen = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task SaveEditAsync()
+    {
+        if (_editing is null || !_canEdit)
+        {
+            return;
+        }
+        _editError = null;
+        try
+        {
+            if (_editStart is null || _editEnd is null)
+            {
+                _editError = "Dev start and dev end are required.";
+                return;
+            }
+            if (_editUatStart is null || _editUatEnd is null)
+            {
+                _editError = "UAT start and UAT end are required.";
+                return;
+            }
+            _editing.StartDate = _editStart.Value;
+            _editing.EndDate = _editEnd.Value;
+            _editing.UatStart = _editUatStart.Value;
+            _editing.UatEnd = _editUatEnd.Value;
+            _editing.IsIpSprint = _editIsIp;
+
+            if (_editing.Id == 0)
+            {
+                await SprintService.CreateAsync(_editing);
+                Snackbar.Add("Sprint created.", Severity.Success);
+            }
+            else
+            {
+                await SprintService.UpdateAsync(_editing);
+                Snackbar.Add("Sprint updated.", Severity.Success);
+            }
+            _editDialogOpen = false;
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _editError = ex.Message;
+        }
+    }
+
+    private async Task DeleteAsync(Sprint sprint)
+    {
+        if (!_canEdit || sprint.SourceArtSprintId is not null)
+        {
+            return;
+        }
+        var planned = await SprintService.CountPlannedFeaturesAsync(sprint.Id);
+        var message = planned > 0
+            ? $"Sprint '{sprint.Name}' is planned in {planned} feature(s). Deleting it removes those plans. Delete it?"
+            : $"Delete sprint '{sprint.Name}' ?";
+        if (!await MessageService.Confirm(message))
+        {
+            return;
+        }
+        try
+        {
+            await SprintService.DeleteAsync(sprint.Id);
+            Snackbar.Add("Sprint deleted.", Severity.Success);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to delete sprint");
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+}

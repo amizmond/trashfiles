@@ -1,0 +1,340 @@
+@using Estimation.Core.Features.Models
+
+<div class="d-flex align-center gap-2 mb-1 flex-wrap">
+    @if (!string.IsNullOrEmpty(Title))
+    {
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@Title</MudText>
+    }
+    <MudSpacer />
+    <MudBadge Content="@Filter.ActiveCount" Color="Color.Info" Overlap="true" Bordered="true"
+              Visible="@Filter.IsActive">
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.FilterList"
+                   EndIcon="@(_open ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                   OnClick="@(() => _open = !_open)">
+            @PlanningDisplayNames.Filters
+        </MudButton>
+    </MudBadge>
+    @Actions
+</div>
+
+<MudCollapse Expanded="_open">
+    <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-2"
+              Style="border:1px solid var(--mud-palette-lines-default)">
+        <MudGrid Spacing="2">
+            <MudItem xs="12" md="4">
+                <MudTextField T="string" Value="Filter.Search" ValueChanged="OnSearchChanged"
+                              Label="@PlanningDisplayNames.Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_strategicObjectiveIds"
+                                        Values="Filter.StrategicObjectives"
+                                        ValuesChanged="OnStrategicObjectivesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.StrategicObjective"
+                                        ToStringFunc="@(id => RefText(_strategicObjectives, id))"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Strategic Objective or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.StrategicObjectiveNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.StrategicObjectiveNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_portfolioEpicIds"
+                                        Values="Filter.PortfolioEpics"
+                                        ValuesChanged="OnPortfolioEpicsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.PortfolioEpic"
+                                        ToStringFunc="@(id => RefText(_portfolioEpics, id))"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Portfolio Epic or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.PortfolioEpicNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.PortfolioEpicNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_businessOutcomeIds"
+                                        Values="Filter.BusinessOutcomes"
+                                        ValuesChanged="OnBusinessOutcomesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.BusinessOutcome"
+                                        ToStringFunc="@(id => RefText(_businessOutcomes, id))"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Business Outcome or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.BusinessOutcomeNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.BusinessOutcomeNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_statuses"
+                                        Values="Filter.Statuses"
+                                        ValuesChanged="OnStatusesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.Status"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Status or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.StatusNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.StatusNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_labels"
+                                        Values="Filter.Labels"
+                                        ValuesChanged="OnLabelsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.Labels"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Labels or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.LabelsNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.LabelsNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_requirementStatuses"
+                                        Values="Filter.RequirementStatuses"
+                                        ValuesChanged="OnRequirementStatusesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.RequirementStatus"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Requirement Status or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.RequirementStatusNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.RequirementStatusNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_technicalApprovals"
+                                        Values="Filter.TechnicalApprovals"
+                                        ValuesChanged="OnTechnicalApprovalsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.TechnicalApproval"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Design Approval or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.TechnicalApprovalNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.TechnicalApprovalNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            <MudItem xs="12" md="4">
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_fundingStatuses"
+                                        Values="Filter.FundingStatuses"
+                                        ValuesChanged="OnFundingStatusesChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.FundingStatus"
+                                        Style="flex:1; min-width:0" />
+                    <MudTooltip Text="Negate: find features without Funding Status or exclude selected">
+                        <MudCheckBox T="bool" Value="Filter.FundingStatusNot"
+                                     ValueChanged="@((bool v) => OnNotChanged(x => Filter.FundingStatusNot = x, v))"
+                                     Label="Not" Dense Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+            </MudItem>
+
+            @if (ShowHygiene)
+            {
+                <MudItem xs="12" md="4">
+                    <MudSelect T="string" Label="@PlanningDisplayNames.Hygiene"
+                               Value="Filter.Hygiene" ValueChanged="OnHygieneChanged"
+                               Dense Variant="Variant.Outlined" Clearable
+                               AnchorOrigin="Origin.BottomCenter">
+                        <MudSelectItem T="string" Value="@FeatureCardFilter.HygieneHealthy">Healthy</MudSelectItem>
+                        <MudSelectItem T="string" Value="@FeatureCardFilter.HygieneUnhealthy">Not healthy</MudSelectItem>
+                        <MudSelectItem T="string" Value="@FeatureCardFilter.HygieneUnchecked">Not checked (ART has no rules)</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+            }
+
+            <MudItem xs="12" md="4" Class="d-flex align-end justify-end">
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           Disabled="@(!Filter.IsActive)"
+                           OnClick="ClearAsync">
+                    @PlanningDisplayNames.ClearFilters
+                </MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+</MudCollapse>
+
+@code {
+    [Parameter] public IReadOnlyList<IFeatureFilterRow> Features { get; set; } = Array.Empty<IFeatureFilterRow>();
+
+    [Parameter] public FeatureCardFilter Filter { get; set; } = new();
+
+    [Parameter] public EventCallback FilterChanged { get; set; }
+
+    [Parameter] public string? Title { get; set; }
+
+    [Parameter] public bool ShowHygiene { get; set; }
+
+    [Parameter] public RenderFragment? Actions { get; set; }
+
+    private bool _open;
+
+    private List<FeatureFilterRef> _strategicObjectives = new();
+    private List<FeatureFilterRef> _portfolioEpics = new();
+    private List<FeatureFilterRef> _businessOutcomes = new();
+    private List<string> _strategicObjectiveIds = new();
+    private List<string> _portfolioEpicIds = new();
+    private List<string> _businessOutcomeIds = new();
+    private List<string> _statuses = new();
+    private List<string> _labels = new();
+    private List<string> _requirementStatuses = new();
+    private List<string> _technicalApprovals = new();
+    private List<string> _fundingStatuses = new();
+
+    protected override void OnParametersSet()
+    {
+        _strategicObjectives = DistinctRefs(Features.SelectMany(f => f.StrategicObjectives));
+        _portfolioEpics = DistinctRefs(Features
+            .Where(f => !string.IsNullOrWhiteSpace(f.PortfolioEpicJiraId))
+            .Select(f => new FeatureFilterRef(f.PortfolioEpicJiraId!, f.PortfolioEpicSummary)));
+        _businessOutcomes = DistinctRefs(Features
+            .Where(f => !string.IsNullOrWhiteSpace(f.BusinessOutcomeJiraId))
+            .Select(f => new FeatureFilterRef(f.BusinessOutcomeJiraId!, f.BusinessOutcomeSummary)));
+
+        _strategicObjectiveIds = _strategicObjectives.Select(r => r.JiraId).ToList();
+        _portfolioEpicIds = _portfolioEpics.Select(r => r.JiraId).ToList();
+        _businessOutcomeIds = _businessOutcomes.Select(r => r.JiraId).ToList();
+
+        _statuses = DistinctText(Features.Select(f => f.Status));
+        _requirementStatuses = DistinctText(Features.Select(f => f.RequirementStatus));
+        _technicalApprovals = DistinctText(Features.Select(f => f.TechnicalApproval));
+        _fundingStatuses = DistinctText(Features.Select(f => f.FundingStatus));
+        _labels = DistinctText(Features.SelectMany(f => FeatureCardFilter.SplitLabels(f.Labels)));
+    }
+
+    private static List<FeatureFilterRef> DistinctRefs(IEnumerable<FeatureFilterRef> refs) =>
+        refs.DistinctBy(r => r.JiraId, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(r => r.JiraId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<string> DistinctText(IEnumerable<string?> values) =>
+        values.Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(v => v, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static string RefText(List<FeatureFilterRef> refs, string? jiraId)
+    {
+        if (string.IsNullOrEmpty(jiraId))
+        {
+            return string.Empty;
+        }
+        var match = refs.FirstOrDefault(r => string.Equals(r.JiraId, jiraId, StringComparison.OrdinalIgnoreCase));
+        return string.IsNullOrWhiteSpace(match?.Summary) ? jiraId : $"{jiraId} — {match.Summary}";
+    }
+
+    private Task OnSearchChanged(string? value)
+    {
+        Filter.Search = value;
+        return NotifyAsync();
+    }
+
+    private Task OnStrategicObjectivesChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.StrategicObjectives = values;
+        return NotifyAsync();
+    }
+
+    private Task OnPortfolioEpicsChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.PortfolioEpics = values;
+        return NotifyAsync();
+    }
+
+    private Task OnBusinessOutcomesChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.BusinessOutcomes = values;
+        return NotifyAsync();
+    }
+
+    private Task OnStatusesChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.Statuses = values;
+        return NotifyAsync();
+    }
+
+    private Task OnLabelsChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.Labels = values;
+        return NotifyAsync();
+    }
+
+    private Task OnRequirementStatusesChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.RequirementStatuses = values;
+        return NotifyAsync();
+    }
+
+    private Task OnTechnicalApprovalsChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.TechnicalApprovals = values;
+        return NotifyAsync();
+    }
+
+    private Task OnFundingStatusesChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.FundingStatuses = values;
+        return NotifyAsync();
+    }
+
+    private Task OnHygieneChanged(string? value)
+    {
+        Filter.Hygiene = value;
+        return NotifyAsync();
+    }
+
+    private Task OnNotChanged(Action<bool> setter, bool value)
+    {
+        setter(value);
+        return NotifyAsync();
+    }
+
+    private Task ClearAsync()
+    {
+        Filter.Clear();
+        return NotifyAsync();
+    }
+
+    private Task NotifyAsync() => FilterChanged.InvokeAsync();
+}
