@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <SonarQubeExclude>true</SonarQubeExclude>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="8.0.*" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.24">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="MudBlazor" Version="9.0.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
+    <PackageReference Include="System.DirectoryServices.AccountManagement" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Estimation.Core\Estimation.Core.csproj" />
+    <ProjectReference Include="..\Estimation.Shared.UI\Estimation.Shared.UI.csproj" />
+    <ProjectReference Include="..\Estimation.ArtPlanning\Estimation.ArtPlanning.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <SonarQubeSetting Include="sonar.coverage.exclusions">
+      <Value>**/*.razor,**/wwwroot/**/*,**/wwwroot/js/piDragDrop.min.js</Value>
+    </SonarQubeSetting>
+    <SonarQubeSetting Include="sonar.exclusions">
+      <Value>**/wwwroot/**/*</Value>
+    </SonarQubeSetting>
+  </ItemGroup>
+
+  <!-- The project-level SonarQubeExclude above only takes the C# out of analysis;
+       the JS/CSS analysers still index static assets. Dropping the metadata on the
+       items themselves keeps wwwroot out of the scanner's file list as well. -->
+  <ItemGroup>
+    <Content Update="wwwroot\**\*">
+      <SonarQubeExclude>true</SonarQubeExclude>
+    </Content>
+    <None Update="wwwroot\**\*">
+      <SonarQubeExclude>true</SonarQubeExclude>
+    </None>
+  </ItemGroup>
+
+</Project>
