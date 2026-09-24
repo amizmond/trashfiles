@@ -1,0 +1,751 @@
+@inject IJiraIssueService JiraIssueService
+@inject IJiraHierarchySyncService HierarchySyncService
+@inject IModalDialogService MessageService
+@inject IConfiguration Configuration
+@inject IDbContextFactory<EstimationDbContext> DbFactory
+@inject ISnackbar Snackbar
+
+@using Estimation.Core
+@using Microsoft.EntityFrameworkCore
+@using Serilog
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.Train.Services
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.AccountTree" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Hierarchy Check</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <div style="min-width: 760px; max-height: 70vh; overflow-y: auto;">
+            @if (_loading)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" />
+                <MudText Class="mt-2 mud-text-secondary" Typo="Typo.body2">
+                    Loading hierarchies from Jira… (@_processedCount / @JiraIds.Count)
+                </MudText>
+            }
+            else if (!string.IsNullOrEmpty(_error))
+            {
+                <MudAlert Severity="Severity.Error">@_error</MudAlert>
+            }
+            else if (_featureHierarchies.Count == 0)
+            {
+                <MudText>No filtered features with a Jira ID.</MudText>
+            }
+            else
+            {
+                var hasIssues = _missingNodeCount > 0 || _mismatchCount > 0;
+                <MudAlert Severity="@(hasIssues ? Severity.Warning : Severity.Success)" Dense Class="mb-3">
+                    Analyzed <b>@_featureHierarchies.Count</b> feature(s) with hierarchies.
+                    @if (!hasIssues)
+                    {
+                        <span> Database matches Jira.</span>
+                    }
+                    else
+                    {
+                        @if (_missingNodeCount > 0)
+                        {
+                            <span> <b>@_missingNodeCount</b> issue(s) missing in DB.</span>
+                        }
+                        @if (_mismatchCount > 0)
+                        {
+                            <span> <b>@_mismatchCount</b> parent link(s) differ between Jira and DB.</span>
+                        }
+                    }
+                </MudAlert>
+
+                @for (var fi = 0; fi < _featureHierarchies.Count; fi++)
+                {
+                    var fh = _featureHierarchies[fi];
+                    var missingInChain = fh.Nodes.Count(n => IsSupportedMissing(n));
+                    var mismatchInChain = fh.Nodes.Count(n => HasParentMismatchForNode(n));
+                    var chainHasIssue = missingInChain > 0 || mismatchInChain > 0;
+                    <MudPaper Elevation="1" Class="pa-3 mb-3 rounded-lg">
+                        <div class="d-flex align-center gap-2 mb-2">
+                            <MudText Typo="Typo.subtitle1">
+                                Feature: <strong>@fh.RootJiraId</strong>
+                            </MudText>
+                            @if (fh.Nodes.Count > 0 && !chainHasIssue)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled"
+                                         Icon="@Icons.Material.Filled.CheckCircle">
+                                    OK
+                                </MudChip>
+                            }
+                            else if (fh.Nodes.Count > 0)
+                            {
+                                @if (missingInChain > 0)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled"
+                                             Icon="@Icons.Material.Filled.Cancel">
+                                        @missingInChain missing
+                                    </MudChip>
+                                }
+                                @if (mismatchInChain > 0)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                                             Icon="@Icons.Material.Filled.Warning">
+                                        @mismatchInChain mismatch
+                                    </MudChip>
+                                }
+                            }
+                        </div>
+                        @if (fh.Error is not null)
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense>@fh.Error</MudAlert>
+                        }
+                        else if (fh.Nodes.Count == 0)
+                        {
+                            <MudText Class="mud-text-secondary">No nodes loaded.</MudText>
+                        }
+                        else
+                        {
+                            <div class="d-flex flex-column">
+                                @for (var i = 0; i < fh.Nodes.Count; i++)
+                                {
+                                    var node = fh.Nodes[i];
+                                    var indent = i * 28;
+                                    var isCurrent = string.Equals(node.Key, fh.RootJiraId, StringComparison.OrdinalIgnoreCase);
+                                    var synced = _syncedJiraIds.Contains(node.Key);
+                                    var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+                                    var url = (Configuration["JiraTaskUrl"] ?? string.Empty) + node.Key;
+                                    var typeLabel = string.IsNullOrWhiteSpace(node.IssueType) ? "Unknown" : node.IssueType!;
+                                    var unsupportedReason = GetUnsupportedReason(node, fh.ProjectKey);
+                                    var artLinkNote = synced ? null : GetArtLinkNote(node, fh.ProjectKey);
+                                    var mismatch = synced && entityType is not null
+                                        && HasParentMismatch(node, entityType.Value);
+                                    var dbParents = _dbParentByKey.TryGetValue(node.Key, out var p) ? p : null;
+                                    <div class="d-flex align-center gap-2 py-1 flex-wrap" style="padding-left:@(indent)px;">
+                                        @if (i > 0)
+                                        {
+                                            <MudIcon Icon="@Icons.Material.Filled.SubdirectoryArrowRight"
+                                                     Size="Size.Small"
+                                                     Class="mud-text-secondary" />
+                                        }
+                                        <MudChip T="string"
+                                                 Size="Size.Small"
+                                                 Variant="Variant.Filled"
+                                                 Color="@GetIssueTypeColor(node.IssueType)"
+                                                 Icon="@GetIssueTypeIcon(node.IssueType)">
+                                            @typeLabel
+                                        </MudChip>
+                                        <a href="@url" target="_blank" rel="noopener noreferrer"
+                                           style="text-decoration:none; color: var(--mud-palette-primary); @(isCurrent ? "font-weight:600;" : "")">
+                                            @node.Key
+                                        </a>
+                                        <a href="@url" target="_blank" rel="noopener noreferrer"
+                                           style="text-decoration:none; color: inherit; @(isCurrent ? "font-weight:600;" : "")">
+                                            @(string.IsNullOrEmpty(node.Summary) ? "(no summary)" : node.Summary)
+                                        </a>
+                                        @if (synced)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled"
+                                                     Icon="@Icons.Material.Filled.CheckCircle">
+                                                Synchronized
+                                            </MudChip>
+                                        }
+                                        else if (unsupportedReason is not null)
+                                        {
+                                            <MudTooltip Text="@unsupportedReason">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Filled"
+                                                         Icon="@Icons.Material.Filled.HelpOutline">
+                                                    Unsupported
+                                                </MudChip>
+                                            </MudTooltip>
+                                        }
+                                        else
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled"
+                                                     Icon="@Icons.Material.Filled.Cancel">
+                                                Not Synchronized
+                                            </MudChip>
+                                        }
+                                        @if (mismatch)
+                                        {
+                                            <MudTooltip Text="@FormatMismatchTooltip(node, dbParents)">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                                                         Icon="@Icons.Material.Filled.Warning">
+                                                    Parent mismatch
+                                                </MudChip>
+                                            </MudTooltip>
+                                        }
+                                        @if (isCurrent)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Text">Current</MudChip>
+                                        }
+                                    </div>
+                                    @if (mismatch)
+                                    {
+                                        <div class="mud-text-secondary" style="font-size:0.8rem; padding-left:@(indent + 28)px;">
+                                            <span>Jira parent: <b>@(node.ParentLink ?? "(none)")</b></span>
+                                            <span class="ml-3">DB parent: <b>@FormatDbParents(dbParents)</b></span>
+                                        </div>
+                                    }
+                                    @if (artLinkNote is not null)
+                                    {
+                                        <div class="mud-text-secondary" style="font-size:0.8rem; padding-left:@(indent + 28)px;">
+                                            @artLinkNote
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        }
+                        @if (fh.Truncated)
+                        {
+                            <MudAlert Severity="Severity.Warning" Dense Class="mt-2">
+                                Hierarchy traversal stopped after @MaxDepth levels.
+                            </MudAlert>
+                        }
+                    </MudPaper>
+                }
+            }
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close" Disabled="_fixing">Close</MudButton>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Build"
+                   Disabled="@(_loading || _fixing || (_missingNodeCount == 0 && _mismatchCount == 0))"
+                   OnClick="FixHierarchyAsync">
+            @if (_fixing)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate Class="mr-2" />
+                <span>Fixing…</span>
+            }
+            else
+            {
+                <span>Fix Hierarchy</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private const int MaxDepth = 25;
+
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public List<string> JiraIds { get; set; } = new();
+    [Parameter] public string UserName { get; set; } = string.Empty;
+
+    private bool _loading = true;
+    private bool _fixing;
+    private int _processedCount;
+    private string? _error;
+    private List<FeatureHierarchy> _featureHierarchies = new();
+    private HashSet<string> _syncedJiraIds = new(StringComparer.OrdinalIgnoreCase);
+    private ArtMatcher _artMatcher = ArtMatcher.Empty;
+    private Dictionary<string, IReadOnlyList<string>> _dbParentByKey = new(StringComparer.OrdinalIgnoreCase);
+    private int _missingNodeCount;
+    private int _mismatchCount;
+    private bool _anyFixed;
+
+    private class FeatureHierarchy
+    {
+        public string RootJiraId { get; init; } = string.Empty;
+        public string? ProjectKey { get; init; }
+        public List<JiraIssueResponse> Nodes { get; set; } = new();
+        public bool Truncated { get; set; }
+        public string? Error { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (JiraIds.Count == 0 || string.IsNullOrWhiteSpace(UserName))
+        {
+            _error = "Missing Jira IDs or user.";
+            _loading = false;
+            return;
+        }
+
+        await LoadHierarchiesAsync();
+    }
+
+    private async Task LoadHierarchiesAsync()
+    {
+        _loading = true;
+        _processedCount = 0;
+        _error = null;
+        _featureHierarchies = new();
+
+        try
+        {
+            var issueCache = new Dictionary<string, JiraIssueResponse?>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var jiraId in JiraIds)
+            {
+                var fh = new FeatureHierarchy
+                {
+                    RootJiraId = jiraId,
+                    ProjectKey = ExtractProjectKey(jiraId)
+                };
+
+                try
+                {
+                    var chain = new List<JiraIssueResponse>();
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    string? key = jiraId;
+
+                    while (!string.IsNullOrWhiteSpace(key) && seen.Add(key))
+                    {
+                        if (chain.Count >= MaxDepth)
+                        {
+                            fh.Truncated = true;
+                            break;
+                        }
+
+                        if (!issueCache.TryGetValue(key, out var issue))
+                        {
+                            issue = await JiraIssueService.GetIssueAsync(UserName, key);
+                            issueCache[key] = issue;
+                        }
+
+                        if (issue is null)
+                        {
+                            break;
+                        }
+
+                        chain.Add(issue);
+                        key = issue.ParentLink;
+                    }
+
+                    chain.Reverse();
+                    fh.Nodes = chain;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Failed to load hierarchy for {Key}", jiraId);
+                    fh.Error = $"Failed to load hierarchy: {ex.Message}";
+                }
+
+                _featureHierarchies.Add(fh);
+                _processedCount++;
+                StateHasChanged();
+            }
+
+            await LoadSyncStatusAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load hierarchies");
+            _error = $"Failed to load hierarchies: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string? ExtractProjectKey(string jiraId)
+    {
+        if (string.IsNullOrWhiteSpace(jiraId))
+        {
+            return null;
+        }
+        var dashIndex = jiraId.IndexOf('-');
+        return dashIndex > 0 ? jiraId[..dashIndex] : null;
+    }
+
+    private async Task LoadSyncStatusAsync()
+    {
+        var keys = _featureHierarchies
+            .SelectMany(fh => fh.Nodes.Select(n => n.Key))
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _artMatcher = await ArtMatcher.LoadAsync(db);
+
+        if (keys.Count == 0)
+        {
+            _syncedJiraIds = new(StringComparer.OrdinalIgnoreCase);
+            _dbParentByKey = new(StringComparer.OrdinalIgnoreCase);
+            RecomputeCounts();
+            return;
+        }
+
+        var featureKeys = await db.Features
+            .Where(f => f.JiraId != null && keys.Contains(f.JiraId))
+            .Select(f => f.JiraId!)
+            .ToListAsync();
+        var boKeys = await db.BusinessOutcomes
+            .Where(b => b.JiraId != null && keys.Contains(b.JiraId))
+            .Select(b => b.JiraId!)
+            .ToListAsync();
+        var peKeys = await db.PortfolioEpics
+            .Where(p => p.JiraId != null && keys.Contains(p.JiraId))
+            .Select(p => p.JiraId!)
+            .ToListAsync();
+        var soKeys = await db.StrategicObjectives
+            .Where(s => s.JiraId != null && keys.Contains(s.JiraId))
+            .Select(s => s.JiraId!)
+            .ToListAsync();
+
+        _syncedJiraIds = new HashSet<string>(
+            featureKeys.Concat(boKeys).Concat(peKeys).Concat(soKeys),
+            StringComparer.OrdinalIgnoreCase);
+
+        await LoadParentInfoAsync();
+        RecomputeCounts();
+    }
+
+    private async Task LoadParentInfoAsync()
+    {
+        var pairs = new List<(HierarchyEntityType, string)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var fh in _featureHierarchies)
+        {
+            foreach (var node in fh.Nodes)
+            {
+                if (!_syncedJiraIds.Contains(node.Key) || !seen.Add(node.Key))
+                {
+                    continue;
+                }
+                var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+                if (entityType is null || entityType == HierarchyEntityType.StrategicObjective)
+                {
+                    continue;
+                }
+                pairs.Add((entityType.Value, node.Key));
+            }
+        }
+
+        if (pairs.Count == 0)
+        {
+            _dbParentByKey = new(StringComparer.OrdinalIgnoreCase);
+            return;
+        }
+
+        var infos = await HierarchySyncService.GetParentInfoAsync(pairs);
+        _dbParentByKey = infos.ToDictionary(
+            i => i.ChildJiraKey,
+            i => i.ParentJiraKeys,
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void RecomputeCounts()
+    {
+        var missing = 0;
+        var mismatch = 0;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var fh in _featureHierarchies)
+        {
+            foreach (var node in fh.Nodes)
+            {
+                if (!seen.Add(node.Key))
+                {
+                    continue;
+                }
+                var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+                if (entityType is null)
+                {
+                    continue;
+                }
+                if (!_syncedJiraIds.Contains(node.Key))
+                {
+                    if (GetUnsupportedReason(node, fh.ProjectKey) is null)
+                    {
+                        missing++;
+                    }
+                    continue;
+                }
+                if (HasParentMismatch(node, entityType.Value))
+                {
+                    mismatch++;
+                }
+            }
+        }
+        _missingNodeCount = missing;
+        _mismatchCount = mismatch;
+    }
+
+    private bool IsSupportedMissing(JiraIssueResponse node)
+    {
+        if (_syncedJiraIds.Contains(node.Key))
+        {
+            return false;
+        }
+        var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+        return entityType is not null;
+    }
+
+    private bool HasParentMismatchForNode(JiraIssueResponse node)
+    {
+        if (!_syncedJiraIds.Contains(node.Key))
+        {
+            return false;
+        }
+        var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+        if (entityType is null)
+        {
+            return false;
+        }
+        return HasParentMismatch(node, entityType.Value);
+    }
+
+    private bool HasParentMismatch(JiraIssueResponse node, HierarchyEntityType entityType)
+    {
+        if (entityType == HierarchyEntityType.StrategicObjective)
+        {
+            return false;
+        }
+        if (!_dbParentByKey.TryGetValue(node.Key, out var dbParents))
+        {
+            return false;
+        }
+
+        var jiraParent = node.ParentLink;
+
+        if (entityType == HierarchyEntityType.PortfolioEpic)
+        {
+            if (string.IsNullOrEmpty(jiraParent))
+            {
+                return dbParents.Count > 0;
+            }
+            return dbParents.Count != 1
+                || !string.Equals(dbParents[0], jiraParent, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var dbParent = dbParents.FirstOrDefault();
+        if (string.IsNullOrEmpty(jiraParent))
+        {
+            return !string.IsNullOrEmpty(dbParent);
+        }
+        return !string.Equals(dbParent, jiraParent, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatDbParents(IReadOnlyList<string>? dbParents)
+    {
+        if (dbParents is null || dbParents.Count == 0)
+        {
+            return "(none)";
+        }
+        return string.Join(", ", dbParents);
+    }
+
+    private string FormatMismatchTooltip(JiraIssueResponse node, IReadOnlyList<string>? dbParents)
+    {
+        return $"Jira parent: {node.ParentLink ?? "(none)"} — DB parent: {FormatDbParents(dbParents)}";
+    }
+
+    private string? GetUnsupportedReason(JiraIssueResponse node, string? projectKey)
+    {
+        var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+        if (entityType is null)
+        {
+            return $"Issue type '{node.IssueType ?? "Unknown"}' is not supported for sync.";
+        }
+        if (entityType == HierarchyEntityType.StrategicObjective && _artMatcher.ArtsForKey(projectKey).Count == 0)
+        {
+            return "Cannot sync Strategic Objective: no ART uses this Jira key.";
+        }
+        return null;
+    }
+
+    private string? GetArtLinkNote(JiraIssueResponse node, string? projectKey)
+    {
+        return IJiraHierarchySyncService.MapEntityType(node.IssueType) == HierarchyEntityType.StrategicObjective
+               && _artMatcher.IsSharedKey(projectKey)
+            ? $"Jira key {projectKey} is used by several ARTs, so this Strategic Objective is not linked to one ART; it takes its ARTs from its features."
+            : null;
+    }
+
+    private async Task FixHierarchyAsync()
+    {
+        if (_missingNodeCount == 0 && _mismatchCount == 0)
+        {
+            return;
+        }
+
+        var parts = new List<string>();
+        if (_missingNodeCount > 0)
+        {
+            parts.Add($"sync {_missingNodeCount} missing issue(s)");
+        }
+        if (_mismatchCount > 0)
+        {
+            parts.Add($"fix {_mismatchCount} parent link(s)");
+        }
+        var confirmed = await MessageService.Confirm(
+            $"Fix Hierarchy will {string.Join(" and ", parts)} so the database matches Jira. Continue?",
+            "Confirm Fix Hierarchy",
+            "Fix");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _fixing = true;
+        StateHasChanged();
+
+        var created = 0;
+        var fixedParents = 0;
+        var skipped = 0;
+        var failed = 0;
+
+        try
+        {
+            foreach (var fh in _featureHierarchies)
+            {
+                if (fh.Nodes.Count == 0)
+                {
+                    continue;
+                }
+
+                for (var i = 0; i < fh.Nodes.Count; i++)
+                {
+                    var node = fh.Nodes[i];
+                    if (_syncedJiraIds.Contains(node.Key))
+                    {
+                        continue;
+                    }
+                    if (GetUnsupportedReason(node, fh.ProjectKey) is not null)
+                    {
+                        skipped++;
+                        continue;
+                    }
+                    try
+                    {
+                        var childInChain = i + 1 < fh.Nodes.Count ? fh.Nodes[i + 1] : null;
+                        await HierarchySyncService.SyncSingleAsync(node, fh.ProjectKey, childInChain);
+                        _syncedJiraIds.Add(node.Key);
+                        created++;
+                        _anyFixed = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Failed to sync Jira issue {Key}", node.Key);
+                        failed++;
+                    }
+                }
+            }
+
+            await LoadParentInfoAsync();
+
+            var fixedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var fh in _featureHierarchies)
+            {
+                foreach (var node in fh.Nodes)
+                {
+                    if (!fixedKeys.Add(node.Key))
+                    {
+                        continue;
+                    }
+                    var entityType = IJiraHierarchySyncService.MapEntityType(node.IssueType);
+                    if (entityType is null || entityType == HierarchyEntityType.StrategicObjective)
+                    {
+                        continue;
+                    }
+                    if (!_syncedJiraIds.Contains(node.Key))
+                    {
+                        continue;
+                    }
+                    if (!HasParentMismatch(node, entityType.Value))
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        var fixResult = await HierarchySyncService.FixParentLinkAsync(
+                            entityType.Value, node.Key, node.ParentLink);
+                        if (fixResult.Changed)
+                        {
+                            fixedParents++;
+                            _anyFixed = true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "Failed to fix parent link for {Key}", node.Key);
+                        failed++;
+                    }
+                }
+            }
+
+            await LoadSyncStatusAsync();
+
+            var summary = new List<string>();
+            if (created > 0)
+            {
+                summary.Add($"{created} synced");
+            }
+            if (fixedParents > 0)
+            {
+                summary.Add($"{fixedParents} parent(s) fixed");
+            }
+            if (skipped > 0)
+            {
+                summary.Add($"{skipped} skipped");
+            }
+            if (failed > 0)
+            {
+                summary.Add($"{failed} failed");
+            }
+            if (summary.Count == 0)
+            {
+                summary.Add("no changes");
+            }
+
+            var severity = failed > 0 ? Severity.Warning : Severity.Success;
+            Snackbar.Add($"Fix Hierarchy: {string.Join(", ", summary)}.", severity);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Fix hierarchy failed");
+            await MessageService.Error($"Fix Hierarchy failed: {ex.Message}");
+        }
+        finally
+        {
+            _fixing = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string GetIssueTypeIcon(string? type)
+    {
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            return Icons.Material.Filled.HelpOutline;
+        }
+        return type.Trim().ToLowerInvariant() switch
+        {
+            "epic" => Icons.Material.Filled.Bolt,
+            "feature" => Icons.Material.Filled.Stars,
+            "story" => Icons.Material.Filled.Bookmark,
+            "task" => Icons.Material.Filled.CheckBoxOutlineBlank,
+            "sub-task" => Icons.Material.Filled.SubdirectoryArrowRight,
+            "bug" => Icons.Material.Filled.BugReport,
+            _ => Icons.Material.Filled.Circle,
+        };
+    }
+
+    private static Color GetIssueTypeColor(string? type)
+    {
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            return Color.Default;
+        }
+        return type.Trim().ToLowerInvariant() switch
+        {
+            "epic" => Color.Secondary,
+            "feature" => Color.Primary,
+            "story" => Color.Success,
+            "task" => Color.Info,
+            "sub-task" => Color.Info,
+            "bug" => Color.Error,
+            _ => Color.Default,
+        };
+    }
+
+    private void Close()
+    {
+        MudDialog.Close(DialogResult.Ok(_anyFixed));
+    }
+}

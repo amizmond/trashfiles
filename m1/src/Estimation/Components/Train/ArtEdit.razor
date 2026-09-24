@@ -1,0 +1,1055 @@
+@attribute [Route(RoutingPath.CapitalProjectsNew)]
+@attribute [Route(RoutingPath.CapitalProjectsEdit)]
+
+@inject IArtService ProjectService
+@inject IArtSprintService ArtSprintService
+@inject ITeamService TeamService
+@inject IDepartmentService DepartmentService
+@inject IPiService PiService
+@inject IHolidayExportService HolidayExportService
+@inject IBrowserDownloadService DownloadService
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject IJSRuntime JS
+@inject IConfiguration Configuration
+@inject IPermissionGuard PermissionGuard
+
+@using System.Net
+@using Serilog
+@using Estimation.Core.Calendar.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="CapitalProjects" RequireEdit="true">
+<PageTitle>@(_isNew ? "New ART Level" : _model.Name)</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Navigation.NavigateTo(ListUrl))" />
+            <MudText Typo="Typo.h5">@(_isNew ? "New ART Level" : _model.Name)</MudText>
+            @if (!_isNew && !_loading)
+            {
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.EventBusy"
+                           Disabled="_exporting"
+                           OnClick="OpenExportHolidaysDialogAsync">
+                    Export holidays
+                </MudButton>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_saving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+            <div style="@(_saving ? "pointer-events:none;opacity:0.6" : "")">
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">@PlanningDisplayNames.Details</MudText>
+
+                        <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                            <DataAnnotationsValidator />
+
+                            <MudTextField @bind-Value="_model.Name" Label="@($"{PlanningDisplayNames.Name} *")" Variant="Variant.Outlined" For="() => _model.Name" Class="mb-3" />
+
+                            <MudTextField @bind-Value="_model.Description" Label="@PlanningDisplayNames.Description" Variant="Variant.Outlined" Lines="3" Class="mb-3" />
+
+                            <SearchableDropdown T="int?"
+                                                Items="_departmentIds"
+                                                Value="_model.DepartmentId"
+                                                ValueChanged="@(v => _model.DepartmentId = v)"
+                                                ToStringFunc="@DepartmentName"
+                                                Label="@PlanningDisplayNames.Department"
+                                                Clearable="true"
+                                                Class="mb-4" />
+
+                            @if (!string.IsNullOrEmpty(_error))
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mb-3">@_error</MudAlert>
+                            }
+                            <div class="d-flex gap-2">
+                                <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="_saving" StartIcon="@Icons.Material.Filled.Save">
+                                    @(_isNew ? "Create" : "Save")
+                                </MudButton>
+
+                                @if (!_isNew)
+                                {
+                                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                               OnClick="ConfirmDeleteAsync" Class="ml-auto"
+                                               StartIcon="@Icons.Material.Filled.Delete">Delete</MudButton>
+                                }
+
+                            </div>
+                        </EditForm>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.JiraKeys</MudText>
+                            <MudSpacer />
+                            @if (!_isNew && _canEditKeys)
+                            {
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           OnClick="@(() => OpenKeyDialogAsync(null))">
+                                    Add Jira key
+                                </MudButton>
+                            }
+                        </MudToolBar>
+                        @if (_isNew)
+                        {
+                            <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                                Save the record first to add Jira keys.
+                            </MudText>
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block px-4 pb-2">
+                                Features on these Jira projects belong to this ART. Components and labels narrow a key:
+                                a feature then needs one listed component and one listed label.
+                            </MudText>
+                            <MudDataGrid T="ArtJiraKey" Items="_model.JiraKeys"
+                                         Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                                <Columns>
+                                    <TemplateColumn Title="Jira key" Sortable="true" SortBy="x => x.JiraKey">
+                                        <CellTemplate>
+                                            <div class="d-flex align-center gap-1">
+                                                @context.Item.JiraKey
+                                                @if (ConflictText(context.Item) is { } conflict)
+                                                {
+                                                    <MudTooltip Text="@conflict">
+                                                        <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" Size="Size.Small" />
+                                                    </MudTooltip>
+                                                }
+                                            </div>
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                    <TemplateColumn Title="@PlanningDisplayNames.Components" Sortable="false">
+                                        <CellTemplate>@FilterValues(context.Item.Components, "Any component")</CellTemplate>
+                                    </TemplateColumn>
+                                    <TemplateColumn Title="@PlanningDisplayNames.Labels" Sortable="false">
+                                        <CellTemplate>@FilterValues(context.Item.Labels, "Any label")</CellTemplate>
+                                    </TemplateColumn>
+                                    <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false"
+                                                    Hidden="!_canEditKeys">
+                                        <CellTemplate>
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                                           Size="Size.Small"
+                                                           Color="Color.Secondary"
+                                                           OnClick="@(() => OpenKeyDialogAsync(context.Item))" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="@(() => RemoveKeyAsync(context.Item))" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                                <NoRecordsContent>
+                                    <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No Jira keys yet.</MudText>
+                                </NoRecordsContent>
+                                <PagerContent>
+                                    <MudDataGridPager T="ArtJiraKey" PageSizeOptions="new[] { 10, 25, 50 }" />
+                                </PagerContent>
+                            </MudDataGrid>
+                            @if (!_canEditKeys)
+                            {
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block pa-4">@KeysReadOnlyMessage</MudText>
+                            }
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">Sprints</MudText>
+                            <MudSpacer />
+                            @if (!_isNew)
+                            {
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           OnClick="@(() => OpenSprintDialogAsync(null))">
+                                    Add Sprint
+                                </MudButton>
+                            }
+                        </MudToolBar>
+                        @if (_isNew)
+                        {
+                            <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                                Save the record first to add sprints.
+                            </MudText>
+                        }
+                        else
+                        {
+                            <MudDataGrid T="ArtSprint" Items="_sprints"
+                                         Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                                <Columns>
+                                    <PropertyColumn Property="x => x.Name" Title="Sprint Name" Sortable="true" />
+                                    <PropertyColumn Property="x => x.StartDate" Title="Dev start" Format="yyyy-MM-dd" Sortable="true" />
+                                    <PropertyColumn Property="x => x.EndDate" Title="Dev end" Format="yyyy-MM-dd" Sortable="true" />
+                                    <PropertyColumn Property="x => x.UatStart" Title="UAT start" Format="yyyy-MM-dd" Sortable="true" />
+                                    <PropertyColumn Property="x => x.UatEnd" Title="UAT end" Format="yyyy-MM-dd" Sortable="true" />
+                                    <PropertyColumn Property="x => x.SignOffDate" Title="Sign-off" Format="yyyy-MM-dd" Sortable="true" />
+                                    <PropertyColumn Property="x => x.ReleaseDate" Title="Release Date" Format="yyyy-MM-dd" Sortable="true" />
+                                    <TemplateColumn Title="PI" Sortable="false">
+                                        <CellTemplate>@(context.Item.Pi?.Name ?? "—")</CellTemplate>
+                                    </TemplateColumn>
+                                    <PropertyColumn Property="x => x.FixVersion" Title="Fix version" Sortable="true" />
+                                    <TemplateColumn Title="IP sprint" Sortable="false">
+                                        <CellTemplate>
+                                            @if (context.Item.IsIpSprint)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">IP</MudChip>
+                                            }
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                    <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                        <CellTemplate>
+                                            <MudIconButton Icon="@Icons.Material.Filled.Edit"
+                                                           Size="Size.Small"
+                                                           Color="Color.Secondary"
+                                                           OnClick="@(() => OpenSprintDialogAsync(context.Item))" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="@(() => DeleteSprintAsync(context.Item))" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                                <NoRecordsContent>
+                                    <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No sprints yet.</MudText>
+                                </NoRecordsContent>
+                                <PagerContent>
+                                    <MudDataGridPager T="ArtSprint" PageSizeOptions="new[] { 10, 25, 50 }" />
+                                </PagerContent>
+                            </MudDataGrid>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.Teams</MudText>
+                            <MudSpacer />
+                            @if (!_isNew)
+                            {
+                                <SearchableDropdown T="int?"
+                                                    Items="_availableTeamIds"
+                                                    Value="_selectedTeamId"
+                                                    ValueChanged="@(v => _selectedTeamId = v)"
+                                                    ToStringFunc="@TeamName"
+                                                    Label="Select team"
+                                                    Margin="Margin.Dense"
+                                                    Clearable="true"
+                                                    Style="min-width:140px;" />
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           Size="Size.Small"
+                                           StartIcon="@Icons.Material.Filled.Add"
+                                           OnClick="AddTeamAsync"
+                                           Disabled="_selectedTeamId is null">
+                                    Add
+                                </MudButton>
+                            }
+                        </MudToolBar>
+                        @if (_isNew)
+                        {
+                            <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">
+                                Save the record first to assign teams.
+                            </MudText>
+                        }
+                        else
+                        {
+                            <MudDataGrid T="ArtTeam" Items="_model.CapitalProjectTeams"
+                                         Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                                <Columns>
+                                    <PropertyColumn Property="x => x.Team.Name" Title="@PlanningDisplayNames.Name" Sortable="true" />
+                                    <PropertyColumn Property="x => x.Team.FullName" Title="@PlanningDisplayNames.FullName" Sortable="true" />
+                                    <PropertyColumn Property="x => x.Team.OptionalTeamTag" Title="@PlanningDisplayNames.Tag" Sortable="true" />
+                                    <PropertyColumn Property="x => x.Team.Description" Title="@PlanningDisplayNames.Description" Sortable="false" />
+                                    <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                        <CellTemplate>
+                                            <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                           Size="Size.Small"
+                                                           Color="Color.Primary"
+                                                           OnClick="@(() => OpenInNewTab($"{RoutingPath.Teams}/{context.Item.TeamId}"))" />
+                                            <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                           Size="Size.Small"
+                                                           Color="Color.Error"
+                                                           OnClick="() => RemoveTeamAsync(context.Item.TeamId)" />
+                                        </CellTemplate>
+                                    </TemplateColumn>
+                                </Columns>
+                                <NoRecordsContent>
+                                    <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No teams assigned yet.</MudText>
+                                </NoRecordsContent>
+                                <PagerContent>
+                                    <MudDataGridPager T="ArtTeam" PageSizeOptions="new[] { 5, 10, 25 }" />
+                                </PagerContent>
+                            </MudDataGrid>
+                        }
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    private string ListUrl => ReturnUrl ?? RoutingPath.CapitalProjects;
+
+    private Art _model = new();
+    private List<Team> _allTeams = new();
+    private List<Department> _allDepartments = new();
+    private List<ArtSprint> _sprints = new();
+    private List<Pi> _allPis = new();
+    private bool _loading = true;
+    private bool _saving;
+    private bool _exporting;
+    private string? _error;
+    private int? _selectedTeamId;
+    private bool _isNew => Id is null or 0;
+
+    private List<Art> _allArts = new();
+    private ArtMatcher _storedMatcher = ArtMatcher.Empty;
+    private Dictionary<string, IReadOnlyList<IssueMatchFacts>> _facts = new(StringComparer.OrdinalIgnoreCase);
+    private bool _canEditKeys;
+    private const string KeysReadOnlyMessage = "Only administrators and users with General edit access can change Jira keys, components or labels.";
+
+    private IEnumerable<Team> _availableTeams => _allTeams.Where(t => _model.CapitalProjectTeams.All(cpt => cpt.TeamId != t.Id));
+
+    private IEnumerable<int?> _departmentIds => _allDepartments.Select(d => (int?)d.Id);
+    private IEnumerable<int?> _availableTeamIds => _availableTeams.Select(t => (int?)t.Id);
+
+    private string DepartmentName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+
+        return _allDepartments.FirstOrDefault(d => d.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    private string TeamName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+
+        return _allTeams.FirstOrDefault(t => t.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        var teamsTask = TeamService.GetAllNamesAsync();
+        var deptsTask = DepartmentService.GetAllAsync();
+        var artsTask = ProjectService.GetAllLightAsync();
+        await Task.WhenAll(teamsTask, deptsTask, artsTask);
+        _allTeams = await teamsTask;
+        _allDepartments = await deptsTask;
+        _allArts = await artsTask;
+        _canEditKeys = await PermissionGuard.CanEditAsync("CapitalProjects", TrainScope.AdminOrGeneralOnly);
+
+        if (!_isNew)
+        {
+            var existing = await ProjectService.GetByIdAsync(Id!.Value);
+            if (existing is null) { Navigation.NavigateTo(ListUrl); return; }
+
+            if (!await PermissionGuard.CanEditAsync("CapitalProjects", TrainScope.ForTrains([existing.Id])))
+            {
+                Snackbar.Add("You don't have edit permission for this Solution Train.", Severity.Warning);
+                Navigation.NavigateTo(ListUrl);
+                return;
+            }
+
+            _model = existing;
+            _allPis = await PiService.GetAllLightAsync();
+            _sprints = await ArtSprintService.GetForProjectAsync(_model.Id);
+        }
+        else
+        {
+            _model = new Art();
+        }
+
+        _model.JiraKeys = _model.JiraKeys.OrderBy(k => k.Id).ToList();
+        _storedMatcher = ArtMatcher.FromArts(_allArts);
+        _facts = new(StringComparer.OrdinalIgnoreCase);
+        _loading = false;
+    }
+
+    private string ArtName(int id) => _allArts.FirstOrDefault(a => a.Id == id)?.Name ?? $"#{id}";
+
+    private async Task ReloadArtsAsync()
+    {
+        _allArts = await ProjectService.GetAllLightAsync();
+        _storedMatcher = ArtMatcher.FromArts(_allArts);
+        if (_allArts.FirstOrDefault(a => a.Id == _model.Id) is { } stored)
+        {
+            _model.JiraKeys = stored.JiraKeys.OrderBy(k => k.Id).ToList();
+        }
+    }
+
+    private List<ArtKeyScope> StoredScopes() =>
+        _allArts
+            .SelectMany(a => a.JiraKeys.OrderBy(k => k.Id).Select(k => ArtKeyScope.Create(a.Id, k.JiraKey, k.Components, k.Labels)))
+            .ToList();
+
+    private bool IsThisArtsRow(ArtKeyScope scope, string key) =>
+        scope.ArtId == _model.Id && string.Equals(scope.JiraKey, key, StringComparison.OrdinalIgnoreCase);
+
+    private RenderFragment FilterValues(string? csv, string emptyText) => @<div class="d-flex flex-wrap gap-1">
+        @if (ListValues(csv) is { Count: > 0 } values)
+        {
+            @foreach (var value in values)
+            {
+                <MudChip T="string" Text="@value" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" />
+            }
+        }
+        else
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">@emptyText</MudText>
+        }
+    </div>;
+
+    private static IReadOnlyList<string> ListValues(string? csv) =>
+        string.IsNullOrWhiteSpace(csv) ? [] : csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private string? ConflictText(ArtJiraKey row)
+    {
+        var texts = _storedMatcher.ConflictsOf(_model.Id)
+            .Where(c => string.Equals(c.JiraKey, row.JiraKey, StringComparison.OrdinalIgnoreCase))
+            .Select(c => ConflictWarning(c, row.Description, c.ArtIds.Where(id => id != _model.Id).Select(ArtName).ToList()))
+            .ToList();
+        return texts.Count == 0 ? null : string.Join(" ", texts);
+    }
+
+    private async Task OpenKeyDialogAsync(ArtJiraKey? row)
+    {
+        if (!await PermissionGuard.CanEditAsync("CapitalProjects", TrainScope.AdminOrGeneralOnly))
+        {
+            Snackbar.Add(KeysReadOnlyMessage, Severity.Error);
+            return;
+        }
+
+        _facts.Clear();
+        await ReloadArtsAsync();
+
+        var isNew = row is null;
+        var parameters = new DialogParameters<ArtJiraKeyDialog>
+        {
+            { x => x.Row, new ArtJiraKey { JiraKey = row?.JiraKey ?? string.Empty, Components = row?.Components, Labels = row?.Labels } },
+            { x => x.IsNew, isNew },
+            { x => x.Preview, PreviewKeyAsync },
+            { x => x.Save, draft => SaveKeyAsync(draft, isNew) },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true };
+        var dialog = await DialogService.ShowAsync<ArtJiraKeyDialog>(isNew ? "Add Jira key" : "Edit Jira key", parameters, options);
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: ArtJiraKey saved })
+        {
+            Snackbar.Add(isNew ? $"Jira key {saved.JiraKey} added." : $"Jira key {saved.JiraKey} saved.", Severity.Success);
+        }
+    }
+
+    private async Task<string?> SaveKeyAsync(ArtJiraKey draft, bool isNew)
+    {
+        if (!await PermissionGuard.CanEditAsync("CapitalProjects", TrainScope.AdminOrGeneralOnly))
+        {
+            return KeysReadOnlyMessage;
+        }
+
+        try
+        {
+            _model.JiraKeys = (await ProjectService.SaveJiraKeyAsync(_model.Id, draft, isNew)).ToList();
+            await ReloadArtsAsync();
+            return null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex.Message;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save Jira key {Key} of ART {Id}", draft.JiraKey, _model.Id);
+            return $"Save failed: {ex.Message}";
+        }
+    }
+
+    private async Task RemoveKeyAsync(ArtJiraKey row)
+    {
+        if (!await PermissionGuard.CanEditAsync("CapitalProjects", TrainScope.AdminOrGeneralOnly))
+        {
+            Snackbar.Add(KeysReadOnlyMessage, Severity.Error);
+            return;
+        }
+
+        _facts.Clear();
+        await ReloadArtsAsync();
+
+        var question = WebUtility.HtmlEncode($"Remove Jira key {row.JiraKey} from {_model.Name}?");
+        if (await RemovalImpactAsync(row.JiraKey) is { } impact)
+        {
+            question += $"<br />{WebUtility.HtmlEncode(impact)}";
+        }
+        if (!await MessageService.Confirm(question))
+        {
+            return;
+        }
+
+        try
+        {
+            _model.JiraKeys = (await ProjectService.RemoveJiraKeyAsync(_model.Id, row.JiraKey)).ToList();
+            await ReloadArtsAsync();
+            Snackbar.Add($"Jira key {row.JiraKey} removed.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to remove Jira key {Key} from ART {Id}", row.JiraKey, _model.Id);
+            Snackbar.Add($"Remove failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task<string?> RemovalImpactAsync(string key)
+    {
+        var features = await FeaturesOnKeyAsync(key);
+        if (features is null)
+        {
+            return "The features on this key could not be counted.";
+        }
+
+        var stored = StoredScopes();
+        var saved = new ArtMatcher(stored);
+        var without = new ArtMatcher(stored.Where(s => !IsThisArtsRow(s, key)));
+        var leaving = features.Where(f => saved.Match(f).ArtId == _model.Id).Select(f => without.Match(f)).ToList();
+        if (leaving.Count == 0)
+        {
+            return null;
+        }
+
+        var destinations = leaving
+            .GroupBy(DestinationName)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => $"{g.Key} ({g.Count()})");
+        return $"{FeatureCount(leaving.Count)} on it {(leaving.Count == 1 ? "belongs" : "belong")} to this ART now and will go to {string.Join(", ", destinations)}.";
+    }
+
+    private string DestinationName(ArtMatch match) => match.Kind switch
+    {
+        ArtMatchKind.Matched => ArtName(match.ArtId!.Value),
+        ArtMatchKind.Unmatched => ArtHelper.UnassignedLabel,
+        ArtMatchKind.Ambiguous => ArtHelper.AmbiguousLabel,
+        _ => "no ART"
+    };
+
+    private async Task<IReadOnlyList<IssueMatchFacts>?> FeaturesOnKeyAsync(string key)
+    {
+        if (_facts.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        try
+        {
+            var features = (await ProjectService.GetFeatureMatchFactsAsync([key]))
+                .Where(f => string.Equals(JiraProjectKeys.Of(f.ProjectKey, f.JiraId), key, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            _facts[key] = features;
+            return features;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the features of Jira key {Key}", key);
+            return null;
+        }
+    }
+
+    private async Task<IReadOnlyList<ArtJiraKeyDialog.PreviewLine>> PreviewKeyAsync(ArtJiraKey draft)
+    {
+        var artId = _model.Id;
+        var key = JiraProjectKeys.Normalize(draft.JiraKey) ?? string.Empty;
+        var draftScope = ArtKeyScope.Create(artId, key, draft.Components, draft.Labels);
+        var stored = StoredScopes();
+        var saved = new ArtMatcher(stored);
+        var edited = new ArtMatcher(stored.Where(s => !IsThisArtsRow(s, key)).Append(draftScope));
+        var lines = new List<ArtJiraKeyDialog.PreviewLine>();
+
+        var storedScope = stored.FirstOrDefault(s => IsThisArtsRow(s, key));
+        var unchanged = storedScope is not null && storedScope.HasSameFilters(draftScope);
+        foreach (var conflict in edited.ConflictsOf(artId).Where(c => string.Equals(c.JiraKey, key, StringComparison.OrdinalIgnoreCase)))
+        {
+            var others = conflict.ArtIds.Where(id => id != artId).Select(ArtName).ToList();
+            var keyText = draftScope.ToString();
+            lines.Add(unchanged
+                ? new(ConflictWarning(conflict, keyText, others), Severity.Warning)
+                : new(DraftConflictError(conflict, keyText, others), Severity.Error));
+        }
+
+        var features = await FeaturesOnKeyAsync(key);
+        if (features is null)
+        {
+            lines.Add(new("Feature counts could not be loaded.", Severity.Warning));
+            return lines;
+        }
+        if (features.Count == 0)
+        {
+            lines.Add(new($"No features on {key} yet.", Severity.Normal));
+            return lines;
+        }
+
+        var toOthers = new Dictionary<int, int>();
+        int toThisArt = 0, unmatched = 0, ambiguous = 0, movedIn = 0, movedOut = 0;
+        foreach (var feature in features)
+        {
+            var match = edited.Match(feature);
+            switch (match.Kind)
+            {
+                case ArtMatchKind.Matched when match.ArtId == artId:
+                    toThisArt++;
+                    break;
+                case ArtMatchKind.Matched:
+                    toOthers[match.ArtId!.Value] = toOthers.GetValueOrDefault(match.ArtId.Value) + 1;
+                    break;
+                case ArtMatchKind.Unmatched:
+                    unmatched++;
+                    break;
+                case ArtMatchKind.Ambiguous:
+                    ambiguous++;
+                    break;
+            }
+
+            var before = saved.Match(feature).ArtId;
+            if (before != artId && match.ArtId == artId)
+            {
+                movedIn++;
+            }
+            else if (before == artId && match.ArtId != artId)
+            {
+                movedOut++;
+            }
+        }
+
+        lines.Add(new($"This ART: {toThisArt} of {FeatureCount(features.Count)} on {key}", Severity.Normal));
+        if (toOthers.Count > 0)
+        {
+            var others = toOthers
+                .Select(p => (Name: ArtName(p.Key), Count: p.Value))
+                .OrderByDescending(o => o.Count)
+                .ThenBy(o => o.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(o => $"{o.Name} {o.Count}");
+            lines.Add(new($"Other ARTs: {string.Join(", ", others)}", Severity.Normal));
+        }
+        if (unmatched > 0)
+        {
+            lines.Add(new($"Unassigned: {unmatched} (no ART's components and labels accept them, and no ART takes the whole key)", Severity.Warning));
+        }
+        if (ambiguous > 0)
+        {
+            lines.Add(new($"Ambiguous: {ambiguous} (claimed by several ARTs)", Severity.Warning));
+        }
+        if (movedIn > 0 || movedOut > 0)
+        {
+            lines.Add(new((movedIn, movedOut) switch
+            {
+                ( > 0, > 0) => $"Saving moves {FeatureCount(movedIn)} to this ART and {FeatureCount(movedOut)} away from it.",
+                ( > 0, _) => $"Saving moves {FeatureCount(movedIn)} to this ART.",
+                _ => $"Saving moves {FeatureCount(movedOut)} away from this ART."
+            }, Severity.Normal));
+        }
+
+        return lines;
+    }
+
+    private static string FeatureCount(int count) => count == 1 ? "1 feature" : $"{count} features";
+
+    public static string ConflictWarning(ArtKeyConflict conflict, string keyText, IReadOnlyList<string> otherArts)
+    {
+        var one = otherArts.Count == 1;
+        var arts = ArtsText(otherArts);
+        if (conflict.Unfiltered)
+        {
+            return one
+                ? $"Jira key {conflict.JiraKey} is also taken without components or labels by {arts}. Issues on this key that no filter claims are not assigned to either ART until one of them gets components or labels."
+                : $"Jira key {conflict.JiraKey} is also taken without components or labels by {arts}. Issues on this key that no filter claims are not assigned to any of these ARTs until all but one of them get components or labels.";
+        }
+
+        return one
+            ? $"Jira key {keyText} is also used with the same components and labels by {arts}. Issues they accept are not assigned to either ART until the two use different components or labels."
+            : $"Jira key {keyText} is also used with the same components and labels by {arts}. Issues they accept are not assigned to any of these ARTs until each uses different components or labels.";
+    }
+
+    private static string DraftConflictError(ArtKeyConflict conflict, string keyText, IReadOnlyList<string> otherArts) =>
+        conflict.Unfiltered
+            ? $"Jira key {conflict.JiraKey} is already taken without components or labels by {ArtsText(otherArts)}. Give this key components or labels, or saving is refused."
+            : $"Jira key {keyText} already has the same components and labels on {ArtsText(otherArts)}. Change them, or saving is refused.";
+
+    private static string ArtsText(IReadOnlyList<string> arts) =>
+        arts.Count == 1 ? $"ART '{arts[0]}'" : $"ARTs '{string.Join("', '", arts)}'";
+
+    private async Task SaveAsync()
+    {
+        var trainScope = _isNew ? TrainScope.AdminOrGeneralOnly : TrainScope.ForTrains([_model.Id]);
+        if (!await PermissionGuard.CanEditAsync("CapitalProjects", trainScope))
+        {
+            Snackbar.Add("You don't have edit permission for this Solution Train.", Severity.Error);
+            return;
+        }
+
+        _saving = true; _error = null;
+
+        try
+        {
+            if (_isNew)
+            {
+                var c = await ProjectService.CreateAsync(_model);
+                var createUrl = ReturnUrl is not null
+                    ? Navigation.GetUriWithQueryParameters($"{RoutingPath.CapitalProjects}/{c.Id}",
+                        new Dictionary<string, object?> { ["returnUrl"] = ReturnUrl })
+                    : $"{RoutingPath.CapitalProjects}/{c.Id}";
+                Navigation.NavigateTo(createUrl, true);
+            }
+            else
+            {
+                _model = await ProjectService.UpdateAsync(_model, updateKeys: false);
+                _model.JiraKeys = _model.JiraKeys.OrderBy(k => k.Id).ToList();
+                Snackbar.Add("Saved.", Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task OpenInNewTab(string url)
+    {
+        await JS.InvokeVoidAsync("open", Navigation.ToAbsoluteUri(url).ToString(), "_blank");
+    }
+
+    private async Task ConfirmDeleteAsync()
+    {
+        try
+        {
+            if (await RefuseDeleteAsync(ProjectService, PermissionGuard, Snackbar, _model.Id)
+                || !await MessageService.Confirm($"Delete {_model.Name} ?")
+                || await RefuseDeleteAsync(ProjectService, PermissionGuard, Snackbar, _model.Id))
+            {
+                return;
+            }
+
+            await ProjectService.DeleteAsync(_model.Id);
+            Navigation.NavigateTo(ListUrl);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    public static async Task<bool> RefuseDeleteAsync(IArtService arts, IPermissionGuard guard, ISnackbar snackbar, int artId)
+    {
+        string? refusal = null;
+        if (!await guard.CanEditAsync("CapitalProjects", TrainScope.ForTrains([artId])))
+        {
+            refusal = "You don't have edit permission for this Solution Train.";
+        }
+        else if ((await arts.GetByIdAsync(artId))?.JiraKeys.Count > 0
+            && !await guard.CanEditAsync("CapitalProjects", TrainScope.AdminOrGeneralOnly))
+        {
+            refusal = "Only administrators and users with General edit access can delete an ART that has Jira keys.";
+        }
+
+        if (refusal is not null)
+        {
+            snackbar.Add(refusal, Severity.Error);
+        }
+        return refusal is not null;
+    }
+
+    private async Task AddTeamAsync()
+    {
+        if (_selectedTeamId is null) return;
+
+        var teamId = _selectedTeamId.Value;
+        var team = _allTeams.First(t => t.Id == teamId);
+
+        try
+        {
+            await ProjectService.AddTeamAsync(_model.Id, teamId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
+            return;
+        }
+
+        _model.CapitalProjectTeams.Add(new ArtTeam
+        {
+            CapitalProjectId = _model.Id,
+            TeamId = teamId,
+            Team = team
+        });
+
+        _selectedTeamId = null;
+
+        if (_sprints.Count == 0 || team.IsArtSharedTeam)
+        {
+            return;
+        }
+
+        var plan = await ArtSprintService.PlanTeamBackfillAsync(_model.Id, teamId);
+        if (plan.Actions.Count == 0)
+        {
+            return;
+        }
+
+        if (!await ConfirmPlanAsync(plan, $"Apply {_sprints.Count} ART sprint(s) to {team.Name}", "Apply"))
+        {
+            return;
+        }
+
+        try
+        {
+            await ArtSprintService.BackfillTeamAsync(_model.Id, teamId);
+            Snackbar.Add($"ART sprints applied to {team.Name}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to backfill ART sprints for team {TeamId}", teamId);
+            Snackbar.Add($"Could not apply ART sprints: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task RemoveTeamAsync(int teamId)
+    {
+        var name = _model.CapitalProjectTeams.FirstOrDefault(cpt => cpt.TeamId == teamId)?.Team.Name;
+        if (!await MessageService.Confirm($"Remove team {name} ? Its ART sprints stay in place but stop following this ART.")) return;
+        await ProjectService.RemoveTeamAsync(_model.Id, teamId);
+        _model.CapitalProjectTeams = _model.CapitalProjectTeams.Where(cpt => cpt.TeamId != teamId).ToList();
+    }
+
+    private async Task OpenSprintDialogAsync(ArtSprint? sprint)
+    {
+        var model = sprint is null
+            ? new ArtSprint { CapitalProjectId = _model.Id }
+            : new ArtSprint
+            {
+                Id = sprint.Id,
+                CapitalProjectId = sprint.CapitalProjectId,
+                PiId = sprint.PiId,
+                Name = sprint.Name,
+                StartDate = sprint.StartDate,
+                EndDate = sprint.EndDate,
+                UatStart = sprint.UatStart,
+                UatEnd = sprint.UatEnd,
+                FixVersion = sprint.FixVersion,
+                SignOffDate = sprint.SignOffDate,
+                ReleaseDate = sprint.ReleaseDate,
+                IsIpSprint = sprint.IsIpSprint,
+            };
+
+        var parameters = new DialogParameters<ArtSprintDialog>
+        {
+            { x => x.Sprint, model },
+            { x => x.Pis, _allPis },
+            { x => x.Validate, ValidateSprintAsync },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true };
+        var dialog = await DialogService.ShowAsync<ArtSprintDialog>(sprint is null ? "New ART Sprint" : "Edit ART Sprint", parameters, options);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled)
+        {
+            return;
+        }
+
+        var plan = await ArtSprintService.PlanSaveAsync(model);
+        if (plan.HasErrors)
+        {
+            Snackbar.Add(string.Join(" ", plan.Errors), Severity.Error);
+            return;
+        }
+
+        if (!await ConfirmPlanAsync(plan, $"Save sprint '{model.Name}'", "Save"))
+        {
+            return;
+        }
+
+        try
+        {
+            var applied = await ArtSprintService.SaveAsync(model);
+            if (applied.HasErrors)
+            {
+                Snackbar.Add(string.Join(" ", applied.Errors), Severity.Error);
+                return;
+            }
+
+            _sprints = await ArtSprintService.GetForProjectAsync(_model.Id);
+            Snackbar.Add("Sprint saved.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save ART sprint for capital project {Id}", _model.Id);
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task<List<string>> ValidateSprintAsync(ArtSprint sprint)
+    {
+        var plan = await ArtSprintService.PlanSaveAsync(sprint);
+        return plan.Errors;
+    }
+
+    private async Task DeleteSprintAsync(ArtSprint sprint)
+    {
+        var plan = await ArtSprintService.PlanDeleteAsync(sprint.Id);
+        var deleteTeamSprints = false;
+
+        if (plan.Actions.Count > 0)
+        {
+            var planned = plan.PlannedFeatureCount > 0
+                ? $" They are planned in {plan.PlannedFeatureCount} feature(s); deleting them removes those plans."
+                : string.Empty;
+            var choice = await MessageService.Confirm(
+                $"Sprint '{sprint.Name}' produced {plan.Actions.Count} team sprint(s).{planned} Delete those team sprints too? Choose No to keep them and only unlink.");
+            deleteTeamSprints = choice;
+        }
+        else if (!await MessageService.Confirm($"Delete sprint '{sprint.Name}' ?"))
+        {
+            return;
+        }
+
+        try
+        {
+            await ArtSprintService.DeleteAsync(sprint.Id, deleteTeamSprints);
+            _sprints = await ArtSprintService.GetForProjectAsync(_model.Id);
+            Snackbar.Add("Sprint deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to delete ART sprint {Id}", sprint.Id);
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task<bool> ConfirmPlanAsync(ArtSprintPlan plan, string title, string confirmText)
+    {
+        if (plan.Warnings.Count == 0 && plan.Actions.Count == 0)
+        {
+            return true;
+        }
+
+        var parameters = new DialogParameters<ArtSprintPreviewDialog>
+        {
+            { x => x.Title, title },
+            { x => x.ConfirmText, confirmText },
+            { x => x.Actions, plan.Actions },
+            { x => x.Warnings, plan.Warnings },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseOnEscapeKey = true };
+        var dialog = await DialogService.ShowAsync<ArtSprintPreviewDialog>(title, parameters, options);
+        var result = await dialog.Result;
+        return result is not null && !result.Canceled;
+    }
+
+    private async Task OpenExportHolidaysDialogAsync()
+    {
+        var teams = _model.CapitalProjectTeams
+            .Select(cpt => cpt.Team)
+            .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (teams.Count == 0)
+        {
+            Snackbar.Add("Add at least one team before exporting holidays.", Severity.Warning);
+            return;
+        }
+
+        var pis = await PiService.GetAllLightAsync();
+        var withDates = pis
+            .Where(p => p.StartDate is not null && p.EndDate is not null)
+            .OrderByDescending(p => p.StartDate)
+            .ToList();
+
+        var parameters = new DialogParameters<ExportHolidaysDialog>
+        {
+            { x => x.Pis, withDates },
+            { x => x.Teams, teams },
+            { x => x.Art, _model.Name },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<ExportHolidaysDialog>("Export holidays", parameters, options);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not ExportHolidaysDialog.ExportHolidaysSpec spec)
+        {
+            return;
+        }
+
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = await HolidayExportService.GenerateAsync(_model.Id, spec.From, spec.To, spec.TeamIds);
+            if (bytes is null)
+            {
+                Snackbar.Add("Nothing to export — the selected teams have no active members.", Severity.Warning);
+                return;
+            }
+
+            var fileName = $"Holidays_{Sanitize(_model.Name)}_{Sanitize(spec.Label)}.xlsx";
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export holidays for capital project {Id}", _model.Id);
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private static string Sanitize(string value)
+    {
+        var invalid = System.IO.Path.GetInvalidFileNameChars();
+        return new string(value.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+    }
+}

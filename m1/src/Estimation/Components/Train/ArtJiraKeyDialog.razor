@@ -1,0 +1,182 @@
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<MudDialog>
+    <TitleContent>@(IsNew ? "Add Jira key" : $"Edit Jira key {Row.JiraKey}")</TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+            Features on this Jira project belong to the ART. Components and labels narrow the key: a feature then
+            needs one of the listed components and one of the listed labels; leave both empty to take the whole key.
+            When several ARTs share a key, a feature goes to the ART whose components and labels it has, otherwise
+            to the ART that takes the key whole.
+        </MudText>
+
+        <MudTextField T="string" Value="_key" ValueChanged="OnKeyChangedAsync"
+                      Label="Jira key *" Variant="Variant.Outlined" Class="mb-3"
+                      Disabled="!IsNew" MaxLength="ArtJiraKey.MaxKeyLength"
+                      Placeholder="Jira project key, e.g. PAY"
+                      Error="@(_keyError is not null)" ErrorText="@_keyError" />
+
+        <ArtFilterValuesInput Label="@PlanningDisplayNames.Components"
+                              Value="@_components" ValueChanged="OnComponentsChangedAsync"
+                              @bind-Pending="_pendingComponents"
+                              Placeholder="Type a component and press Enter"
+                              EmptyText="Any component" />
+        <ArtFilterValuesInput Label="@PlanningDisplayNames.Labels"
+                              Value="@_labels" ValueChanged="OnLabelsChangedAsync"
+                              @bind-Pending="_pendingLabels"
+                              Placeholder="Type a label and press Enter"
+                              EmptyText="Any label" />
+
+        <div class="mt-2">
+            @if (_previewLoading)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">Counting features…</MudText>
+            }
+            else
+            {
+                @foreach (var line in _preview)
+                {
+                    @if (line.Severity == Severity.Error)
+                    {
+                        <MudAlert Severity="Severity.Error" Dense Class="my-1">@line.Text</MudAlert>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.caption" Color="@(line.Severity == Severity.Warning ? Color.Warning : Color.Default)"
+                                 Class="@(line.Severity == Severity.Warning ? "d-block" : "d-block mud-text-secondary")">@line.Text</MudText>
+                    }
+                }
+            }
+        </div>
+
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-3">@_error</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SubmitAsync" Disabled="_busy">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public ArtJiraKey Row { get; set; } = new() { JiraKey = string.Empty };
+
+    [Parameter] public bool IsNew { get; set; }
+
+    [Parameter] public Func<ArtJiraKey, Task<IReadOnlyList<PreviewLine>>>? Preview { get; set; }
+
+    [Parameter] public Func<ArtJiraKey, Task<string?>> Save { get; set; } = null!;
+
+    public sealed record PreviewLine(string Text, Severity Severity);
+
+    private string? _key;
+    private string? _keyError;
+    private string? _components;
+    private string? _labels;
+    private string? _pendingComponents;
+    private string? _pendingLabels;
+    private IReadOnlyList<PreviewLine> _preview = [];
+    private bool _previewLoading;
+    private int _previewVersion;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _key = JiraProjectKeys.Normalize(Row.JiraKey);
+        _components = Row.Components;
+        _labels = Row.Labels;
+        await RefreshPreviewAsync();
+    }
+
+    private async Task OnKeyChangedAsync(string? value)
+    {
+        _key = JiraProjectKeys.Normalize(value);
+        _keyError = KeyError(_key);
+        await RefreshPreviewAsync();
+    }
+
+    private async Task OnComponentsChangedAsync(string? value)
+    {
+        _components = value;
+        await RefreshPreviewAsync();
+    }
+
+    private async Task OnLabelsChangedAsync(string? value)
+    {
+        _labels = value;
+        await RefreshPreviewAsync();
+    }
+
+    private async Task RefreshPreviewAsync()
+    {
+        _error = null;
+        await LoadPreviewAsync();
+    }
+
+    private static string? KeyError(string? key) =>
+        key is null ? "Enter a Jira project key."
+        : ArtService.IsValidKey(key) ? null
+        : $"Not a valid Jira project key. A key starts with a letter and has up to {ArtJiraKey.MaxKeyLength} letters, digits or underscores.";
+
+    private async Task LoadPreviewAsync()
+    {
+        if (Preview is null || _key is null || KeyError(_key) is not null)
+        {
+            _preview = [];
+            return;
+        }
+
+        var version = ++_previewVersion;
+        _previewLoading = true;
+        var lines = await Preview(Draft(withPending: false));
+        if (version == _previewVersion)
+        {
+            _preview = lines;
+            _previewLoading = false;
+        }
+    }
+
+    private ArtJiraKey Draft(bool withPending) => new()
+    {
+        JiraKey = _key ?? string.Empty,
+        Components = withPending ? Merge(_components, _pendingComponents) : _components,
+        Labels = withPending ? Merge(_labels, _pendingLabels) : _labels
+    };
+
+    private static string? Merge(string? values, string? pending) =>
+        string.IsNullOrWhiteSpace(pending) ? values : JiraListValues.Join($"{values},{pending}".Split(','));
+
+    private async Task SubmitAsync()
+    {
+        _error = null;
+        _keyError = KeyError(_key);
+        if (_keyError is not null)
+        {
+            return;
+        }
+
+        var draft = Draft(withPending: true);
+        _busy = true;
+        try
+        {
+            _error = await Save(draft);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        if (_error is null)
+        {
+            MudDialog.Close(DialogResult.Ok(draft));
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

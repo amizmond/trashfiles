@@ -1,0 +1,108 @@
+@inject IDepartmentService DepartmentService
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Train.Models
+
+<MudDialog>
+    <DialogContent>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudStack Spacing="3">
+                <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                    Tell the administrator which area you work in so the right permissions can be granted.
+                    All fields are optional.
+                </MudText>
+
+                <MudSelect T="int?" Value="_departmentId" ValueChanged="OnDepartmentChanged"
+                           Label="Request for department" Placeholder="Select a department"
+                           Clearable="true" Dense="true" Variant="Variant.Outlined">
+                    @foreach (var department in _departments)
+                    {
+                        <MudSelectItem T="int?" Value="@department.Id">@department.Name</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect T="int?" @bind-Value="_capitalProjectId"
+                           Label="Request for ART"
+                           Placeholder="@(_departmentId is null ? "Select a department first" : "Select an ART")"
+                           Disabled="@(_departmentId is null)"
+                           Clearable="true" Dense="true" Variant="Variant.Outlined">
+                    @foreach (var art in _availableArts)
+                    {
+                        <MudSelectItem T="int?" Value="@art.Id">@art.Name</MudSelectItem>
+                    }
+                </MudSelect>
+
+                @if (_departmentId is not null && _availableArts.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        No ARTs are linked to the selected department.
+                    </MudText>
+                }
+
+                <MudTextField @bind-Value="_comment" Label="Justification" Lines="3"
+                              MaxLength="AppUser.MaxRequestCommentLength"
+                              Counter="AppUser.MaxRequestCommentLength"
+                              Immediate="true" Variant="Variant.Outlined"
+                              Placeholder="Anything the administrator should know" />
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit" Disabled="_loading">
+            Send request
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    private List<Department> _departments = [];
+    private List<Art> _availableArts = [];
+    private bool _loading = true;
+
+    private int? _departmentId;
+    private int? _capitalProjectId;
+    private string? _comment;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _departments = await DepartmentService.GetAllAsync();
+        _loading = false;
+    }
+
+    private void OnDepartmentChanged(int? departmentId)
+    {
+        _departmentId = departmentId;
+        _capitalProjectId = null;
+        _availableArts = _departments
+            .FirstOrDefault(d => d.Id == departmentId)?
+            .CapitalProjects
+            .OrderBy(cp => cp.Name)
+            .ToList() ?? [];
+    }
+
+    private void Submit()
+    {
+        var comment = _comment?.Trim();
+
+        MudDialog.Close(DialogResult.Ok(new AccessRequestInfo
+        {
+            DepartmentId = _departmentId,
+            CapitalProjectId = _departmentId is null ? null : _capitalProjectId,
+            Comment = string.IsNullOrEmpty(comment) ? null : comment
+        }));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

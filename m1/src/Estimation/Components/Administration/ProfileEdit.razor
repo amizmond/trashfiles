@@ -1,0 +1,469 @@
+@attribute [Route(RoutingPath.ProfilesNew)]
+@attribute [Route(RoutingPath.ProfilesEdit)]
+
+@inject IProfileService ProfileService
+@inject IAppAuthorizationService AppAuthService
+@inject IArtService ArtService
+@inject IWindowsAuthService WindowsAuthService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<PageTitle>@(_isNew ? "New Profile" : "Edit Profile")</PageTitle>
+
+<AdminOnly>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+            <MudText Typo="Typo.h5">@(_isNew ? "New Profile" : $"Edit Profile: {_name}")</MudText>
+            <MudSpacer />
+            <MudButton Variant="Variant.Outlined" OnClick="@(() => Navigation.NavigateTo(RoutingPath.Profiles))">Cancel</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync" Disabled="_saving">
+                @(_saving ? "Saving…" : "Save")
+            </MudButton>
+        </MudStack>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_notFound)
+        {
+            <MudAlert Severity="Severity.Error">Profile not found.</MudAlert>
+        }
+        else
+        {
+            <MudGrid Class="mb-2">
+                <MudItem xs="12" md="4">
+                    <MudTextField @bind-Value="_name" Label="Profile name" Required="true"
+                                  RequiredError="Profile name is required" MaxLength="100" Immediate="true" />
+                </MudItem>
+                <MudItem xs="12" md="8">
+                    <MudTextField @bind-Value="_description" Label="Description" MaxLength="500" />
+                </MudItem>
+            </MudGrid>
+
+            <MudText Typo="Typo.subtitle1" Class="mb-1">Page access</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-3">
+                "General access" applies to a page regardless of Solution Train and overrides the per-train columns
+                (including "No Access"). Leave General empty ("—") to control access per Solution Train.
+                A missing selection means No Access. Dashboard is always available to approved users.
+            </MudText>
+
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="3" Class="mb-3">
+                <SearchableDropdown T="int"
+                                    MultiSelect="true"
+                                    Items="@_trains.Select(t => t.Id)"
+                                    Values="_selectedTrainIds"
+                                    ValuesChanged="OnSelectedTrainsChanged"
+                                    ToStringFunc="@GetTrainLabel"
+                                    Label="Solution Train columns"
+                                    Placeholder="Select Solution Trains to configure"
+                                    SelectAll="true"
+                                    SelectAllText="Select all Solution Trains"
+                                    ClearText="Remove all columns"
+                                    Style="min-width: 320px; max-width: 480px;" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Only the selected Solution Train columns are saved — removing a column removes that
+                    train's access levels from the profile when you save.
+                </MudText>
+            </MudStack>
+
+            <div class="profile-matrix-wrapper">
+                <table class="profile-matrix">
+                    <thead>
+                        <tr>
+                            <th class="sticky-col sticky-col-1">Page name</th>
+                            <th class="sticky-col sticky-col-2">General access</th>
+                            @foreach (var train in _visibleTrains)
+                            {
+                                <th>
+                                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="0" Justify="Justify.Center">
+                                        <MudTooltip Text="@KeysTooltip(train)">
+                                            <span>@train.Name</span>
+                                        </MudTooltip>
+                                        <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                                            <MudMenuItem OnClick="@(() => SetColumn(train.Id, AccessLevel.None))">All pages: No Access</MudMenuItem>
+                                            <MudMenuItem OnClick="@(() => SetColumn(train.Id, AccessLevel.ReadOnly))">All pages: Read Only</MudMenuItem>
+                                            <MudMenuItem OnClick="@(() => SetColumn(train.Id, AccessLevel.Edit))">All pages: Edit</MudMenuItem>
+                                        </MudMenu>
+                                    </MudStack>
+                                </th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var group in _rows.GroupBy(r => r.Page.Group ?? GeneralGroup)
+                                                    .OrderBy(g => g.Key == GeneralGroup ? 0 : 1)
+                                                    .ThenBy(g => g.Min(r => r.Page.SortOrder)))
+                        {
+                            <tr class="group-row">
+                                <td class="sticky-col sticky-col-1" colspan="2">@group.Key</td>
+                                @if (_visibleTrains.Count > 0)
+                                {
+                                    <td colspan="@_visibleTrains.Count"></td>
+                                }
+                            </tr>
+                            @foreach (var row in group.OrderBy(r => r.Page.SortOrder))
+                            {
+                                <tr>
+                                    <td class="sticky-col sticky-col-1">
+                                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                            <span>@row.Page.DisplayName</span>
+                                            @if (row.IsTrainScoped)
+                                            {
+                                                <MudMenu Icon="@Icons.Material.Filled.MoreHoriz" Size="Size.Small" Dense="true">
+                                                    <MudMenuItem OnClick="@(() => SetRow(row, AccessLevel.None))">All trains: No Access</MudMenuItem>
+                                                    <MudMenuItem OnClick="@(() => SetRow(row, AccessLevel.ReadOnly))">All trains: Read Only</MudMenuItem>
+                                                    <MudMenuItem OnClick="@(() => SetRow(row, AccessLevel.Edit))">All trains: Edit</MudMenuItem>
+                                                </MudMenu>
+                                            }
+                                        </MudStack>
+                                    </td>
+                                    <td class="sticky-col sticky-col-2">
+                                        <MudSelect T="AccessLevel?" @bind-Value="row.General" Dense="true" Margin="Margin.Dense"
+                                                   Variant="Variant.Outlined" Class="matrix-select">
+                                            <MudSelectItem T="AccessLevel?" Value="@((AccessLevel?)null)">—</MudSelectItem>
+                                            <MudSelectItem T="AccessLevel?" Value="@((AccessLevel?)AccessLevel.None)">No Access</MudSelectItem>
+                                            <MudSelectItem T="AccessLevel?" Value="@((AccessLevel?)AccessLevel.ReadOnly)">Read Only</MudSelectItem>
+                                            <MudSelectItem T="AccessLevel?" Value="@((AccessLevel?)AccessLevel.Edit)">Edit</MudSelectItem>
+                                        </MudSelect>
+                                    </td>
+                                    @foreach (var train in _visibleTrains)
+                                    {
+                                        <td>
+                                            @if (row.IsTrainScoped)
+                                            {
+                                                <MudSelect T="AccessLevel"
+                                                           Value="@row.TrainLevels.GetValueOrDefault(train.Id, AccessLevel.None)"
+                                                           ValueChanged="@(level => row.TrainLevels[train.Id] = level)"
+                                                           Disabled="@row.General.HasValue"
+                                                           Dense="true" Margin="Margin.Dense" Variant="Variant.Outlined" Class="matrix-select">
+                                                    <MudSelectItem T="AccessLevel" Value="AccessLevel.None">No Access</MudSelectItem>
+                                                    <MudSelectItem T="AccessLevel" Value="AccessLevel.ReadOnly">Read Only</MudSelectItem>
+                                                    <MudSelectItem T="AccessLevel" Value="AccessLevel.Edit">Edit</MudSelectItem>
+                                                </MudSelect>
+                                            }
+                                            else
+                                            {
+                                                <MudTooltip Text="This page is controlled by General access only">
+                                                    <MudText Typo="Typo.body2" Class="mud-text-disabled text-center">n/a</MudText>
+                                                </MudTooltip>
+                                            }
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <MudDivider Class="my-4" />
+
+            <MudText Typo="Typo.subtitle1" Class="mb-1">Action permissions</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                Grant optional actions to this profile. When an action is not available the related
+                button is hidden or the capability is disabled for users with this profile.
+            </MudText>
+            @foreach (var action in AppActionKeys.All)
+            {
+                <MudSwitch T="bool"
+                           Value="@_actions.GetValueOrDefault(action.Key)"
+                           ValueChanged="@(value => _actions[action.Key] = value)"
+                           Color="Color.Primary" Label="@action.DisplayName" />
+            }
+
+            <MudDivider Class="my-3" />
+            <MudSwitch T="bool" @bind-Value="_restrictTeamEditByRole" Color="Color.Warning"
+                       Label="Enable Edit team information restriction" />
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">
+                When enabled, Edit access on the Team planning pages granted per Solution Train only
+                applies to teams where the user's team role allows it ("Can edit team" on the role,
+                Static Data → Team Roles); other teams become read-only. General access and
+                administrators are not affected.
+            </MudText>
+        }
+    </MudPaper>
+</div>
+
+</AdminOnly>
+
+<style>
+    .profile-matrix-wrapper {
+        overflow-x: auto;
+        max-width: 100%;
+        border: 1px solid var(--mud-palette-table-lines);
+        border-radius: 4px;
+    }
+
+    .profile-matrix {
+        border-collapse: separate;
+        border-spacing: 0;
+        width: max-content;
+        min-width: 100%;
+    }
+
+    .profile-matrix th,
+    .profile-matrix td {
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--mud-palette-table-lines);
+        background: var(--mud-palette-surface);
+        white-space: nowrap;
+        min-width: 140px;
+    }
+
+    .profile-matrix thead th {
+        font-weight: 600;
+        position: sticky;
+        top: 0;
+        z-index: 2;
+    }
+
+    .profile-matrix .sticky-col {
+        position: sticky;
+        z-index: 3;
+    }
+
+    .profile-matrix .sticky-col-1 {
+        left: 0;
+        min-width: 220px;
+    }
+
+    .profile-matrix .sticky-col-2 {
+        left: 220px;
+        min-width: 160px;
+        box-shadow: 2px 0 4px rgba(0, 0, 0, 0.08);
+    }
+
+    .profile-matrix thead .sticky-col {
+        z-index: 4;
+    }
+
+    .profile-matrix .group-row td {
+        font-weight: 600;
+        color: var(--mud-palette-primary);
+        background: var(--mud-palette-background-gray);
+    }
+
+    .matrix-select {
+        min-width: 130px;
+    }
+</style>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+
+    private const string GeneralGroup = "General";
+
+    private bool _isNew => Id is null;
+    private bool _loading = true;
+    private bool _saving;
+    private bool _notFound;
+
+    private string _name = string.Empty;
+    private string? _description;
+    private List<MatrixRow> _rows = [];
+    private List<Art> _trains = [];
+    private Dictionary<int, Art> _trainById = [];
+    private IReadOnlyCollection<int> _selectedTrainIds = [];
+    private List<Art> _visibleTrains = [];
+    private readonly Dictionary<string, bool> _actions = [];
+    private bool _restrictTeamEditByRole = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var pages = await AppAuthService.GetAllPagesAsync();
+        _trains = (await ArtService.GetAllLightAsync())
+            .OrderBy(t => t.Name)
+            .ToList();
+        _trainById = _trains.ToDictionary(t => t.Id);
+
+        _rows = pages
+            .Where(p => !p.IsAdminOnly && p.ScopeMode != PageScopeMode.None)
+            .OrderBy(p => p.SortOrder)
+            .Select(p => new MatrixRow { Page = p })
+            .ToList();
+
+        foreach (var (key, _) in AppActionKeys.All)
+        {
+            _actions[key] = false;
+        }
+
+        if (Id is { } profileId)
+        {
+            var profile = await ProfileService.GetWithPermissionsAsync(profileId);
+            if (profile is null)
+            {
+                _notFound = true;
+                _loading = false;
+                return;
+            }
+
+            _name = profile.Name;
+            _description = profile.Description;
+            _restrictTeamEditByRole = profile.RestrictTeamEditByRole;
+
+            var rowsByPageId = _rows.ToDictionary(r => r.Page.Id);
+            foreach (var permission in profile.PagePermissions)
+            {
+                if (!rowsByPageId.TryGetValue(permission.AppPageId, out var row))
+                {
+                    continue;
+                }
+
+                if (permission.CapitalProjectId is { } trainId)
+                {
+                    row.TrainLevels[trainId] = permission.AccessLevel;
+                }
+                else
+                {
+                    row.General = permission.AccessLevel;
+                }
+            }
+
+            foreach (var action in profile.ActionPermissions)
+            {
+                _actions[action.ActionKey] = action.IsAvailable;
+            }
+
+            _selectedTrainIds = profile.PagePermissions
+                .Where(p => p.CapitalProjectId is { } id && _trainById.ContainsKey(id))
+                .Select(p => p.CapitalProjectId!.Value)
+                .Distinct()
+                .ToList();
+            RecomputeVisibleTrains();
+        }
+
+        _loading = false;
+    }
+
+    private void OnSelectedTrainsChanged(IReadOnlyCollection<int> values)
+    {
+        _selectedTrainIds = values;
+        RecomputeVisibleTrains();
+    }
+
+    private void RecomputeVisibleTrains()
+    {
+        var selected = _selectedTrainIds.ToHashSet();
+        _visibleTrains = _trains.Where(t => selected.Contains(t.Id)).ToList();
+    }
+
+    private string GetTrainLabel(int trainId)
+    {
+        if (!_trainById.TryGetValue(trainId, out var train))
+        {
+            return trainId.ToString();
+        }
+
+        return train.HasKeys ? $"{train.Name} ({train.KeysText})" : train.Name;
+    }
+
+    private static string KeysTooltip(Art train) =>
+        string.Join(", ", train.JiraKeys.OrderBy(k => k.Id).Select(k => k.Description));
+
+    private void SetRow(MatrixRow row, AccessLevel level)
+    {
+        row.General = null;
+        foreach (var train in _visibleTrains)
+        {
+            row.TrainLevels[train.Id] = level;
+        }
+    }
+
+    private void SetColumn(int trainId, AccessLevel level)
+    {
+        foreach (var row in _rows.Where(r => r.IsTrainScoped && !r.General.HasValue))
+        {
+            row.TrainLevels[trainId] = level;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            Snackbar.Add("Profile name is required.", Severity.Warning);
+            return;
+        }
+
+        if (await ProfileService.NameExistsAsync(_name, Id))
+        {
+            Snackbar.Add($"A profile named '{_name.Trim()}' already exists.", Severity.Warning);
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var dto = new ProfileEditDto
+            {
+                Name = _name,
+                Description = _description,
+                Actions = new Dictionary<string, bool>(_actions),
+                RestrictTeamEditByRole = _restrictTeamEditByRole
+            };
+
+            var selectedTrains = _selectedTrainIds.ToHashSet();
+            foreach (var row in _rows)
+            {
+                if (row.General is { } general)
+                {
+                    dto.PagePermissions.Add(new ProfilePermissionCellDto
+                    {
+                        AppPageId = row.Page.Id,
+                        CapitalProjectId = null,
+                        AccessLevel = general
+                    });
+                }
+
+                if (!row.IsTrainScoped)
+                {
+                    continue;
+                }
+
+                foreach (var (trainId, level) in row.TrainLevels.Where(t => t.Value != AccessLevel.None && selectedTrains.Contains(t.Key)))
+                {
+                    dto.PagePermissions.Add(new ProfilePermissionCellDto
+                    {
+                        AppPageId = row.Page.Id,
+                        CapitalProjectId = trainId,
+                        AccessLevel = level
+                    });
+                }
+            }
+
+            var userName = await WindowsAuthService.GetUserName() ?? "Unknown";
+            if (Id is { } profileId)
+            {
+                await ProfileService.UpdateAsync(profileId, dto, userName);
+                Snackbar.Add($"Profile '{dto.Name.Trim()}' updated.", Severity.Success);
+            }
+            else
+            {
+                await ProfileService.CreateAsync(dto, userName);
+                Snackbar.Add($"Profile '{dto.Name.Trim()}' created.", Severity.Success);
+            }
+
+            Navigation.NavigateTo(RoutingPath.Profiles);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private class MatrixRow
+    {
+        public AppPage Page { get; set; } = null!;
+        public AccessLevel? General { get; set; }
+        public Dictionary<int, AccessLevel> TrainLevels { get; } = [];
+        public bool IsTrainScoped => Page.ScopeMode == PageScopeMode.TrainScoped;
+    }
+}

@@ -1,0 +1,1284 @@
+@attribute [Route(RoutingPath.MasterSheet)]
+@using System.Collections.ObjectModel
+@using MudBlazor
+@inject IFeatureService FeatureService
+@inject IMasterSheetService MasterSheetService
+@inject IPortfolioEpicService PortfolioEpicService
+@inject IBusinessOutcomeService BusinessOutcomeService
+@inject IStrategicObjectiveService StrategicObjectiveService
+@inject IBusinessOutcomeService BusinessOutcomeService
+@inject IPiService PiService
+@inject ITeamService TeamService
+@inject IUnfundedOptionService UnfundedOptionService
+@inject IArtService ArtService
+@inject ITechnologyStackService TechnologyStackService
+@inject ISkillService SkillService
+@inject IMasterDataCacheService CachedDataService
+@inject IJSRuntime JS
+@inject IDialogService DialogService
+@inject IBrowserDownloadService DownloadService
+@inject NavigationManager Nav
+@using Estimation.MasterData.Models
+@using Estimation.MasterData.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+
+<style>
+    .scrollable-grid {
+        display: block;
+        width: 100%;
+        overflow: auto !important;
+    }
+
+        .scrollable-grid .mud-table-container {
+            overflow-x: scroll !important; /* Always show horizontal scrollbar */
+            overflow-y: scroll !important; /* Always show vertical scrollbar */
+            width: 100%;
+            max-width: 100%;
+        }
+
+        /* Prevent table from pushing scrollbar off-screen */
+        .scrollable-grid table {
+            min-width: 100%;
+        }
+</style>
+<AccessGuard PageKey="MasterSheet" RequireEdit="true">
+    <MudContainer MaxWidth="MaxWidth.ExtraExtraLarge" Class="mt-4">
+        @if (_progress)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudPaper Class="pa-4 mb-4">
+                <div class="row">
+                    <div class="col-6">
+                        <MudSelect T="int?"
+                                   Value="@_selectedArtId"
+                                   ValueChanged="@OnArtChanged"
+                                   Variant="Variant.Outlined"
+                                   Label="Select Project"
+                                   Required="true"
+                                   RequiredError="Project is required">
+                            @foreach (var cp in _allCapitalProjectsForSync.Where(c => c.HasKeys))
+                            {
+                                <MudSelectItem T="int?" Value="@cp.Id">
+                                    @cp.Name
+                                </MudSelectItem>
+                            }
+                        </MudSelect>
+                    </div>
+                </div>
+            </MudPaper>
+
+            @if (showGrid)
+            {
+                <MudPaper>
+                    <div class="row">
+                        <MudText Typo="Typo.h4" Class="mb-3">Master Sheet</MudText>
+
+                        <div class="col-12 pb-2" align="right">
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Save"
+                                       Disabled="_progress || _exporting"
+                                       OnClick="SaveAll">
+                                Save All
+                            </MudButton>
+
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Add"
+                                       Disabled="_progress || _exporting"
+                                       OnClick="NewItemAsync">
+                                Add New
+                            </MudButton>
+
+                            <MudButton Variant="Variant.Outlined"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Download"
+                                       Disabled="_progress || _exporting"
+                                       OnClick="ExportFilteredAsync">
+                                Export to excel
+                            </MudButton>
+
+                            <MudButton Variant="Variant.Outlined"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Description"
+                                       Disabled="_progress || _exporting"
+                                       OnClick="ExportEmptyTemplateAsync">
+                                Empty template
+                            </MudButton>
+
+                            <MudFileUpload T="IBrowserFile"
+                                           Accept=".xlsx"
+                                           MaximumFileCount="1"
+                                           FilesChanged="OnUploadFileSelected">
+                                <ActivatorContent>
+                                    <MudButton Variant="Variant.Outlined"
+                                               Color="Color.Primary"
+                                               StartIcon="@Icons.Material.Filled.UploadFile"
+                                               Disabled="_progress || _exporting">
+                                        Upload
+                                    </MudButton>
+                                </ActivatorContent>
+                            </MudFileUpload>
+                        </div>
+                    </div>
+                </MudPaper>
+            }
+            @if (showGrid)
+            {
+                <MudDataGrid T="MasterRow" @ref="_masterGrid"
+                             ItemSize="42.68f"
+                             Loading="_loading"
+                             ReadOnly="false"
+                             Striped="true"
+                             CommittedItemChanges="@CommittedItemChanges"
+                             EditTrigger="DataGridEditTrigger.OnRowClick"
+                             EditMode="DataGridEditMode.Cell"
+                             Hover="true"
+                             Items="@_filterdRows"
+                             Filterable="true"
+                             SortMode="SortMode.Multiple"
+                             FixedHeader
+                             Class="scrollable-grid"
+                             Bordered="true"
+                             Dense="true"
+                             Height="450px"
+                             MultiSelection="true"
+                             SelectedItemsChanged="@SelectedItemsChanged"
+                             ColumnResizeMode="ResizeMode.Column"
+                             RowsPerPage="10">
+                    <PagerContent>
+                        <MudDataGridPager T="MasterRow"
+                                          PageSizeOptions="new int[] { 10, 25, 50 }" />
+                    </PagerContent>
+                    <Columns>
+                        <!-- ID Column (Read-only) -->
+                        <SelectColumn StickyLeft="true"
+                                      DisabledFunc="@(item => !_changedRows.Any(cr => cr.MasterRow.Id == item.Id))" />
+
+                        <!-- Program (Strategic Objective Name/Summery) -->
+                        <PropertyColumn Property="x => x.StrategicObjective.FirstOrDefault()!.Summary"
+                                        Title="Program"
+                                        Editable="false"
+                                        CellStyle="white-space: normal; max-width: 250px; min-width: 150px;">
+                            <CellTemplate>
+                                <MudChip Icon="@Icons.Material.Filled.Lock"
+                                         Size="Size.Small"
+                                         Color="Color.Default"
+                                         Variant="Variant.Filled"
+                                         Style="white-space: normal; height: auto; padding: 8px 12px; display: flex; align-items: flex-start;">
+                                    @context.Item.StrategicObjective.FirstOrDefault()?.Summary
+                                </MudChip>
+                            </CellTemplate>
+
+                        </PropertyColumn>
+
+                        <!-- Epic Name -->
+                        <PropertyColumn Property="x => x.EpicName"
+                                        Title="Epic Name"
+                                        Editable="false"
+                                        CellStyle="white-space: normal; max-width: 250px; min-width: 150px;">
+                            <CellTemplate>
+                                <MudChip Icon="@Icons.Material.Filled.Lock"
+                                         Size="Size.Small"
+                                         Color="Color.Default"
+                                         Variant="Variant.Filled"
+                                         Style="white-space: normal; height: auto; padding: 8px 12px; display: flex; align-items: flex-start;">
+                                    @context.Item.EpicName
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+
+                        <!-- BO Name -->
+                        <PropertyColumn Property="x => x.BoName" Title="BO Name">
+                            <EditTemplate>
+                                <MudSelect T="int?"
+                                           Value="@(context.Item.BoId)"
+                                           ValueChanged="@(value => UpdateBo(context.Item, value))"
+                                           Dense="true"
+                                           Clearable="false"
+                                           Variant="Variant.Outlined"
+                                           Margin="Margin.Dense">
+                                    @foreach (var bo in _allBusinessOutcome)
+                                    {
+                                        <MudSelectItem T="int?" Value="bo.Id">@bo.Summary</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- Epic Ranking -->
+                        <PropertyColumn Property="x => x.EpicRanking" Title=" Portfolio Epic Ranking" Editable="true" CellStyle="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0;">
+                            <EditTemplate>
+                                <MudNumericField T="int?"
+                                                 Value="@context.Item.EpicRanking"
+                                                 ValueChanged="@(value => UpdateEpicRanking(context.Item, value))"
+                                                 Min="0"
+                                                 Max="100"
+                                                 Immediate="true" />
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- Unfunded -->
+                        <PropertyColumn Property="x => x.UnfundedOptionId" Title="Unfunded">
+                            <EditTemplate>
+                                <MudSelect T="int?"
+                                           Value="@context.Item.UnfundedOptionId"
+                                           ValueChanged="@(value => UpdateUnfundedOption(context.Item, value))"
+                                           Dense="true"
+                                           Clearable="true">
+                                    @foreach (var op in _allUnfundedOptions)
+                                    {
+                                        <MudSelectItem T="int?" Value="@op.Id">
+                                            @op.Name
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- PI ID -->
+                        <PropertyColumn Property="x => x.PiName" Title="PI">
+                            <EditTemplate>
+                                <MudSelect T="int?"
+                                           Value="@context.Item.PiId"
+                                           ValueChanged="@(value => UpdatePi(context.Item, value))"
+                                           Dense="true"
+                                           Clearable="true">
+                                    @foreach (var pi in _allPi)
+                                    {
+                                        <MudSelectItem T="int?" Value="@pi.Id">
+                                            @pi.Name
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- Feature Label -->
+                        <PropertyColumn Property="x => x.FeatureLabel" Title="Label">
+                            <EditTemplate>
+                                <MudSelect T="string"
+                                           MultiSelection="true"
+                                           SelectedValues="@GetFeatureLabels(context.Item)"
+                                           SelectedValuesChanged="@(values => UpdateFeatureLabel(context.Item, values))"
+                                           Dense="true"
+                                           Clearable="true"
+                                           Margin="Margin.Dense"
+                                           FullWidth="false"
+                                           Style="width: fit-content; min-width: 200px; max-width: 500px;">
+                                    @foreach (var fl in GetSortedLabels(context.Item))
+                                    {
+                                        <MudSelectItem T="string" Value="@fl">
+                                            @fl
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </EditTemplate>
+
+                        </PropertyColumn>
+
+                        <!-- Target End Date -->
+                        <PropertyColumn Property="x => x.TargetEnd" Title="Target End">
+                            <EditTemplate>
+                                <MudDatePicker Date="@context.Item.TargetEnd"
+                                               DateChanged="@(async (date) => { context.Item.TargetEnd = date; await CommittedItemChanges(context.Item); })"
+                                               DateFormat="MM/dd/yyyy"
+                                               Editable="true"
+                                               Placeholder="Select date" />
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- BO ID -->
+                        <PropertyColumn Property="x => x.BoJiraId" Editable="false" Title="BO Jira ID"></PropertyColumn>
+
+                        <!-- Feature Jira Key -->
+                        <PropertyColumn Property="x => x.JiraId" Editable="false" Title=" Feature Jira ID"></PropertyColumn>
+
+                        <!-- Feature Name -->
+                        <PropertyColumn Property="x => x.FeatureName" CellStyle="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0;" Editable="true" Title="Feature Name"></PropertyColumn>
+
+                        <!-- Feature Summary -->
+                        <PropertyColumn Property="x => x.FeatureSummary" CellStyle="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 0;" Editable="true" Title="Feature Summary"></PropertyColumn>
+
+                        <!-- Teams (Multiple) -->
+                        <PropertyColumn Property="x => x.Teams.FirstOrDefault()!.Name" Title="Team Name">
+                            <EditTemplate>
+                                <MudSelect T="int?"
+                                           Value="@context.Item.Teams.FirstOrDefault()?.TeamId"
+                                           ValueChanged="@(value => UpdateTeam(context.Item, value))" Dense="true"
+                                           Clearable="true"
+                                           Required="true">
+                                    @foreach (var team in _filterTeam)
+                                    {
+                                        <MudSelectItem T="int?" Value="@((int?)team.Id)">
+                                            @team.Name
+                                        </MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- Estimated Days -->
+                        <PropertyColumn Property="x => x.EstimatedDays"
+                                        Editable="true"
+                                        Title="Estimated Days/Points">
+                            <EditTemplate>
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    @* Warning: Sum < Total *@
+                                    @if (HasEstimateMismatch(context.Item))
+                                    {
+                                        <MudTooltip Text="Sum of individual efforts is not matching with Estimated Days/points">
+                                            <MudIcon Icon="@Icons.Material.Filled.Warning"
+                                                     Color="Color.Warning"
+                                                     Size="Size.Small" />
+                                        </MudTooltip>
+                                    }
+                                </MudStack>
+                                <MudNumericField T="int?"
+                                                 Min="0"
+                                                 Step="1"
+                                                 Value="@context.Item.EstimatedDays"
+                                                 ValueChanged="@(value => UpdateEstimatedDays(context.Item, value))"
+                                                 Variant="Variant.Text"
+                                                 Margin="Margin.Dense" />
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- DevEstimate -->
+                        <PropertyColumn Property="x => x.DevEstimate" Editable="false" Title="Dev">
+                            <CellTemplate>
+                                <MudChip Icon="@Icons.Material.Filled.Lock"
+                                         Size="Size.Small"
+                                         Color="Color.Default"
+                                         Variant="Variant.Filled"
+                                         Style="white-space: normal; height: auto; padding: 8px 12px; display: flex; align-items: flex-start;">
+                                    @context.Item.DevEstimate
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+
+                        <!-- Dynamic columns from list -->
+                        @foreach (var techStack in _allTechnologyStack)
+                        {
+                            var techStackName = techStack.Name;
+                            <PropertyColumn Property="@(x => GetEstimatedEffort(x,techStackName))"
+                                            Title="@techStackName">
+                                <EditTemplate>
+                                    <MudNumericField T="int?"
+                                                     Value="@GetEstimatedEffort(context.Item, techStackName)"
+                                                     ValueChanged="@(v => UpdateEstimatedEffort(context.Item, techStackName, v))"
+                                                     Min="0"
+                                                     Max="100"
+                                                     Adornment="Adornment.End" />
+                                </EditTemplate>
+                            </PropertyColumn>
+
+                        }
+
+                        <!-- Depedencies (App/Team)-->
+                        <PropertyColumn Property="x => x.Dependencies" Title="Depedencies"></PropertyColumn>
+
+                        <!-- Confidence Percentage -->
+                        <PropertyColumn Property="x => x.ConfidencePercentage" Title="Requirement Confidence %">
+                            <EditTemplate>
+                                <MudNumericField T="int?"
+                                                 Value="@context.Item.ConfidencePercentage"
+                                                 ValueChanged="@(v => { context.Item.ConfidencePercentage = v; CommittedItemChanges(context.Item); })"
+                                                 Min="0"
+                                                 Max="100"
+                                                 Adornment="Adornment.End"
+                                                 AdornmentText="%" />
+                            </EditTemplate>
+                        </PropertyColumn>
+
+                        <!-- L6 Owner -->
+                        <PropertyColumn Property="x => x.L6Owner" Title="L6 Owner"></PropertyColumn>
+
+                    </Columns>
+                </MudDataGrid>
+            }
+        }
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+    </MudContainer>
+</AccessGuard>
+@code {
+    private ObservableCollection<Feature> features = new();
+    private List<MasterRow> _rows = new();
+    private List<MasterRow> _filterdRows = new();
+    private List<Art> _allCapitalProjectsForSync = new();
+    private List<BusinessOutcome> _allBusinessOutcome = new();
+    // Holds Skills now (the dynamic master-sheet columns are feature skills); field name kept to limit churn.
+    private List<Skill> _allTechnologyStack = new();
+    private List<UnfundedOption> _allUnfundedOptions = new();
+    private List<Team> _filterTeam = new();
+    private List<Pi> _allPi = new();
+    private ArtLookup _artLookup = ArtLookup.Empty;
+    private Dictionary<int, string?> _componentsByFeatureId = new();
+    private MudDataGrid<MasterRow> _masterGrid = default!;
+    private List<string> _availablePis = new();
+    private List<string> _availableLabels = new();
+    private bool _loading = true;
+    private bool _progress = true;
+    public bool showGrid = true;
+    private int? _selectedArtId;
+    private Dictionary<int, MasterRow> _originalRows = new();
+    private HashSet<MasterRow> _selectedItems = new();
+    private List<ChangedRow> _changedRows = new();
+    private int _successCount;
+    private bool _addingRow = false;
+    private bool _exporting = false;
+    private Dictionary<int, string?> _boJiraIdById = new();
+    private bool _isJiraConnected = false;
+
+
+    public class ChangedRow
+    {
+        public MasterRow MasterRow { get; set; }
+        public List<string> FieldsChanged { get; set; } = new();
+        public DateTime ChangedAt { get; set; } = DateTime.UtcNow;
+
+        public ChangedRow(MasterRow row, List<string> fieldsChanged)
+        {
+            MasterRow = row;
+            FieldsChanged = fieldsChanged;
+        }
+    }
+
+    private bool HasEstimateMismatch(MasterRow item)
+    {
+        var sumOfIndividual = item.TotalEstimates;
+
+        if (item.EstimatedDays != sumOfIndividual)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private int? GetEstimatedEffort(MasterRow item, string techStackName)
+    {
+        var techStack = item.TechStacks.FirstOrDefault(x => x.Name == techStackName);
+        return techStack?.EstimatedEffort;
+    }
+
+    private (string JiraId, string? Summary)? GetSelectedProgram(MasterRow item)
+    {
+        var firstProgram = item.StrategicObjective.FirstOrDefault();
+        if (firstProgram == null) return null;
+        return (firstProgram.JiraId ?? "", firstProgram.Summary);
+    }
+
+    private void UpdateUnfundedOption(MasterRow item, int? optionId)
+    {
+        item.UnfundedOptionId = optionId;
+        var unfundedOptions = _allUnfundedOptions.FirstOrDefault(e => e.Id == optionId);
+        item.Unfunded = unfundedOptions?.Name;
+        CommittedItemChanges(item);
+    }
+
+    private void UpdateEpicRanking(MasterRow item, int? epicRanking)
+    {
+        item.EpicRanking = epicRanking;
+        CommittedItemChanges(item);
+        foreach (var row in _filterdRows.Where(y => y.EpicTableId == item.EpicTableId))
+        {
+            row.EpicRanking = epicRanking;
+        }
+    }
+
+    private bool HasSameRankingOnAnyOtherEpic(MasterRow item, int? epicRanking)
+    {
+        return _filterdRows.Any(y => y.EpicRanking == epicRanking && y.EpicTableId != item.EpicTableId);
+    }
+
+    private void UpdatePi(MasterRow item, int? piId)
+    {
+        item.PiId = piId;
+        var pi = _allPi.FirstOrDefault(b => b.Id == piId);
+        item.PiName = pi?.Name;
+
+        CommittedItemChanges(item);
+    }
+
+    private void UpdateEstimatedDays(MasterRow item, int? estomatedDays)
+    {
+        item.EstimatedDays = estomatedDays;
+        CommittedItemChanges(item);
+    }
+
+    private void UpdateTeam(MasterRow item, int? teamId)
+    {
+        item.Teams.Clear();
+        var team = _filterTeam.FirstOrDefault(x => x.Id == teamId);
+        item.Teams.Add(new MasterRowTeamRef(team?.Id, team?.Name, true)); // You may need proper team ID lookup'
+
+        CommittedItemChanges(item);
+    }
+
+    private void UpdateEstimatedEffort(MasterRow item, string techStackName, int? value)
+    {
+        var techStack = item.TechStacks.FirstOrDefault(x => x.Name == techStackName);
+        var alltechStack = _allTechnologyStack.FirstOrDefault(x => x.Name == techStackName);
+
+        if (techStack != null)
+        {
+            techStack.EstimatedEffort = value ?? 0;
+        }
+        else if (value.HasValue && value.Value > 0)
+        {
+            item.TechStacks.Add(new MasterRowTechStackRef(alltechStack.Id, techStackName, value.Value));
+        }
+
+        item.DevEstimate = CalculateDevEstimate(item.TechStacks);
+        item.TotalEstimates = CalculateDevEstimate(item.TechStacks) + CalculateBAEstimate(item.TechStacks);
+
+        CommittedItemChanges(item);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        showGrid = false;
+        _loading = true;
+        _progress = true;
+
+        try
+        {
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading data: {ex.Message}");
+            Snackbar.Add("Error loading data", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            _progress = false;
+        }
+    }
+
+    private async Task LoadData()
+    {
+        var capitalProjectsTask = CachedDataService.GetCapitalProjectsAsync();
+        var techStacksTask = SkillService.GetAllAsync();
+        var featuresTask = CachedDataService.GetFeaturesAsync();
+        var unfundedOptionTask = CachedDataService.GetUnfundedOptionsAsync();
+        var businessOutcomeTask = CachedDataService.GetBusinessOutcomesAsync();
+        var piTask = CachedDataService.GetPlanningIncrementsAsync();
+
+        await Task.WhenAll(
+            capitalProjectsTask,
+            techStacksTask,
+            featuresTask,
+            unfundedOptionTask,
+            businessOutcomeTask,
+            piTask);
+
+        _allCapitalProjectsForSync = capitalProjectsTask.Result.ToList();
+        _allTechnologyStack = techStacksTask.Result.ToList();
+        _allUnfundedOptions = unfundedOptionTask.Result.ToList();
+        _allBusinessOutcome = businessOutcomeTask.Result.OrderBy(x => x.Summary).ToList();
+        _allPi = piTask.Result.ToList();
+        var features = featuresTask.Result;
+        var labelList = new List<string>();
+        var labels = features.Where(x => x.Labels != null);
+        foreach (var item in labels)
+        {
+            var eachItem = item.Labels!.Split(',');
+            labelList.AddRange(eachItem);
+        }
+        _availableLabels = labelList.Distinct().ToList();
+
+        _artLookup = ArtHelper.BuildLookup(_allCapitalProjectsForSync);
+
+        ProcessFeaturesOptimized(features.ToList());
+    }
+
+    private void ProcessFeaturesOptimized(List<Feature> features)
+    {
+        var capacity = features.Count;
+        _rows = new List<MasterRow>(capacity);
+        _componentsByFeatureId = features.ToDictionary(f => f.Id, f => f.Components);
+
+        foreach (var f in features)
+        {
+            var bo = f.BusinessOutcome;
+            var epic = bo?.PortfolioEpic;
+
+            var techStacks = f.FeatureSkills
+                .Select(fs => new MasterRowTechStackRef(fs.SkillId, fs.Skill.Name, (int?)Math.Round(fs.Value)))
+                .ToList();
+
+            var teams = f.FeatureTeams.Where(x => x.IsPrimary == null || x.IsPrimary == true)
+                .Select(ft => new MasterRowTeamRef(ft.TeamId, ft.Team.Name, ft.IsPrimary))
+                .ToList();
+
+            var programRefs = epic?.StrategicObjectivePortfolioEpics
+                ?.Select(ppe => ppe.StrategicObjective)
+                .Select(p => new MasterRowJiraRef(p.Id, p.JiraId!, p.Summary, p.Description))
+                .DistinctBy(p => p.SoTableId)
+                .ToList() ?? new List<MasterRowJiraRef>();
+
+            var art = ArtHelper.ResolveArt(f, _artLookup);
+
+            var row = new MasterRow(
+                id: f.Id,
+                jiraId: f.JiraId,
+                soJiraIds: programRefs,
+                epicRanking: epic?.Ranking,
+                unfunded: bo?.PortfolioEpic?.UnfundedOption?.Name,
+                unfundedOptionId: bo?.PortfolioEpic?.UnfundedOption?.Id,
+                epicName: epic?.Summary,
+                boName: bo?.Summary,
+                piId: f.PiId,
+                targetEnd: f.TargetEnd,
+                piName: f.Pi?.Name,
+                boJiraId: bo?.JiraId,
+                featureName: f.Name,
+                capitalProjectName: art?.Name,
+                teams: teams,
+                estimatedDays: f.StoryPoints,
+                techStacks: techStacks,
+                dependencies: f.Dependencies,
+                confidencePercenatge: f.ConfidencePercentage,
+                l6Owner: epic?.L6Owner,
+                epicJiraId: epic?.JiraId,
+                devEstimate: CalculateDevEstimate(techStacks),
+                baEstimate: null,
+                projectKey: JiraProjectKeys.Of(f),
+                businessOutcomeid: f.BusinessOutcomeId,
+                portfolioEpicId: epic?.Id,
+                totalEstimates: CalculateTotalEstimate(techStacks),
+                featureLabel: f.Labels,
+                featureSummary: f.Summary,
+                isNewRow: false)
+            {
+                ArtId = art?.Id
+            };
+
+            _rows.Add(row);
+
+        }
+    }
+
+    private int? CalculateDevEstimate(List<MasterRowTechStackRef> listTechStacksRefrence)
+    {
+        return listTechStacksRefrence.Where(x => x.Name != "Tech PO" && x.EstimatedEffort != null).Sum(y => y.EstimatedEffort);
+    }
+
+    private int? CalculateTotalEstimate(List<MasterRowTechStackRef> listTechStacksRefrence)
+    {
+        return listTechStacksRefrence.Where(x => x.EstimatedEffort != null).Sum(y => y.EstimatedEffort);
+    }
+
+    private int? CalculateBAEstimate(List<MasterRowTechStackRef> listTechStacksRefrence)
+    {
+        return listTechStacksRefrence.Where(x => x.Name == "Tech PO" && x.EstimatedEffort != null).Sum(y => y.EstimatedEffort);
+    }
+
+    private Art? SelectedArt => _allCapitalProjectsForSync.FirstOrDefault(a => a.Id == _selectedArtId);
+
+    private string NewFeatureProjectKey(Art art) =>
+        art.Keys.FirstOrDefault(k => _artLookup.Matcher.OwnsWholeKey(art.Id, k))
+        ?? art.Keys.FirstOrDefault(k => BlankFeatureBelongsTo(art, k))
+        ?? art.Keys[0];
+
+    private bool BlankFeatureBelongsTo(Art art, string projectKey) =>
+        _artLookup.Matcher.Match(projectKey, null, null, null).ArtId == art.Id;
+
+    private ArtMatch MatchRow(MasterRow row) =>
+        _artLookup.Matcher.Match(
+            row.ProjectKey,
+            row.JiraId,
+            row.FeatureLabel,
+            row.IsNewRow != true && _componentsByFeatureId.TryGetValue(row.Id, out var components) ? components : null);
+
+    private void WarnIfNewFeatureLeavesArt(Art art, string projectKey)
+    {
+        if (BlankFeatureBelongsTo(art, projectKey))
+        {
+            return;
+        }
+
+        var scope = _artLookup.Matcher.ScopesOf(art.Id)
+            .FirstOrDefault(s => string.Equals(s.JiraKey, projectKey, StringComparison.OrdinalIgnoreCase));
+
+        var message = scope is { IsFiltered: true }
+            ? $"{art.Name} takes {projectKey} only for issues matching {scope} (any listed component and any listed label). " +
+              $"The new feature joins {art.Name} once it has them{(scope.Components.Count > 0 ? " (components are set in Jira)" : "")}; " +
+              "until then it drops off this sheet when saved."
+            : $"{projectKey} is listed by several ARTs without components or labels, so the new feature belongs to none of them and drops off this sheet when saved.";
+
+        Snackbar.Add(message, Severity.Warning, config =>
+        {
+            config.VisibleStateDuration = 10000;
+            config.ShowCloseIcon = true;
+        });
+    }
+
+    private void WarnIfLabelsMoveFeature(MasterRow row, ArtMatch before, ArtMatch after)
+    {
+        if (after.ArtId == row.ArtId || ArtHelper.DescribeMove(before, after, _artLookup) is not { } move)
+        {
+            return;
+        }
+
+        Snackbar.Add($"{row.JiraId ?? row.FeatureName}: {move} It drops off this sheet when saved.", Severity.Warning);
+    }
+
+    private async Task OnArtChanged(int? artId)
+    {
+        _selectedArtId = artId;
+        showGrid = false;
+        _loading = true;
+        StateHasChanged(); // Update UI immediately
+
+        await Task.Delay(1); // Let UI thread breathe
+
+        ReloadData();
+
+        foreach (var row in _filterdRows)
+        {
+            _originalRows[row.Id] = CloneRow(row);
+        }
+
+        _loading = false;
+        showGrid = true;
+        StateHasChanged();
+    }
+
+    private async Task<DataGridEditFormAction> CommittedItemChanges(MasterRow item)
+    {
+        var fieldsChanged = new List<string>();
+
+        if (item.Id == 0)
+        {
+            _originalRows[item.Id] = CloneRow(item);
+            fieldsChanged.Add("NewRow");
+
+            await JS.InvokeVoidAsync("console.log", $"New row created with ID: {item.Id}");
+        }
+        else
+        {
+            if (_originalRows.TryGetValue(item.Id, out var original))
+            {
+                fieldsChanged = GetChangedFields(original, item);
+
+                if (fieldsChanged.Any())
+                {
+                    // Update original state
+                    _originalRows[item.Id] = CloneRow(item);
+                }
+            }
+            else
+            {
+                _originalRows[item.Id] = CloneRow(item);
+                fieldsChanged.Add("NoOriginalFound");
+            }
+        }
+
+        if (fieldsChanged.Any())
+        {
+            // Find existing change record for this row
+            var existingChange = _changedRows.FirstOrDefault(cr => cr.MasterRow.Id == item.Id);
+
+            if (existingChange != null)
+            {
+                foreach (var field in fieldsChanged)
+                {
+                    if (!existingChange.FieldsChanged.Contains(field))
+                    {
+                        existingChange.FieldsChanged.Add(field);
+                    }
+                }
+
+                existingChange.MasterRow = CloneRow(item);
+                existingChange.ChangedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                _changedRows.Add(new ChangedRow(CloneRow(item), fieldsChanged));
+            }
+        }
+
+        return await Task.FromResult(DataGridEditFormAction.Close);
+    }
+
+    private List<string> GetChangedFields(MasterRow original, MasterRow current)
+    {
+        var changes = new List<string>();
+
+        if (original.JiraId != current.JiraId) changes.Add(nameof(MasterRow.JiraId));
+        if (original.EpicRanking != current.EpicRanking) changes.Add(nameof(MasterRow.EpicRanking));
+        if (original.Unfunded != current.Unfunded) changes.Add(nameof(MasterRow.Unfunded));
+        if (original.EpicName != current.EpicName) changes.Add(nameof(MasterRow.EpicName));
+        if (original.BoName != current.BoName) changes.Add(nameof(MasterRow.BoName));
+        if (original.PiId != current.PiId) changes.Add(nameof(MasterRow.PiId));
+        if (original.TargetEnd != current.TargetEnd) changes.Add(nameof(MasterRow.TargetEnd));
+        if (original.PiName != current.PiName) changes.Add(nameof(MasterRow.PiName));
+        if (original.BoJiraId != current.BoJiraId) changes.Add(nameof(MasterRow.BoJiraId));
+        if (original.FeatureName != current.FeatureName) changes.Add(nameof(MasterRow.FeatureName));
+        if (original.EstimatedDays != current.EstimatedDays) changes.Add(nameof(MasterRow.EstimatedDays));
+        if (original.ConfidencePercentage != current.ConfidencePercentage) changes.Add(nameof(MasterRow.ConfidencePercentage));
+        if (original.L6Owner != current.L6Owner) changes.Add(nameof(MasterRow.L6Owner));
+        if (original.FeatureLabel != current.FeatureLabel) changes.Add(nameof(MasterRow.FeatureLabel));
+        if (original.Dependencies != current.Dependencies) changes.Add(nameof(MasterRow.Dependencies));
+
+        // Compare collections
+        if (!ListsEqual(original.StrategicObjective, current.StrategicObjective,
+            (a, b) => a.JiraId == b.JiraId && a.Summary == b.Summary))
+            changes.Add(nameof(MasterRow.StrategicObjective));
+
+        if (!ListsEqual(original.Teams, current.Teams,
+            (a, b) => a.TeamId == b.TeamId && a.Name == b.Name))
+            changes.Add(nameof(MasterRow.Teams));
+
+        if (!ListsEqual(original.TechStacks, current.TechStacks,
+            (a, b) => a.Name == b.Name && a.EstimatedEffort == b.EstimatedEffort))
+            changes.Add(nameof(MasterRow.TechStacks));
+
+        return changes;
+    }
+
+    private List<string> FinalValidationSaveOrAddNew(List<ChangedRow> changedRows)
+    {
+        var validationErrors = new List<string>();
+        var epicRankingMap = new Dictionary<string, int>();
+
+        foreach (var changedRow in changedRows)
+        {
+            var rowErrors = ValidateRow(changedRow, epicRankingMap);
+            validationErrors.AddRange(rowErrors);
+        }
+
+        return validationErrors;
+    }
+
+    private List<string> ValidateRow(ChangedRow changedRow, Dictionary<string, int> epicRankingMap)
+    {
+        var errors = new List<string>();
+        var row = changedRow.MasterRow;
+        if (string.IsNullOrWhiteSpace(row.FeatureName))
+            errors.Add($"[{row.JiraId}] Feature Name is missing");
+        if (string.IsNullOrWhiteSpace(row.BoName))
+            errors.Add($"[{row.JiraId}] BO Name is missing");
+        if (string.IsNullOrWhiteSpace(row.EpicName))
+            errors.Add($"[{row.JiraId}] Epic Name is missing.Please sync it in tool");
+
+        if (row.Teams == null || !row.Teams.Any())
+            errors.Add($"[{row.JiraId}] Team Name is missing");
+
+        if (row.JiraId != null)
+        {
+            if (string.IsNullOrWhiteSpace(row.EpicJiraId))
+                errors.Add($"[{row.JiraId}] Epic Jira Id is missing");
+            if (string.IsNullOrWhiteSpace(row.BoJiraId))
+                errors.Add($"[{row.JiraId}] BO Jira Id is missing");
+            if (row.TargetEnd == null || row.TargetEnd == DateTime.MinValue)
+                errors.Add($"[{row.JiraId}] Target End Date is missing");
+            if (row.EpicRanking.HasValue && !string.IsNullOrWhiteSpace(row.EpicJiraId))
+            {
+                ValidateEpicRanking(errors, row, epicRankingMap);
+            }
+        }
+        return errors;
+    }
+
+    private void ValidateEpicRanking(List<string> errors, MasterRow row, Dictionary<string, int> epicRankingMap)
+    {
+        var epicId = row.EpicJiraId;
+        var ranking = row.EpicRanking!.Value;
+
+        if (epicRankingMap.TryGetValue(epicId, out var existingRanking))
+        {
+            if (existingRanking != ranking)
+            {
+                errors.Add($"[{row.JiraId}] Epic {epicId} has conflicting rankings: {existingRanking} vs {ranking}");
+            }
+        }
+        else if (epicRankingMap.ContainsValue(ranking))
+        {
+            var conflictingEpic = epicRankingMap.First(x => x.Value == ranking).Key;
+            errors.Add($"[{row.JiraId}] Ranking {ranking} is already assigned to Epic {conflictingEpic}");
+        }
+        else
+        {
+            epicRankingMap[epicId] = ranking;
+        }
+    }
+
+    private bool ListsEqual<T>(List<T> list1, List<T> list2, Func<T, T, bool> comparer)
+    {
+        if (list1.Count != list2.Count) return false;
+
+        for (int i = 0; i < list1.Count; i++)
+        {
+            if (!comparer(list1[i], list2[i])) return false;
+        }
+
+        return true;
+    }
+
+    private async Task SaveAll()
+    {
+        if (!_changedRows.Any())
+        {
+            Snackbar.Add("No changes to save", Severity.Info);
+            return;
+        }
+
+        List<ChangedRow> rowsToSave;
+        var selectedIds = _selectedItems.Select(x => x.Id).ToList();
+        var selectedRows = _changedRows.Where(y => selectedIds.Contains(y.MasterRow.Id)).ToList();
+        if (selectedRows.Any())
+        {
+            rowsToSave = selectedRows;
+        }
+        else
+        {
+            rowsToSave = _changedRows;
+        }
+        var parameters = new DialogParameters<MasterDataSave>
+            {
+                { x => x.RowCount, rowsToSave.Count }
+            };
+
+        var options = new DialogOptions
+            {
+                CloseOnEscapeKey = true,
+                MaxWidth = MaxWidth.Small,
+                FullWidth = true
+            };
+
+        var dialog = await DialogService.ShowAsync<MasterDataSave>(
+            "Confirm Save",
+            parameters,
+            options);
+
+        var result = await dialog.Result;
+
+        if (result!.Canceled)
+        {
+            return;
+        }
+
+        bool createInJira = result.Data is bool sync && sync;
+        _successCount = 0;
+        StateHasChanged();
+
+        try
+        {
+            var validRows = FinalValidationSaveOrAddNew(rowsToSave);
+            if (validRows.Count > 0)
+            {
+                var errorList = string.Join("", validRows.Select(e => $"<li>{e}</li>"));
+                var errorHtml = $@"<div style='max-width: 500px;'>
+<strong style='display: block; margin-bottom: 8px;'>⚠️ Validation Errors:</strong>
+<ul style='margin: 0; padding-left: 20px;'>{errorList}</ul></div>";
+
+                Snackbar.Add(new MarkupString(errorHtml), Severity.Error, config =>
+                {
+                    config.VisibleStateDuration = 10000;
+                    config.ShowCloseIcon = true;
+                });
+
+                return;
+            }
+
+            var uploaded = new List<ChangedRow>();
+
+            var upsertResult = await MasterSheetService.UpsertMultipleRowsAsync(rowsToSave.Select(x => x.MasterRow).ToList(), createInJira);
+
+            if (upsertResult.IsSuccess)
+            {
+                await CachedDataService.ForceRefreshAsync();
+                await LoadData();
+                ReloadData();
+                Snackbar.Add(upsertResult.SuccessMessage, Severity.Info);
+            }
+            else
+            {
+                Snackbar.Add(upsertResult.ErrorMessage, Severity.Error);
+            }
+
+            _changedRows.Clear();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            StateHasChanged();
+        }
+    }
+
+    private MasterRow CloneRow(MasterRow source)
+    {
+        var masterRow = new MasterRow(
+            id: source.Id,
+            jiraId: source.JiraId,
+            soJiraIds: source.StrategicObjective.Select(p => new MasterRowJiraRef(p.SoTableId, p.JiraId!, p.Summary, p.Description)).ToList(),
+            epicRanking: source.EpicRanking,
+            unfunded: source.Unfunded,
+            unfundedOptionId: source.UnfundedOptionId,
+            epicName: source.EpicName,
+            boName: source.BoName,
+            piId: source.PiId,
+            targetEnd: source.TargetEnd,
+            piName: source.PiName,
+            boJiraId: source.BoJiraId,
+            featureName: source.FeatureName,
+            capitalProjectName: source.CapitalProjectName,
+            teams: source.Teams.Select(t => new MasterRowTeamRef(t.TeamId, t.Name!, t.IsPrimary)).ToList(),
+            estimatedDays: source.EstimatedDays,
+            techStacks: source.TechStacks.Select(ts => new MasterRowTechStackRef(ts.Id, ts.Name!, ts.EstimatedEffort)).ToList(),
+            dependencies: source.Dependencies,
+            confidencePercenatge: source.ConfidencePercentage,
+            l6Owner: source.L6Owner,
+            epicJiraId: source.EpicJiraId,
+            devEstimate: CalculateDevEstimate(source.TechStacks),
+            baEstimate: source.BAEstimate,
+            projectKey: source.ProjectKey,
+            businessOutcomeid: source.BoId,
+            portfolioEpicId: source.EpicTableId,
+            totalEstimates: source.TotalEstimates,
+            featureLabel: source.FeatureLabel,
+            featureSummary: source.FeatureSummary,
+            isNewRow: source.IsNewRow)
+        {
+            ArtId = source.ArtId
+        };
+        return masterRow;
+    }
+
+    [Inject] private ISnackbar Snackbar { get; set; } = default!;
+
+    private async Task ShowChangedRows()
+    {
+        await JS.InvokeVoidAsync("console.log", $"Event = CommittedItemChanges, Data = {System.Text.Json.JsonSerializer.Serialize(_changedRows)}");
+    }
+
+    private void ReloadData()
+    {
+        var art = SelectedArt;
+        _filterdRows = art is null ? new List<MasterRow>() : _rows.Where(x => x.ArtId == art.Id).ToList();
+        _filterTeam = art?.CapitalProjectTeams.Select(y => y.Team).ToList() ?? new List<Team>();
+    }
+
+    private void SelectedItemsChanged(HashSet<MasterRow> items)
+    {
+        _selectedItems = items;
+        JS.InvokeVoidAsync("console.log", $"Event = CommittedItemChanges, Data = {System.Text.Json.JsonSerializer.Serialize(_changedRows)}");
+    }
+
+    private IReadOnlyList<string?> GetFeatureLabels(MasterRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.FeatureLabel))
+            return [];
+
+        return row.FeatureLabel
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim()).ToList();
+    }
+
+    private void UpdateFeatureLabel(MasterRow item, IReadOnlyCollection<string?> fl)
+    {
+        var before = MatchRow(item);
+        item.FeatureLabel = string.Join(',', fl);
+        WarnIfLabelsMoveFeature(item, before, MatchRow(item));
+        CommittedItemChanges(item);
+    }
+
+    private IEnumerable<string> GetSortedLabels(MasterRow row)
+    {
+        var selectedLabels = GetFeatureLabels(row).ToHashSet();
+
+        return _availableLabels
+            .OrderByDescending(label => selectedLabels.Contains(label))
+            .ThenBy(label => label);
+    }
+
+    private async Task UpdateBo(MasterRow item, int? boTableId)
+    {
+        var bo = _allBusinessOutcome.FirstOrDefault(bo => bo.Id == boTableId);
+        item.BoId = boTableId;
+        item.BoName = bo.Summary;
+        item.BoJiraId = bo.JiraId;
+        item.EpicTableId = bo.PortfolioEpicId;
+        item.EpicName = bo.PortfolioEpic?.Summary;
+        item.EpicJiraId = bo.PortfolioEpic?.JiraId;
+
+        if (bo.PortfolioEpic.StrategicObjectivePortfolioEpics.Any())
+        {
+            item.StrategicObjective.Clear();
+            var soRow = new MasterRowJiraRef();
+            soRow.Summary = bo.PortfolioEpic.StrategicObjectivePortfolioEpics.First().StrategicObjective.Summary;
+            soRow.SoTableId = bo.PortfolioEpic.StrategicObjectivePortfolioEpics.First().StrategicObjective.Id;
+            soRow.JiraId = bo.PortfolioEpic.StrategicObjectivePortfolioEpics.First().StrategicObjective.JiraId;
+            item.StrategicObjective.Add(soRow);
+        };
+
+        await CommittedItemChanges(item);
+    }
+
+    private async Task NewItemAsync()
+    {
+        var art = SelectedArt;
+        if (art is null || !art.HasKeys)
+        {
+            Snackbar.Add("Select a project first", Severity.Warning);
+            return;
+        }
+
+        var projectKey = NewFeatureProjectKey(art);
+
+        _addingRow = true;
+        StateHasChanged();
+
+        await InvokeAsync(() =>
+        {
+            var newRow = new MasterRow
+     (
+         id: _rows.Any() ? _rows.Max(r => r.Id) + 1 : 1,
+         jiraId: null,
+         soJiraIds: new List<MasterRowJiraRef>(),
+         epicRanking: null,
+         unfunded: null,
+         unfundedOptionId: null,
+         epicName: null,
+         boName: null,
+         piId: null,
+         targetEnd: null,
+         piName: null,
+         boJiraId: null,
+         featureName: "New Feature",
+         capitalProjectName: art.Name,
+         teams: new List<MasterRowTeamRef>(),
+         estimatedDays: null,
+         techStacks: new List<MasterRowTechStackRef>(),
+         dependencies: null,
+         confidencePercenatge: null,
+         l6Owner: null,
+         epicJiraId: null,
+         devEstimate: null,
+         baEstimate: null,
+         projectKey: projectKey,
+         businessOutcomeid: null,
+         portfolioEpicId: null,
+         totalEstimates: null,
+         featureLabel: null,
+         featureSummary: null,
+         isNewRow: true)
+            {
+                ArtId = art.Id
+            };
+
+            _rows.Insert(0, newRow);
+            _filterdRows.Insert(0, newRow);
+
+            _originalRows[newRow.Id] = CloneRow(newRow);
+            _changedRows.Add(new ChangedRow(CloneRow(newRow), new List<string> { "NewRow" }));
+
+            StateHasChanged();
+        });
+
+        _addingRow = false;
+        Snackbar.Add("New row added", Severity.Success);
+        WarnIfNewFeatureLeavesArt(art, projectKey);
+    }
+
+    #region Export to Excel
+
+    private async Task ExportFilteredAsync() => await ExportAsync("MasterSheet.xlsx");
+
+    private async Task ExportEmptyTemplateAsync() => await ExportAsync("MasterSheet_Template.xlsx");
+
+    private async Task ExportAsync(string fileName)
+    {
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = await MasterSheetService.ExportFilteredAsync(fileName);
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnUploadFileSelected(IBrowserFile file)
+    {
+        if (file is null)
+        {
+            return;
+        }
+
+        MemoryStream? stream = null;
+        try
+        {
+            stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            var present = await MasterSheetService.DetectColumnsAsync(stream);
+            if (present.Count == 0)
+            {
+                Snackbar.Add("No recognized feature columns were found in the file.", Severity.Error);
+                return;
+            }
+
+            _exporting = true;
+            StateHasChanged();
+
+            stream.Position = 0;
+            var result = await MasterSheetService.ParseFileAsync(stream);
+            if (result.Rows.Count == 0)
+            {
+                Snackbar.Add("No data rows found in the uploaded file.", Severity.Warning);
+                return;
+            }
+
+            MasterSheetUploadPreviewState.PendingUpload = result.Rows;
+            MasterSheetUploadPreviewState.ImportedColumns = result.AppliedColumns;
+            MasterSheetUploadPreviewState.TechStackNames = result.TechStackNames;
+            Nav.NavigateTo(RoutingPath.MasterSheetUploadPreview);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            if (stream is not null)
+            {
+                await stream.DisposeAsync();
+            }
+            StateHasChanged();
+        }
+    }
+
+    #endregion
+}

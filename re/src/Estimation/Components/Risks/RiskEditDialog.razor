@@ -1,0 +1,410 @@
+@inject IRiskService RiskService
+@inject IRiskCommentService RiskCommentService
+@inject IArtService ArtService
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.Risks.Models
+@using Estimation.Core.Risks.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<div class="pa-4 risk-edit-dialog">
+    @if (_loading)
+    {
+        <div class="d-flex justify-center pa-8">
+            <MudProgressCircular Indeterminate Color="Color.Primary" />
+        </div>
+    }
+    else if (_notFound)
+    {
+        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">This risk no longer exists.</MudAlert>
+        <div class="d-flex justify-end mt-4">
+            <MudButton Variant="Variant.Text" OnClick="Cancel">Close</MudButton>
+        </div>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-3">
+            @PiName
+        </MudText>
+
+        <div class="d-flex flex-column gap-3">
+            <div class="risk-field-row">
+                <div class="risk-field">
+                    <SearchableDropdown T="int"
+                                        Items="_artIds"
+                                        Values="_selectedArtIds"
+                                        ValuesChanged="OnSelectedArtsChanged"
+                                        MultiSelect="true"
+                                        Label="@PlanningDisplayNames.Art"
+                                        Placeholder="Select the ARTs this risk sits with"
+                                        ToStringFunc="@LookupArtName"
+                                        SelectAll="true" />
+                </div>
+                <div class="risk-field">
+                    <MudSelect T="RiskStatus?" @bind-Value="_status"
+                               Label="@PlanningDisplayNames.Status" Required RequiredError="Status is required"
+                               Variant="Variant.Outlined" Dense
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var status in Enum.GetValues<RiskStatus>())
+                        {
+                            <MudSelectItem T="RiskStatus?" Value="@((RiskStatus?)status)">@status.ToDisplayString()</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+            </div>
+
+            <div class="risk-field-row">
+                <div class="risk-field">
+                    <MudSelect T="RiskCategory?" @bind-Value="_category"
+                               Label="@PlanningDisplayNames.Category" Required RequiredError="Category is required"
+                               Variant="Variant.Outlined" Dense
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var category in Enum.GetValues<RiskCategory>())
+                        {
+                            <MudSelectItem T="RiskCategory?" Value="@((RiskCategory?)category)">@category.ToDisplayString()</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+                <div class="risk-field">
+                    <MudSelect T="RiskSeverity?" @bind-Value="_severity"
+                               Label="@PlanningDisplayNames.Severity" Required RequiredError="Severity is required"
+                               Variant="Variant.Outlined" Dense
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var severity in Enum.GetValues<RiskSeverity>())
+                        {
+                            <MudSelectItem T="RiskSeverity?" Value="@((RiskSeverity?)severity)">@severity.ToDisplayString()</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+            </div>
+
+            <div class="risk-field-row">
+                <div class="risk-field">
+                    <MudTextField @bind-Value="_owner"
+                                  Label="@PlanningDisplayNames.Owner"
+                                  Variant="Variant.Outlined"
+                                  MaxLength="Risk.MaxOwnerLength"
+                                  Counter="Risk.MaxOwnerLength"
+                                  Immediate />
+                </div>
+                <div class="risk-field">
+                    <MudDatePicker @bind-Date="_dueBy"
+                                   Label="@PlanningDisplayNames.DueBy"
+                                   Variant="Variant.Outlined"
+                                   Clearable
+                                   DateFormat="yyyy-MM-dd" />
+                </div>
+            </div>
+
+            <SearchableDropdown T="int"
+                                Items="_featureIds"
+                                Values="_selectedFeatureIds"
+                                ValuesChanged="OnSelectedFeaturesChanged"
+                                MultiSelect="true"
+                                Label="Features"
+                                Placeholder="@(_featureIds.Count == 0 ? "No features with a Jira ID are assigned to this PI" : "Select the affected features (optional)")"
+                                HelperText="A risk can be left without features, and the same feature can appear in several risks."
+                                ToStringFunc="@LookupFeatureText"
+                                SelectedTextFunc="@LookupFeatureJiraId"
+                                Disabled="@(_featureIds.Count == 0)"
+                                SelectAll="true" />
+
+            <MudTextField @bind-Value="_summary"
+                          Label="@PlanningDisplayNames.Summary"
+                          Variant="Variant.Outlined"
+                          Lines="5"
+                          MaxLength="Risk.MaxSummaryLength"
+                          Counter="Risk.MaxSummaryLength"
+                          Immediate />
+
+            <MudTextField @bind-Value="_comment"
+                          Label="@(IsNew ? "Comments" : "Add a comment")"
+                          Placeholder="@(IsNew ? "Describe the risk…" : "Add an update to the risk comment thread…")"
+                          Variant="Variant.Outlined"
+                          Lines="4"
+                          MaxLength="RiskComment.MaxTextLength"
+                          Counter="RiskComment.MaxTextLength"
+                          Immediate />
+        </div>
+
+        <div class="d-flex justify-space-between align-center gap-2 mt-4">
+            <div>
+                @if (CanDelete && !IsNew)
+                {
+                    <MudTooltip Text="Deletes the risk and all its comments">
+                        <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                                   StartIcon="@Icons.Material.Filled.DeleteForever"
+                                   Disabled="@(_saving || _deleting)"
+                                   OnClick="DeleteAsync">
+                            @(_deleting ? "Deleting…" : "Delete")
+                        </MudButton>
+                    </MudTooltip>
+                }
+            </div>
+            <div class="d-flex gap-2">
+                <MudButton Variant="Variant.Text" OnClick="Cancel" Disabled="@(_saving || _deleting)">Cancel</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           Disabled="@(_saving || _deleting || !CanSave)"
+                           OnClick="SaveAsync">
+                    @(_saving ? "Saving…" : IsNew ? "Create" : "Save")
+                </MudButton>
+            </div>
+        </div>
+    }
+</div>
+
+<style>
+    .mud-dialog:has(.risk-edit-dialog) {
+        width: 80vw;
+        max-width: 80vw;
+        min-width: 320px;
+    }
+
+    .risk-edit-dialog {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .message-content:has(.risk-edit-dialog) {
+        width: 100%;
+    }
+
+    .risk-edit-dialog .risk-field-row {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+    }
+
+    .risk-edit-dialog .risk-field {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+
+    .risk-edit-dialog .risk-field > * {
+        width: 100%;
+    }
+
+    @@media (max-width: 480px) {
+        .risk-edit-dialog .risk-field-row {
+            flex-wrap: wrap;
+        }
+
+        .risk-edit-dialog .risk-field {
+            flex-basis: 100%;
+        }
+    }
+</style>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public int PiId { get; set; }
+
+    [Parameter] public string? PiName { get; set; }
+
+    [Parameter] public int? RiskId { get; set; }
+
+    [Parameter] public string? CurrentUser { get; set; }
+
+    [Parameter] public bool CanDelete { get; set; }
+
+    private bool IsNew => RiskId is null;
+
+    private bool _loading = true;
+    private bool _saving;
+    private bool _deleting;
+    private bool _notFound;
+
+    private RiskCategory? _category;
+    private RiskSeverity? _severity;
+    private RiskStatus? _status;
+    private string? _summary;
+    private string? _owner;
+    private DateTime? _dueBy;
+    private string? _comment;
+
+    private List<Art> _arts = new();
+    private List<int> _artIds = new();
+    private IReadOnlyCollection<int> _selectedArtIds = Array.Empty<int>();
+
+    private List<RiskFeatureVm> _features = new();
+    private List<int> _featureIds = new();
+    private IReadOnlyCollection<int> _selectedFeatureIds = Array.Empty<int>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var piId = PiId;
+            var linked = new List<RiskFeatureVm>();
+
+            if (RiskId is { } riskId)
+            {
+                var risk = await RiskService.GetByIdAsync(riskId);
+                if (risk is null)
+                {
+                    _notFound = true;
+                    return;
+                }
+
+                piId = risk.PiId;
+                _selectedArtIds = risk.Arts.Select(a => a.CapitalProjectId).ToList();
+                _category = risk.Category;
+                _severity = risk.Severity;
+                _status = risk.Status;
+                _summary = risk.Summary;
+                _owner = risk.Owner;
+                _dueBy = risk.DueBy;
+                linked = risk.Features;
+                _selectedFeatureIds = linked.Select(f => f.FeatureId).ToList();
+            }
+
+            _arts = (await ArtService.GetAllLightAsync())
+                .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            _artIds = _arts.Select(a => a.Id).ToList();
+
+            var piFeatures = await RiskService.GetPiFeaturesAsync(piId);
+
+            var onPi = piFeatures.Select(f => f.FeatureId).ToHashSet();
+            _features = piFeatures
+                .Concat(linked.Where(f => !onPi.Contains(f.FeatureId)))
+                .ToList();
+            _featureIds = _features.Select(f => f.FeatureId).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load the risk: {ex.Message}", Severity.Error);
+            _notFound = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void OnSelectedFeaturesChanged(IReadOnlyCollection<int> values) => _selectedFeatureIds = values;
+
+    private void OnSelectedArtsChanged(IReadOnlyCollection<int> values) => _selectedArtIds = values;
+
+    private string LookupArtName(int artId) =>
+        _arts.FirstOrDefault(a => a.Id == artId)?.Name ?? $"ART {artId}";
+
+    private string LookupFeatureJiraId(int featureId)
+    {
+        var feature = _features.FirstOrDefault(f => f.FeatureId == featureId);
+        return string.IsNullOrWhiteSpace(feature?.JiraId) ? $"Feature {featureId}" : feature.JiraId;
+    }
+
+    private string LookupFeatureText(int featureId)
+    {
+        var feature = _features.FirstOrDefault(f => f.FeatureId == featureId);
+        return feature?.DisplayText ?? $"Feature {featureId}";
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private bool CanSave => _category is not null && _severity is not null && _status is not null;
+
+    private string DeleteConfirmation()
+    {
+        var label = _category?.ToDisplayString().ToLowerInvariant() ?? "risk";
+        var summary = _summary?.Trim();
+
+        return string.IsNullOrEmpty(summary)
+            ? $"Delete this {label} and all its comments?"
+            : $"Delete the {label} \"{Shorten(summary)}\" and all its comments?";
+    }
+
+    private static string Shorten(string value) =>
+        value.Length <= 80 ? value : value[..80].TrimEnd() + "…";
+
+    private async Task DeleteAsync()
+    {
+        if (RiskId is not { } riskId || !CanDelete || _saving || _deleting)
+        {
+            return;
+        }
+
+        if (!await MessageService.Confirm(DeleteConfirmation(), "Delete risk", "Delete"))
+        {
+            return;
+        }
+
+        _deleting = true;
+        try
+        {
+            await RiskService.DeleteAsync(riskId);
+            Snackbar.Add("Risk deleted.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete the risk: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _deleting = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!CanSave || _saving)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var dto = new RiskEditDto
+            {
+                CapitalProjectIds = _selectedArtIds.ToList(),
+                Category = _category!.Value,
+                Severity = _severity!.Value,
+                Status = _status!.Value,
+                Summary = _summary,
+                Owner = _owner,
+                DueBy = _dueBy,
+                FeatureIds = _selectedFeatureIds.ToList()
+            };
+
+            int riskId;
+            if (RiskId is { } existingId)
+            {
+                if (!await RiskService.UpdateAsync(existingId, dto, CurrentUser))
+                {
+                    Snackbar.Add("This risk no longer exists.", Severity.Warning);
+                    MudDialog.Close(DialogResult.Ok(true));
+                    return;
+                }
+                riskId = existingId;
+            }
+            else
+            {
+                riskId = await RiskService.CreateAsync(PiId, dto, CurrentUser);
+            }
+
+            var comment = _comment?.Trim();
+            if (!string.IsNullOrEmpty(comment))
+            {
+                await RiskCommentService.AddAsync(riskId, comment, CurrentUser);
+            }
+
+            Snackbar.Add(IsNew ? "Risk created." : "Risk updated.", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to save the risk: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

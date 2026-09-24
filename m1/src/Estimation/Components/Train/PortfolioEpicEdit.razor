@@ -1,0 +1,206 @@
+@attribute [Route(RoutingPath.PortfolioEpicsEdit)]
+
+@inject IPortfolioEpicService EpicService
+@inject IBusinessOutcomeService OutcomeService
+@inject ISolutionTrainResolver TrainResolver
+@inject IPermissionGuard PermissionGuard
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="PortfolioEpics">
+<PageTitle>@_model.Summary</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Nav.NavigateTo(ListUrl))" />
+            <MudText Typo="Typo.h6">@_model.Summary</MudText>
+        </div>
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            @if (_saving)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+            }
+            <div style="@(_saving ? "pointer-events:none;opacity:0.6" : "")">
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">@PlanningDisplayNames.Details</MudText>
+                        <EditForm Model="_model" OnValidSubmit="SaveAsync">
+                            <DataAnnotationsValidator />
+                            <div class="d-flex align-center gap-2 mb-3">
+                                <MudTextField T="string" Value="_model.JiraId" Label="@PlanningDisplayNames.JiraId"
+                                              Variant="Variant.Outlined" ReadOnly="true" />
+                                @if (!string.IsNullOrWhiteSpace(_model.JiraId))
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                   Color="Color.Primary"
+                                                   Href="@(Configuration["JiraTaskUrl"] + _model.JiraId)"
+                                                   Target="_blank" />
+                                }
+                            </div>
+                            <MudTextField T="string" Value="_model.Summary" Label="@PlanningDisplayNames.Summary"
+                                          Variant="Variant.Outlined" ReadOnly="true" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.Ranking" Label="@PlanningDisplayNames.Ranking"
+                                          Variant="Variant.Outlined" Class="mb-3"
+                                          InputType="InputType.Number" ReadOnly="@(!_canSave)" />
+                            <MudTextField T="string" Value="_model.Description" Label="@PlanningDisplayNames.Description"
+                                          Variant="Variant.Outlined" Lines="3" ReadOnly="true" Class="mb-3" />
+                            <MudTextField @bind-Value="_model.Comments" Label="@PlanningDisplayNames.Comments"
+                                          Variant="Variant.Outlined" Lines="2" Class="mb-4" ReadOnly="@(!_canSave)" />
+                            @if (!string.IsNullOrEmpty(_error))
+                            {
+                                <MudAlert Severity="Severity.Error" Class="mb-3">@_error</MudAlert>
+                            }
+                            @if (_canSave)
+                            {
+                                <div class="d-flex gap-2">
+                                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled"
+                                               Color="Color.Primary" Disabled="_saving"
+                                               StartIcon="@Icons.Material.Filled.Save">
+                                        Save
+                                    </MudButton>
+                                </div>
+                            }
+                        </EditForm>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.BusinessOutcomes</MudText>
+                        </MudToolBar>
+                        <MudDataGrid T="BusinessOutcome" Items="_model.BusinessOutcomes" Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                            <Columns>
+                                <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="true" SortBy="@(x => x.JiraId ?? string.Empty)" CellStyle="width:150px;">
+                                    <CellTemplate>
+                                        @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                                        {
+                                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                                <MudChip T="string" Size="Size.Small"
+                                                         Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                                    @context.Item.JiraId
+                                                </MudChip>
+                                            </a>
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <PropertyColumn Property="x => x.Summary" Title="@PlanningDisplayNames.Summary" Sortable="true" />
+
+                                <PropertyColumn Property="x => x.Description" Title="@PlanningDisplayNames.Description" Sortable="false" />
+                                <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                       Size="Size.Small" Color="Color.Primary"
+                                                       Href="@($"{RoutingPath.BusinessOutcomes}/{context.Item.Id}")"
+                                                       Target="_blank" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent>
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No business outcomes linked yet.</MudText>
+                            </NoRecordsContent>
+                            <PagerContent>
+                                <MudDataGridPager T="BusinessOutcome" PageSizeOptions="new[] { 5, 10, 25 }" />
+                            </PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [Parameter] public int Id { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private string ListUrl => ReturnUrl ?? RoutingPath.PortfolioEpics;
+    private PortfolioEpic _model = new();
+    private List<BusinessOutcome> _allOutcomes = new();
+    private bool _loading = true;
+    private bool _saving;
+    private string? _error;
+
+    private bool _canEdit;
+    private bool _canSave;
+
+    protected override void OnInitialized()
+    {
+        _canEdit = IsAdmin
+            || (UserPageAccess.TryGetValue("PortfolioEpics", out var access) && access == AccessLevel.Edit);
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _canSave = false;
+        _allOutcomes = await OutcomeService.GetAllAsync();
+
+        var e = await EpicService.GetByIdAsync(Id);
+        if (e is null) { Nav.NavigateTo(ListUrl); return; }
+
+        var matcher = await TrainResolver.GetArtMatcherAsync();
+        var scope = ResolveEpicScope(e.BusinessOutcomes, matcher);
+        if (!await PermissionGuard.CanViewAsync("PortfolioEpics", scope))
+        {
+            Snackbar.Add("You don't have access to this portfolio epic's Solution Trains.", Severity.Warning);
+            Nav.NavigateTo(ListUrl);
+            return;
+        }
+
+        _canSave = _canEdit && await PermissionGuard.CanEditAsync("PortfolioEpics", scope);
+        _model = e;
+        _loading = false;
+    }
+
+    private TrainScope ResolveEpicScope(IEnumerable<BusinessOutcome> outcomes, ArtMatcher matcher)
+    {
+        var outcomeIds = outcomes.Select(bo => bo.Id).ToHashSet();
+        return TrainResolver.ResolveForChildren(
+            _allOutcomes
+                .Where(o => outcomeIds.Contains(o.Id))
+                .SelectMany(o => o.Features),
+            matcher);
+    }
+
+    private async Task SaveAsync()
+    {
+        var matcher = await TrainResolver.GetArtMatcherAsync();
+        if (!_canEdit || !await PermissionGuard.CanEditAsync("PortfolioEpics", ResolveEpicScope(_model.BusinessOutcomes, matcher)))
+        {
+            Snackbar.Add("You don't have edit permission for this portfolio epic's Solution Trains.", Severity.Error);
+            return;
+        }
+
+        _saving = true; _error = null;
+        try
+        {
+            _model = await EpicService.UpdateAsync(_model);
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _saving = false; }
+    }
+}

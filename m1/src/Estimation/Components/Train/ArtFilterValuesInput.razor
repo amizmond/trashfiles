@@ -1,0 +1,93 @@
+@using Estimation.Core.Train.Services
+
+<div class="mb-2">
+    <div class="d-flex align-center gap-2 mb-1">
+        <MudTextField T="string" Value="_input" ValueChanged="OnInputChanged"
+                      Label="@Label" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate
+                      OnKeyDown="OnInputKeyDown"
+                      Placeholder="@Placeholder" Style="flex:1" />
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Add" OnClick="AddInputAsync"
+                   Disabled="@string.IsNullOrWhiteSpace(_input)">Add</MudButton>
+    </div>
+
+    @if (_values.Count > 0)
+    {
+        <div class="d-flex flex-wrap gap-1">
+            @foreach (var value in _values)
+            {
+                <MudChip T="string" Text="@value" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined"
+                         OnClose="@(() => RemoveAsync(value))" />
+            }
+        </div>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">@EmptyText</MudText>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = string.Empty;
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public EventCallback<string?> ValueChanged { get; set; }
+    [Parameter] public string? Placeholder { get; set; }
+    [Parameter] public string? EmptyText { get; set; }
+    [Parameter] public string? Pending { get; set; }
+    [Parameter] public EventCallback<string?> PendingChanged { get; set; }
+
+    private string? _input;
+    private List<string> _values = new();
+
+    protected override void OnParametersSet()
+    {
+        _values = Split(Value);
+        if (PendingChanged.HasDelegate)
+        {
+            _input = Pending;
+        }
+    }
+
+    private async Task OnInputChanged(string? value)
+    {
+        _input = value;
+        await PendingChanged.InvokeAsync(value);
+    }
+
+    private async Task OnInputKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or "NumpadEnter")
+        {
+            await AddInputAsync();
+        }
+    }
+
+    private async Task AddInputAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_input))
+        {
+            return;
+        }
+
+        var values = _input.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _input = string.Empty;
+        await PendingChanged.InvokeAsync(null);
+        await SetAsync(JiraListValues.Join(_values.Concat(values)));
+    }
+
+    private Task RemoveAsync(string value) =>
+        SetAsync(JiraListValues.Join(_values.Where(v => !string.Equals(v, value, StringComparison.OrdinalIgnoreCase))));
+
+    private async Task SetAsync(string? joined)
+    {
+        _values = Split(joined);
+        await ValueChanged.InvokeAsync(joined);
+    }
+
+    private static List<string> Split(string? csv) =>
+        string.IsNullOrWhiteSpace(csv)
+            ? new List<string>()
+            : csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+}

@@ -1,0 +1,976 @@
+@attribute [Route(RoutingPath.Teams)]
+
+@implements IDisposable
+
+@inject ITeamService TeamService
+@inject ITeamUploadService TeamUploadService
+@inject IArtService ArtService
+@inject IDepartmentService DepartmentService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IModalDialogService MessageService
+@inject ISnackbar Snackbar
+@inject IPermissionGuard PermissionGuard
+@inject GlobalFilterState GlobalFilter
+
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Train.Services
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Shared.Services
+@using Estimation.Core.Resources.Models
+
+<AccessGuard PageKey="Teams">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">Teams</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_loading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showName" Label="Name" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showCountry" Label="Country" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showCity" Label="City" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showMembers" Label="Members" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showTechStacks" Label="Technology Stacks" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showCapitalProjects" Label="ARTs" Color="Color.Primary" Dense />
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Dense />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.FilterList"
+                       Disabled="_loading"
+                       Style="margin-right: 10px"
+                       OnClick="() => _drawerOpen = !_drawerOpen">
+                Filter
+            </MudButton>
+
+            @if (_canEdit)
+            {
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.GroupAdd"
+                           Style="margin-right: 10px"
+                           OnClick="@(() => Navigation.NavigateTo(RoutingPath.TeamsNew))">
+                    New
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Style="margin-right: 10px"
+                           Disabled="_loading || _exporting"
+                           OnClick="ExportAllAsync">
+                    Export All
+                </MudButton>
+
+                <MudFileUpload T="IBrowserFile"
+                               Accept=".xlsx"
+                               MaximumFileCount="1"
+                               FilesChanged="OnUploadFileSelected">
+                    <ActivatorContent>
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Secondary"
+                                   StartIcon="@Icons.Material.Filled.UploadFile"
+                                   Disabled="_loading || _exporting">
+                            Upload
+                        </MudButton>
+                    </ActivatorContent>
+                </MudFileUpload>
+            }
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <MudText Typo="Typo.h6">Filters</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                @if (!_loading)
+                {
+                <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="300" Dense Variant="Variant.Outlined" />
+
+                <SearchableDropdown T="string"
+                                    Items="_availableDepartments"
+                                    Values="FilterDepartmentNames"
+                                    ValuesChanged="OnFilterDepartmentNamesChanged"
+                                    MultiSelect="true"
+                                    ShowSearch="false"
+                                    Label="Department" />
+
+                <SearchableDropdown T="string"
+                                    Items="_availableArts"
+                                    Values="FilterArtNames"
+                                    ValuesChanged="OnFilterArtNamesChanged"
+                                    MultiSelect="true"
+                                    ShowSearch="false"
+                                    Label="ART" />
+
+                <SearchableDropdown T="string"
+                                    Items="_availableTechStacks"
+                                    Values="FilterTechStackNames"
+                                    ValuesChanged="OnFilterTechStackNamesChanged"
+                                    MultiSelect="true"
+                                    Label="Technology Stack" />
+
+                <SearchableDropdown T="string"
+                                    Items="_availableCountries"
+                                    Values="FilterCountries"
+                                    ValuesChanged="OnFilterCountriesChanged"
+                                    MultiSelect="true"
+                                    Label="Country" />
+
+                <SearchableDropdown T="string"
+                                    Items="_availableCities"
+                                    Values="FilterCities"
+                                    ValuesChanged="OnFilterCitiesChanged"
+                                    MultiSelect="true"
+                                    Label="City" />
+
+                <div class="d-flex align-end gap-2">
+                    <MudSelect T="string" Label="Team role"
+                               Value="_filterTeamRoleBacking"
+                               ValueChanged="OnFilterTeamRoleChanged"
+                               Dense Variant="Variant.Outlined" Clearable
+                               AnchorOrigin="Origin.BottomCenter"
+                               Style="flex:1">
+                        @foreach (var role in _availableTeamRoles)
+                        {
+                            <MudSelectItem T="string" Value="@role">@role</MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudTooltip Text="Negate: show teams without a person with the selected role">
+                        <MudCheckBox T="bool"
+                                     Value="_filterTeamRoleNot"
+                                     ValueChanged="OnFilterTeamRoleNotChanged"
+                                     Label="Not"
+                                     Dense
+                                     Color="Color.Secondary" />
+                    </MudTooltip>
+                    <MudTooltip Text="Multi: show teams with more than one person with the selected role">
+                        <MudCheckBox T="bool"
+                                     Value="_filterTeamRoleMulti"
+                                     ValueChanged="OnFilterTeamRoleMultiChanged"
+                                     Label="Multi"
+                                     Dense
+                                     Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <SearchableDropdown T="string"
+                                    ShowSearch="false"
+                                    Items="_availableEmployeeCategories"
+                                    Values="FilterEmployeeCategories"
+                                    ValuesChanged="OnFilterEmployeeCategoriesChanged"
+                                    MultiSelect="true"
+                                    Label="Employee category" />
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+                }
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+
+        <MudDataGrid @ref="_grid" T="TeamRow" Items="@_filteredRows"
+                     Hover="true" Striped="true" Dense="true" Elevation="0"
+                     Loading="_loading" Bordered="true" LoadingProgressColor="Color.Primary"
+                     @bind-CurrentPage="CurrentPage"
+                     @bind-RowsPerPage="PageSize">
+            <Columns>
+                <PropertyColumn Property="r => r.Name" Title="Name" Sortable="true" Hidden="!_showName">
+                    <CellTemplate>
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">@context.Item.Name</MudText>
+                    </CellTemplate>
+                </PropertyColumn>
+                <TemplateColumn Title="Country" Sortable="false" Hidden="!_showCountry">
+                    <CellTemplate>
+                        @if (context.Item.Countries.Count > 0)
+                        {
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var country in context.Item.Countries)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default"
+                                             Variant="Variant.Outlined">
+                                        @country
+                                    </MudChip>
+                                }
+                            </div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="City" Sortable="false" Hidden="!_showCity">
+                    <CellTemplate>
+                        @if (context.Item.Cities.Count > 0)
+                        {
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var city in context.Item.Cities)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default"
+                                             Variant="Variant.Outlined">
+                                        @city
+                                    </MudChip>
+                                }
+                            </div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Members" Sortable="false" CellStyle="text-align:right; width:150px;" Hidden="!_showMembers">
+                    <CellTemplate>
+                        <MudAvatarGroup Max="4" Spacing="3">
+                            @foreach (var m in context.Item.Members.Take(4))
+                            {
+                                <MudTooltip Text="@m">
+                                    <MudAvatar Color="Color.Secondary" Size="Size.Small">
+                                        @m.First()
+                                    </MudAvatar>
+                                </MudTooltip>
+                            }
+                        </MudAvatarGroup>
+                        @if (context.Item.Members.Count > 4)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary ml-1">
+                                +@(context.Item.Members.Count - 4) more
+                            </MudText>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Technology Stacks" Sortable="false" CellStyle="text-align:right;" Hidden="!_showTechStacks">
+                    <CellTemplate>
+                        @if (context.Item.TechStacks.Count > 0)
+                        {
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var ts in context.Item.TechStacks)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Primary"
+                                             Variant="Variant.Filled"
+                                             OnClick="@(() => ShowStackMembersAsync(context.Item, ts))">
+                                        @ts.Name
+                                    </MudChip>
+                                }
+                            </div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="ARTs" Sortable="false" CellStyle="text-align:right;" Hidden="!_showCapitalProjects">
+                    <CellTemplate>
+                        @if (context.Item.CapitalProjects.Count > 0)
+                        {
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var cp in context.Item.CapitalProjects)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info"
+                                             Variant="Variant.Filled"
+                                             Href="@($"{RoutingPath.CapitalProjects}/{cp.Id}")"
+                                             Target="_blank">
+                                        @cp.Name
+                                    </MudChip>
+                                }
+                            </div>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+                @if (_canEdit)
+                {
+                    <TemplateColumn Title="Actions" CellStyle="text-align:right; width:150px;" Sortable="false" Filterable="false" Hidden="!_showActions">
+                        <CellTemplate>
+                            <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => NavigateToEdit(context.Item.Id))" />
+                            <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context.Item)" />
+                        </CellTemplate>
+                    </TemplateColumn>
+                }
+            </Columns>
+            <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No teams found.</MudText></NoRecordsContent>
+            <PagerContent><MudDataGridPager T="TeamRow" PageSizeOptions="new[] { 10, 25, 50, 100 }" /></PagerContent>
+        </MudDataGrid>
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private List<TeamRow> _rows = new();
+    private List<TeamRow> _filteredRows = new();
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private bool _loading = true;
+    private bool _canEdit;
+    private bool _exporting;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+    private bool _suppressUrlUpdate = true;
+
+    private MudDataGrid<TeamRow>? _grid;
+    private int? _initialPageSizeFromUrl;
+    private int _currentPageBacking;
+    private int CurrentPage
+    {
+        get => _currentPageBacking;
+        set
+        {
+            if (_currentPageBacking == value)
+            {
+                return;
+            }
+            _currentPageBacking = value;
+            UpdateUrl();
+        }
+    }
+
+    private int _pageSizeBacking = 10;
+    private int PageSize
+    {
+        get => _pageSizeBacking;
+        set
+        {
+            if (_pageSizeBacking == value)
+            {
+                return;
+            }
+            _pageSizeBacking = value;
+            UpdateUrl();
+        }
+    }
+
+    private bool _showName = true;
+    private bool _showCountry;
+    private bool _showCity = true;
+    private bool _showMembers = true;
+    private bool _showTechStacks = true;
+    private bool _showCapitalProjects = true;
+    private bool _showActions = true;
+
+    private List<string> _availableTechStacks = new();
+    private List<string> _availableDepartments = new();
+    private List<string> _availableArts = new();
+    private List<string> _availableTeamRoles = new();
+    private List<string> _availableCountries = new();
+    private List<string> _availableCities = new();
+    private List<string> _availableEmployeeCategories = new();
+
+    private Timer? _filterDebounceTimer;
+    private const int FilterDebounceMs = 200;
+
+    private void ScheduleRecompute()
+    {
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(_ =>
+            InvokeAsync(() => { RecomputeFilteredRows(); UpdateUrl(); StateHasChanged(); }),
+            null, FilterDebounceMs, Timeout.Infinite);
+    }
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set { _filterSearchBacking = value; ScheduleRecompute(); }
+    }
+
+    private IReadOnlyCollection<string> _filterTechStackNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterTechStackNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterTechStackNames
+    {
+        get => _filterTechStackNamesBacking;
+        set { _filterTechStackNamesBacking = value; _filterTechStackNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void OnFilterTechStackNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterTechStackNames = values;
+    }
+
+    private IReadOnlyCollection<string> _filterDepartmentNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterDepartmentNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterDepartmentNames
+    {
+        get => _filterDepartmentNamesBacking;
+        set { _filterDepartmentNamesBacking = value; _filterDepartmentNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void OnFilterDepartmentNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterDepartmentNames = values;
+    }
+
+    private IReadOnlyCollection<string> _filterArtNamesBacking = Array.Empty<string>();
+    private HashSet<string> _filterArtNamesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterArtNames
+    {
+        get => _filterArtNamesBacking;
+        set { _filterArtNamesBacking = value; _filterArtNamesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void OnFilterArtNamesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterArtNames = values;
+    }
+
+    private IReadOnlyCollection<string> _filterCountriesBacking = Array.Empty<string>();
+    private HashSet<string> _filterCountriesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterCountries
+    {
+        get => _filterCountriesBacking;
+        set { _filterCountriesBacking = value; _filterCountriesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void OnFilterCountriesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterCountries = values;
+    }
+
+    private IReadOnlyCollection<string> _filterCitiesBacking = Array.Empty<string>();
+    private HashSet<string> _filterCitiesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterCities
+    {
+        get => _filterCitiesBacking;
+        set { _filterCitiesBacking = value; _filterCitiesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void OnFilterCitiesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterCities = values;
+    }
+
+    private IReadOnlyCollection<string> _filterEmployeeCategoriesBacking = Array.Empty<string>();
+    private HashSet<string> _filterEmployeeCategoriesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterEmployeeCategories
+    {
+        get => _filterEmployeeCategoriesBacking;
+        set { _filterEmployeeCategoriesBacking = value; _filterEmployeeCategoriesSet = new HashSet<string>(value, StringComparer.OrdinalIgnoreCase); ScheduleRecompute(); }
+    }
+
+    private void OnFilterEmployeeCategoriesChanged(IReadOnlyCollection<string> values)
+    {
+        FilterEmployeeCategories = values;
+    }
+
+    private string? _filterTeamRoleBacking;
+    private bool _filterTeamRoleNot;
+    private bool _filterTeamRoleMulti;
+
+    private void OnFilterTeamRoleChanged(string? value)
+    {
+        _filterTeamRoleBacking = value;
+        ScheduleRecompute();
+    }
+
+    private void OnFilterTeamRoleNotChanged(bool value)
+    {
+        _filterTeamRoleNot = value;
+        ScheduleRecompute();
+    }
+
+    private void OnFilterTeamRoleMultiChanged(bool value)
+    {
+        _filterTeamRoleMulti = value;
+        ScheduleRecompute();
+    }
+
+    private void ClearFilters()
+    {
+        _globalFilterCleared = true;
+        _filterSearchBacking = null;
+        _filterTechStackNamesBacking = Array.Empty<string>();
+        _filterTechStackNamesSet.Clear();
+        _filterDepartmentNamesBacking = Array.Empty<string>();
+        _filterDepartmentNamesSet.Clear();
+        _filterArtNamesBacking = Array.Empty<string>();
+        _filterArtNamesSet.Clear();
+        _filterCountriesBacking = Array.Empty<string>();
+        _filterCountriesSet.Clear();
+        _filterCitiesBacking = Array.Empty<string>();
+        _filterCitiesSet.Clear();
+        _filterEmployeeCategoriesBacking = Array.Empty<string>();
+        _filterEmployeeCategoriesSet.Clear();
+        _filterTeamRoleBacking = null;
+        _filterTeamRoleNot = false;
+        _filterTeamRoleMulti = false;
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private static readonly string[] FilterQueryKeys =
+        ["gf", "search", "ts", "dept", "art", "country", "city", "empCat", "role", "roleNot", "roleMulti"];
+
+    private bool _globalFilterCleared;
+
+    private void ApplyGlobalFilter()
+    {
+        var values = GlobalFilter.Values;
+
+        GlobalFilterApply.Names(values.DepartmentNames,
+            ref _filterDepartmentNamesBacking, ref _filterDepartmentNamesSet, _availableDepartments);
+        GlobalFilterApply.Names(values.ArtNames,
+            ref _filterArtNamesBacking, ref _filterArtNamesSet, _availableArts);
+    }
+
+    private bool ReadUrlParams()
+    {
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        var q = QueryHelpers.ParseQuery(uri.Query);
+        var hasFilterParams = FilterQueryKeys.Any(q.ContainsKey);
+
+        if (q.TryGetValue("search", out var search) && !string.IsNullOrWhiteSpace(search))
+        {
+            _filterSearchBacking = search.ToString();
+        }
+
+        if (q.TryGetValue("ts", out var ts) && !string.IsNullOrWhiteSpace(ts))
+        {
+            var vals = ts.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterTechStackNamesBacking = vals;
+            _filterTechStackNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("dept", out var dept) && !string.IsNullOrWhiteSpace(dept))
+        {
+            var vals = dept.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterDepartmentNamesBacking = vals;
+            _filterDepartmentNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("art", out var art) && !string.IsNullOrWhiteSpace(art))
+        {
+            var vals = art.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterArtNamesBacking = vals;
+            _filterArtNamesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("country", out var country) && !string.IsNullOrWhiteSpace(country))
+        {
+            var vals = country.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterCountriesBacking = vals;
+            _filterCountriesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("city", out var city) && !string.IsNullOrWhiteSpace(city))
+        {
+            var vals = city.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterCitiesBacking = vals;
+            _filterCitiesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("empCat", out var empCat) && !string.IsNullOrWhiteSpace(empCat))
+        {
+            var vals = empCat.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterEmployeeCategoriesBacking = vals;
+            _filterEmployeeCategoriesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("role", out var role) && !string.IsNullOrWhiteSpace(role))
+        {
+            _filterTeamRoleBacking = role.ToString();
+        }
+
+        if (q.TryGetValue("roleNot", out var roleNot) && bool.TryParse(roleNot, out var roleNotParsed))
+        {
+            _filterTeamRoleNot = roleNotParsed;
+        }
+
+        if (q.TryGetValue("roleMulti", out var roleMulti) && bool.TryParse(roleMulti, out var roleMultiParsed))
+        {
+            _filterTeamRoleMulti = roleMultiParsed;
+        }
+
+        if (q.TryGetValue("page", out var pageStr)
+            && int.TryParse(pageStr, out var pageVal) && pageVal >= 0)
+        {
+            _currentPageBacking = pageVal;
+        }
+
+        if (q.TryGetValue("pageSize", out var pageSizeStr)
+            && int.TryParse(pageSizeStr, out var pageSizeVal) && pageSizeVal > 0)
+        {
+            _pageSizeBacking = pageSizeVal;
+            _initialPageSizeFromUrl = pageSizeVal;
+        }
+
+        return hasFilterParams;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_initialPageSizeFromUrl.HasValue && _grid is not null)
+        {
+            var size = _initialPageSizeFromUrl.Value;
+            _initialPageSizeFromUrl = null;
+            await _grid.SetRowsPerPageAsync(size, false);
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        if (_suppressUrlUpdate)
+        {
+            return;
+        }
+
+        var query = new Dictionary<string, object?>();
+        query["search"] = string.IsNullOrWhiteSpace(_filterSearchBacking) ? null : _filterSearchBacking;
+        query["ts"] = _filterTechStackNamesSet.Count > 0 ? string.Join(",", _filterTechStackNamesBacking) : null;
+        query["dept"] = _filterDepartmentNamesSet.Count > 0 ? string.Join(",", _filterDepartmentNamesBacking) : null;
+        query["art"] = _filterArtNamesSet.Count > 0 ? string.Join(",", _filterArtNamesBacking) : null;
+        query["country"] = _filterCountriesSet.Count > 0 ? string.Join(",", _filterCountriesBacking) : null;
+        query["city"] = _filterCitiesSet.Count > 0 ? string.Join(",", _filterCitiesBacking) : null;
+        query["empCat"] = _filterEmployeeCategoriesSet.Count > 0 ? string.Join(",", _filterEmployeeCategoriesBacking) : null;
+        query["role"] = string.IsNullOrWhiteSpace(_filterTeamRoleBacking) ? null : _filterTeamRoleBacking;
+        query["roleNot"] = _filterTeamRoleNot ? "true" : null;
+        query["roleMulti"] = _filterTeamRoleMulti ? "true" : null;
+        query["gf"] = _globalFilterCleared ? (object?)0 : null;
+        query["page"] = _currentPageBacking > 0 ? (object?)_currentPageBacking : null;
+        query["pageSize"] = _pageSizeBacking != 10 ? (object?)_pageSizeBacking : null;
+
+        var uri = Navigation.GetUriWithQueryParameters(query);
+        Navigation.NavigateTo(uri, replace: true);
+    }
+
+    private void NavigateToEdit(int id)
+    {
+        var currentUri = new Uri(Navigation.Uri);
+        var returnUrl = currentUri.PathAndQuery;
+        var editUri = Navigation.GetUriWithQueryParameters(
+            $"{RoutingPath.Teams}/{id}",
+            new Dictionary<string, object?> { ["returnUrl"] = returnUrl });
+        Navigation.NavigateTo(editUri);
+    }
+
+    private async Task ShowStackMembersAsync(TeamRow team, TechStackRef stack)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            { nameof(TeamStackMembersDialog.StackName), stack.Name },
+            { nameof(TeamStackMembersDialog.Members), stack.Members },
+        };
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.Small, FullWidth = true };
+        await MessageService.Component<TeamStackMembersDialog>(
+            $"{team.Name} — {stack.Name} members", parameters, options);
+    }
+
+    private void RecomputeFilteredRows()
+    {
+        _filteredRows = _rows.Where(MatchesFilter).ToList();
+    }
+
+    private bool MatchesFilter(TeamRow r)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            if (!r.Name.Contains(s, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        if (_filterTechStackNamesSet.Count > 0
+            && !r.TechStacks.Any(ts => _filterTechStackNamesSet.Contains(ts.Name)))
+        {
+            return false;
+        }
+
+        if (_filterDepartmentNamesSet.Count > 0
+            && !r.Departments.Any(d => _filterDepartmentNamesSet.Contains(d)))
+        {
+            return false;
+        }
+
+        if (_filterArtNamesSet.Count > 0
+            && !r.CapitalProjects.Any(cp => _filterArtNamesSet.Contains(cp.Name)))
+        {
+            return false;
+        }
+
+        if (_filterCountriesSet.Count > 0
+            && !r.Countries.Any(country => _filterCountriesSet.Contains(country)))
+        {
+            return false;
+        }
+
+        if (_filterCitiesSet.Count > 0
+            && !r.Cities.Any(city => _filterCitiesSet.Contains(city)))
+        {
+            return false;
+        }
+
+        if (_filterEmployeeCategoriesSet.Count > 0
+            && !r.EmployeeCategories.Any(c => _filterEmployeeCategoriesSet.Contains(c)))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_filterTeamRoleBacking))
+        {
+            r.TeamRoleCounts.TryGetValue(_filterTeamRoleBacking, out var count);
+            var matches = _filterTeamRoleMulti ? count > 1 : count > 0;
+            if (_filterTeamRoleNot)
+            {
+                matches = !matches;
+            }
+            if (!matches)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _canEdit = UserPageAccess.TryGetValue("Teams", out var access) && access == AccessLevel.Edit;
+
+        try
+        {
+            var teams = await TeamService.GetAllAsync();
+
+            _permissions = await PermissionGuard.GetPermissionsAsync();
+            if (!_permissions.IsAdmin)
+            {
+                teams = teams.Where(t => _permissions.CanView("Teams",
+                    TrainScope.ForTrains(t.CapitalProjectTeams.Select(cpt => cpt.CapitalProjectId).ToList()))).ToList();
+            }
+
+            var departments = await DepartmentService.GetAllAsync();
+            var departmentNameByProjectId = departments
+                .SelectMany(d => d.CapitalProjects.Select(cp => new { ProjectId = cp.Id, DepartmentName = d.Name }))
+                .ToDictionary(x => x.ProjectId, x => x.DepartmentName);
+
+            _rows = teams.Select(t => new TeamRow(
+                Id: t.Id,
+                Name: t.Name,
+                Members: t.TeamMembers.Select(m => m.HumanResource.FullName).ToList(),
+                Countries: t.TeamMembers
+                    .Select(m => m.HumanResource.City?.Country?.Name)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => n!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(n => n)
+                    .ToList(),
+                Cities: t.TeamMembers
+                    .Select(m => m.HumanResource.City?.Name)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => n!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(n => n)
+                    .ToList(),
+                TechStacks: t.TeamTechnologyStacks
+                    .Select(tts => new TechStackRef(
+                        tts.TechnologyStackId,
+                        tts.TechnologyStack.Name,
+                        t.TeamMembers
+                            .Where(tm => tm.MemberTechnologyStacks.Any(mts => mts.TechnologyStackId == tts.TechnologyStackId))
+                            .Select(tm => new TeamStackMembersDialog.StackMember(tm.HumanResource.FullName, tm.TeamRole?.Name))
+                            .OrderBy(m => m.FullName)
+                            .ToList()))
+                    .OrderBy(ts => ts.Name)
+                    .ToList(),
+                CapitalProjects: t.CapitalProjectTeams
+                    .Select(cpt => new ArtRef(cpt.Art.Id, cpt.Art.Name))
+                    .OrderBy(cp => cp.Name)
+                    .ToList(),
+                TeamRoleCounts: t.TeamMembers
+                    .Select(m => m.TeamRole?.Name)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .GroupBy(n => n!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase),
+                EmployeeCategories: t.TeamMembers
+                    .Select(m => m.HumanResource.EmployeeCategory?.Name)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => n!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(n => n)
+                    .ToList(),
+                Departments: t.CapitalProjectTeams
+                    .Select(cpt => departmentNameByProjectId.TryGetValue(cpt.CapitalProjectId, out var dn) ? dn : null)
+                    .Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => n!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(n => n)
+                    .ToList()
+            )).ToList();
+
+            _availableTechStacks = _rows
+                .SelectMany(r => r.TechStacks.Select(ts => ts.Name))
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            var allArts = await ArtService.GetAllAsync();
+            var allowedTrains = _permissions.GetAllowedTrains("Teams", AccessLevel.ReadOnly);
+            _availableArts = allArts
+                .Where(cp => allowedTrains is null || allowedTrains.Contains(cp.Id))
+                .Select(cp => cp.Name)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            _availableDepartments = departments
+                .Where(d => allowedTrains is null || d.CapitalProjects.Any(cp => allowedTrains.Contains(cp.Id)))
+                .Select(d => d.Name)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct().OrderBy(n => n).ToList();
+
+            _availableCountries = _rows
+                .SelectMany(r => r.Countries)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n).ToList();
+
+            _availableCities = _rows
+                .SelectMany(r => r.Cities)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n).ToList();
+
+            _availableTeamRoles = _rows
+                .SelectMany(r => r.TeamRoleCounts.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n).ToList();
+
+            _availableEmployeeCategories = _rows
+                .SelectMany(r => r.EmployeeCategories)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n).ToList();
+
+            if (!ReadUrlParams())
+            {
+                await GlobalFilter.EnsureLoadedAsync();
+                ApplyGlobalFilter();
+            }
+
+            RecomputeFilteredRows();
+        }
+        finally
+        {
+            _loading = false;
+            _suppressUrlUpdate = false;
+        }
+    }
+
+    private async Task ConfirmDeleteAsync(TeamRow row)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Delete {row.Name} ?"))
+            {
+                await TeamService.DeleteAsync(row.Id);
+                _rows.RemoveAll(r => r.Id == row.Id);
+                RecomputeFilteredRows();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task ExportAllAsync()
+    {
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = await TeamUploadService.ExportAllTeamsAsync();
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='Teams.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export teams");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnUploadFileSelected(IBrowserFile file)
+    {
+        if (file == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            await using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            var rows = await TeamUploadService.ParseFileAsync(stream);
+            TeamUploadPreviewState.PendingUpload = rows;
+            Navigation.NavigateTo(RoutingPath.TeamsUploadBulkPreview);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to parse uploaded file");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    public void Dispose()
+    {
+        _filterDebounceTimer?.Dispose();
+    }
+
+    private record TeamRow(
+        int Id,
+        string Name,
+        List<string> Members,
+        List<string> Countries,
+        List<string> Cities,
+        List<TechStackRef> TechStacks,
+        List<ArtRef> CapitalProjects,
+        Dictionary<string, int> TeamRoleCounts,
+        List<string> EmployeeCategories,
+        List<string> Departments
+    );
+
+    private record ArtRef(int Id, string Name);
+
+    private record TechStackRef(int Id, string Name, List<TeamStackMembersDialog.StackMember> Members);
+}

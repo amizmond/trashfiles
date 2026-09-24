@@ -1,0 +1,263 @@
+@inject ITeamService TeamService
+@inject TeamPlanningState State
+@inject IPermissionGuard PermissionGuard
+@inject ISolutionTrainResolver TrainResolver
+@inject IArtService ArtService
+@inject IJSRuntime JS
+
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Train.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Shared.Services
+
+<div class="container-fluid mt-3">
+    <MudPaper Class="p-3 rounded-lg d-flex align-center gap-3 flex-wrap" Elevation="2">
+        <MudText Typo="Typo.h6" Style="white-space:nowrap">@Title</MudText>
+        @if (_multipleArts)
+        {
+            <SearchableDropdown T="ArtOption"
+                                Items="_arts"
+                                Value="_selectedArt"
+                                ValueChanged="OnArtChangedAsync"
+                                ToStringFunc="@(a => a?.Name ?? "")"
+                                Label="ART"
+                                Placeholder="Search ART by name..."
+                                SearchPlaceholder="Search ART by name..."
+                                Clearable="false"
+                                Style="min-width:280px; max-width:400px" />
+        }
+        <SearchableDropdown T="Team"
+                            Items="TeamsForDropdown"
+                            Value="_selectedTeam"
+                            ValueChanged="OnTeamChangedAsync"
+                            ToStringFunc="@(t => t?.Name ?? "")"
+                            Label="Team"
+                            Placeholder="Search team by name..."
+                            SearchPlaceholder="Search team by name..."
+                            Clearable="true"
+                            Disabled="@(_multipleArts && _selectedArt is null)"
+                            Style="min-width:320px; max-width:450px" />
+    </MudPaper>
+</div>
+
+@if (_selectedTeamId is not null)
+{
+    @ChildContent(new TeamContext(_selectedTeamId.Value, CanEditTeam(_selectedTeamId.Value)))
+}
+else if (ArtContent is not null && CurrentArt is not null)
+{
+    @ArtContent(new ArtContext(CurrentArt.Id, CurrentArt.Name))
+}
+else
+{
+    <div class="container-fluid mt-3 mb-5">
+        <MudPaper Class="p-3 rounded-lg" Elevation="2">
+            <MudText Class="mud-text-secondary">@EmptyText</MudText>
+        </MudPaper>
+    </div>
+}
+
+@code {
+    public readonly record struct TeamContext(int TeamId, bool CanEdit);
+
+    public readonly record struct ArtContext(int ArtId, string ArtName);
+
+    [Parameter] public string Title { get; set; } = "Team planning";
+    [Parameter] public string EmptyText { get; set; } = "Select a team to continue.";
+
+    [Parameter] public RenderFragment<ArtContext>? ArtContent { get; set; }
+
+    [Parameter, EditorRequired] public string PageKey { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired] public RenderFragment<TeamContext> ChildContent { get; set; } = default!;
+
+    private const string SelectedTeamStorageKey = "teamPlanning.selectedTeamId";
+
+    public sealed record ArtOption(int Id, string Name);
+
+    private const int UnassignedArtId = -1;
+
+    private List<Team> _teams = new();
+    private Team? _selectedTeam;
+    private int? _selectedTeamId;
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private Dictionary<int, TrainScope> _teamScopes = new();
+    private bool _restoredFromStorage;
+
+    private List<ArtOption> _arts = new();
+    private ArtOption? _selectedArt;
+    private bool _multipleArts;
+
+    private IReadOnlyList<Team> TeamsForDropdown =>
+        !_multipleArts ? _teams
+        : _selectedArt is null ? Array.Empty<Team>()
+        : _teams.Where(t => TeamInArt(t.Id, _selectedArt.Id)).ToList();
+
+    private ArtOption? CurrentArt => _multipleArts ? _selectedArt : _arts.FirstOrDefault();
+
+    protected override async Task OnInitializedAsync()
+    {
+        var allTeams = await TeamService.GetAllNamesAsync();
+        _permissions = await PermissionGuard.GetPermissionsAsync();
+        var teamTrains = await TrainResolver.GetTeamTrainsAsync(allTeams.Select(t => t.Id));
+        _teamScopes = allTeams.ToDictionary(
+            t => t.Id,
+            t => teamTrains.TryGetValue(t.Id, out var trains)
+                ? TrainScope.ForTrains(trains)
+                : TrainScope.AdminOrGeneralOnly);
+        _teams = allTeams.Where(t => _permissions.CanView(PageKey, _teamScopes[t.Id])).ToList();
+
+        await BuildArtOptionsAsync();
+
+        ApplySelectedTeam(State.SelectedTeamId);
+    }
+
+    private async Task BuildArtOptionsAsync()
+    {
+        var artIds = new HashSet<int>();
+        var hasUnassigned = false;
+        foreach (var team in _teams)
+        {
+            var trainIds = _teamScopes[team.Id].CapitalProjectIds;
+            if (trainIds.Count == 0)
+            {
+                hasUnassigned = true;
+            }
+            else
+            {
+                foreach (var id in trainIds)
+                {
+                    artIds.Add(id);
+                }
+            }
+        }
+
+        var options = new List<ArtOption>();
+        if (artIds.Count > 0)
+        {
+            var projects = await ArtService.GetAllLightAsync();
+            options.AddRange(projects
+                .Where(p => artIds.Contains(p.Id))
+                .OrderBy(p => p.Name)
+                .Select(p => new ArtOption(p.Id, p.Name)));
+        }
+        if (hasUnassigned)
+        {
+            options.Add(new ArtOption(UnassignedArtId, "No ART"));
+        }
+
+        _arts = options;
+        _multipleArts = _arts.Count > 1;
+    }
+
+    private bool TeamInArt(int teamId, int artId)
+    {
+        var trainIds = _teamScopes.TryGetValue(teamId, out var scope)
+            ? scope.CapitalProjectIds
+            : Array.Empty<int>();
+        return artId == UnassignedArtId ? trainIds.Count == 0 : trainIds.Contains(artId);
+    }
+
+    private ArtOption? ArtForTeam(int teamId)
+    {
+        var trainIds = _teamScopes.TryGetValue(teamId, out var scope)
+            ? scope.CapitalProjectIds
+            : Array.Empty<int>();
+        return trainIds.Count == 0
+            ? _arts.FirstOrDefault(a => a.Id == UnassignedArtId)
+            : _arts.FirstOrDefault(a => trainIds.Contains(a.Id));
+    }
+
+    private async Task OnArtChangedAsync(ArtOption? art)
+    {
+        _selectedArt = art;
+        if (_selectedTeamId is not null && (art is null || !TeamInArt(_selectedTeamId.Value, art.Id)))
+        {
+            _selectedTeam = null;
+            _selectedTeamId = null;
+            State.SelectedTeamId = null;
+            await PersistSelectedTeamAsync();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _restoredFromStorage)
+        {
+            return;
+        }
+        _restoredFromStorage = true;
+
+        if (State.SelectedTeamId is not null)
+        {
+            return;
+        }
+
+        int? storedTeamId = null;
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", SelectedTeamStorageKey);
+            if (int.TryParse(raw, out var id))
+            {
+                storedTeamId = id;
+            }
+        }
+        catch
+        {
+            return;
+        }
+
+        if (storedTeamId is null)
+        {
+            return;
+        }
+
+        ApplySelectedTeam(storedTeamId);
+        if (_selectedTeamId is not null)
+        {
+            State.SelectedTeamId = _selectedTeamId;
+            StateHasChanged();
+        }
+    }
+
+    private void ApplySelectedTeam(int? teamId)
+    {
+        _selectedTeam = teamId is null ? null : _teams.FirstOrDefault(t => t.Id == teamId);
+        _selectedTeamId = _selectedTeam?.Id;
+
+        if (_multipleArts)
+        {
+            _selectedArt = _selectedTeamId is null ? null : ArtForTeam(_selectedTeamId.Value);
+        }
+    }
+
+    private bool CanEditTeam(int teamId) =>
+        _permissions.CanEditTeamPlanning(PageKey, _teamScopes.TryGetValue(teamId, out var scope) ? scope : TrainScope.AdminOrGeneralOnly, teamId);
+
+    private async Task OnTeamChangedAsync(Team? team)
+    {
+        _selectedTeam = team;
+        _selectedTeamId = team?.Id;
+        State.SelectedTeamId = _selectedTeamId;
+        await PersistSelectedTeamAsync();
+    }
+
+    private async Task PersistSelectedTeamAsync()
+    {
+        try
+        {
+            if (_selectedTeamId is null)
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", SelectedTeamStorageKey);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", SelectedTeamStorageKey, _selectedTeamId.Value.ToString());
+            }
+        }
+        catch
+        {
+        }
+    }
+}

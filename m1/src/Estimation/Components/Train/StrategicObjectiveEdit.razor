@@ -1,0 +1,147 @@
+@attribute [Route(RoutingPath.StrategicObjectivesEdit)]
+
+@inject IStrategicObjectiveService ProgramService
+@inject IPortfolioEpicService EpicService
+@inject IFeatureService FeatureService
+@inject ISolutionTrainResolver TrainResolver
+@inject IPermissionGuard PermissionGuard
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Features.Services
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="StrategicObjectives">
+<PageTitle>@_model.Summary</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Nav.NavigateTo(ListUrl))" />
+            <MudText Typo="Typo.h6">@_model.Summary</MudText>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">@PlanningDisplayNames.Details</MudText>
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudTextField T="string" Value="_model.JiraId" Label="@PlanningDisplayNames.JiraId"
+                                          Variant="Variant.Outlined" ReadOnly="true" />
+                            @if (!string.IsNullOrWhiteSpace(_model.JiraId))
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                               Color="Color.Primary"
+                                               Href="@(Configuration["JiraTaskUrl"] + _model.JiraId)"
+                                               Target="_blank" />
+                            }
+                        </div>
+                        <MudTextField T="string" Value="_model.Summary" Label="@PlanningDisplayNames.Summary"
+                                      Variant="Variant.Outlined" ReadOnly="true" Class="mb-3" />
+                        <MudTextField T="string" Value="_model.Description" Label="@PlanningDisplayNames.Description"
+                                      Variant="Variant.Outlined" Lines="3" ReadOnly="true" Class="mb-3" />
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.PortfolioEpics</MudText>
+                        </MudToolBar>
+                        <MudDataGrid T="StrategicObjectivePortfolioEpic" Items="_model.StrategicObjectivePortfolioEpics"
+                                     Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                            <Columns>
+                                <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="true" SortBy="x => x.PortfolioEpic.JiraId" CellStyle="width:150px;">
+                                    <CellTemplate>
+                                        @if (!string.IsNullOrEmpty(context.Item.PortfolioEpic.JiraId))
+                                        {
+                                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.PortfolioEpic.JiraId)" target="_blank" style="text-decoration:none">
+                                                <MudChip T="string" Size="Size.Small"
+                                                         Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                                    @context.Item.PortfolioEpic.JiraId
+                                                </MudChip>
+                                            </a>
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <PropertyColumn Property="x => x.PortfolioEpic.Summary" Title="@PlanningDisplayNames.Summary" Sortable="true" />
+
+                                <PropertyColumn Property="x => x.PortfolioEpic.Description" Title="@PlanningDisplayNames.Description" Sortable="false" />
+                                <PropertyColumn Property="x => x.PortfolioEpic.Comments" Title="@PlanningDisplayNames.Comments" Sortable="false" />
+                                <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                       Size="Size.Small" Color="Color.Primary"
+                                                       Href="@($"{RoutingPath.PortfolioEpics}/{context.Item.PortfolioEpicId}")"
+                                                       Target="_blank" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent>
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No epics linked yet.</MudText>
+                            </NoRecordsContent>
+                            <PagerContent>
+                                <MudDataGridPager T="StrategicObjectivePortfolioEpic" PageSizeOptions="new[] { 5, 10, 25 }" />
+                            </PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+     </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [Parameter] public int Id { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    private string ListUrl => ReturnUrl ?? RoutingPath.StrategicObjectives;
+    private StrategicObjective _model = new();
+    private List<PortfolioEpic> _allEpics = new();
+    private List<Feature> _allFeatures = new();
+    private bool _loading = true;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _allEpics = await EpicService.GetAllAsync();
+        _allFeatures = await FeatureService.GetAllAsync();
+
+        var e = await ProgramService.GetByIdAsync(Id);
+        if (e is null) { Nav.NavigateTo(ListUrl); return; }
+
+        var matcher = await TrainResolver.GetArtMatcherAsync();
+        if (!await PermissionGuard.CanViewAsync("StrategicObjectives", ResolveObjectiveScope(e.StrategicObjectivePortfolioEpics, matcher)))
+        {
+            Snackbar.Add("You don't have access to this strategic objective's Solution Trains.", Severity.Warning);
+            Nav.NavigateTo(ListUrl);
+            return;
+        }
+
+        _model = e;
+        _loading = false;
+    }
+
+    private TrainScope ResolveObjectiveScope(IEnumerable<StrategicObjectivePortfolioEpic> epicLinks, ArtMatcher matcher)
+    {
+        var epicIds = epicLinks.Select(ppe => ppe.PortfolioEpicId).ToHashSet();
+        var outcomeIds = _allEpics
+            .Where(e => epicIds.Contains(e.Id))
+            .SelectMany(e => e.BusinessOutcomes)
+            .Select(bo => bo.Id)
+            .ToHashSet();
+        return TrainResolver.ResolveForChildren(
+            _allFeatures.Where(f => f.BusinessOutcomeId is int boId && outcomeIds.Contains(boId)),
+            matcher);
+    }
+}

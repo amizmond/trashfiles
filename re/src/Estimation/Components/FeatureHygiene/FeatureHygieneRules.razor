@@ -1,0 +1,576 @@
+@attribute [Route(RoutingPath.FeatureHygieneRules)]
+@inherits FeatureHygieneScopedPageBase
+
+@inject IFeatureHygieneRuleService RuleService
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+@inject IModalDialogService MessageService
+
+@using Serilog
+@using Estimation.Core.Features.Hygiene.Models
+@using Estimation.Core.Features.Hygiene.Services
+@using Estimation.Core.Train.Models
+
+<PageTitle>@PlanningDisplayNames.HygieneRules</PageTitle>
+
+<AccessGuard PageKey="@PageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudTooltip Text="Back to the hygiene report">
+                <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" OnClick="GoToReport" />
+            </MudTooltip>
+            <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.HygieneRules</MudText>
+
+            <MudSelect T="int?"
+                       Value="ArtId"
+                       ValueChanged="OnArtSelectedAsync"
+                       Label="@PlanningDisplayNames.Art"
+                       Variant="Variant.Outlined"
+                       Dense
+                       Disabled="_busy"
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:260px">
+                @foreach (var art in Arts)
+                {
+                    <MudSelectItem T="int?" Value="@art.Id">@art.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSpacer />
+
+            @if (CanEdit)
+            {
+                <MudMenu Label="Copy from ART"
+                         Variant="Variant.Outlined"
+                         Color="Color.Primary"
+                         StartIcon="@Icons.Material.Filled.ContentCopy"
+                         EndIcon="@Icons.Material.Filled.KeyboardArrowDown"
+                         Disabled="@(_busy || !CopySources.Any())">
+                    @foreach (var art in CopySources)
+                    {
+                        var source = art;
+                        <MudMenuItem OnClick="@(() => CopyFromArtAsync(source))">@source.Name</MudMenuItem>
+                    }
+                </MudMenu>
+
+                @if (_dirty)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Warning">Unsaved changes</MudText>
+                }
+
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Save"
+                           Disabled="@(_busy || !_dirty)"
+                           OnClick="SaveAsync">
+                    Save
+                </MudButton>
+            }
+        </div>
+
+        @if (!ScopeReady || _loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-3" />
+        }
+        else if (Arts.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                No ART with a Jira key is available to you on this page.
+            </MudAlert>
+        }
+        else if (ArtId is null)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">Select an ART.</MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary px-3 pb-2">
+                Rules of <b>@SelectedArt?.Name</b>. Every feature of the ART in the selected PI is checked against
+                every enabled rule; a feature that fails one is not healthy. A rule can check several things joined
+                with <i>and</i> or <i>or</i>, and <i>Only when</i> limits it to the features that match — a feature
+                the guard does not match is not checked by that rule at all. Empty values fail <i>Not empty</i>,
+                <i>Contains words</i>, <i>Not only these words</i> and <i>In values</i>, and pass the range and date
+                checks. Text checks ignore Jira markup and letter case, and match whole words.
+            </MudText>
+
+            @if (!CanEdit)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense Class="mx-2 mb-2">
+                    You have read-only access to this ART. The rules are shown but cannot be changed.
+                </MudAlert>
+            }
+
+            @if (_problems.Count > 0)
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense Class="mx-2 mb-2">
+                    @foreach (var problem in _problems)
+                    {
+                        <div>@problem</div>
+                    }
+                </MudAlert>
+            }
+
+            <MudText Typo="Typo.subtitle1" Class="px-3 pt-2 font-weight-bold">Rules</MudText>
+
+            <MudTable Items="_rows" Dense Hover Striped Elevation="0" Breakpoint="Breakpoint.None" Class="hygiene-rules-table">
+                <HeaderContent>
+                    <MudTh Style="width:90px">Order</MudTh>
+                    <MudTh>Rule</MudTh>
+                    <MudTh Style="width:70px">On</MudTh>
+                    <MudTh Style="width:60px"></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Order">
+                        <div class="d-flex align-center">
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small"
+                                           Disabled="@(!CanEdit || _rows.IndexOf(context) == 0)"
+                                           OnClick="@(() => Move(context, -1))" />
+                            <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small"
+                                           Disabled="@(!CanEdit || _rows.IndexOf(context) == _rows.Count - 1)"
+                                           OnClick="@(() => Move(context, 1))" />
+                        </div>
+                    </MudTd>
+                    <MudTd DataLabel="Rule">
+                        <div class="d-flex flex-column gap-1 py-1">
+                            <HygieneConditionList Conditions="context.Then"
+                                                  Logic="context.ThenLogic"
+                                                  LogicChanged="@(v => context.ThenLogic = v)"
+                                                  Choices="_choices"
+                                                  ReadOnly="!CanEdit"
+                                                  AddLabel="Add condition"
+                                                  OnChanged="MarkDirty" />
+
+                            @if (context.When.Count > 0)
+                            {
+                                <div class="d-flex align-start gap-2 pt-1" style="border-top:1px dashed var(--mud-palette-lines-default)">
+                                    <MudText Typo="Typo.body2" Class="mud-text-secondary pt-3" Style="flex:0 0 74px">Only when</MudText>
+                                    <HygieneConditionList Conditions="context.When"
+                                                          Logic="context.WhenLogic"
+                                                          LogicChanged="@(v => context.WhenLogic = v)"
+                                                          Choices="_choices"
+                                                          ReadOnly="!CanEdit"
+                                                          AddLabel="Add condition"
+                                                          CanRemoveFirst="true"
+                                                          OnChanged="MarkDirty" />
+                                </div>
+                            }
+                            else if (CanEdit)
+                            {
+                                <div>
+                                    <MudTooltip Text="Check this rule only on the features that match a condition">
+                                        <MudButton Variant="Variant.Text"
+                                                   Size="Size.Small"
+                                                   Color="Color.Secondary"
+                                                   StartIcon="@Icons.Material.Filled.FilterAlt"
+                                                   OnClick="@(() => AddWhen(context))">
+                                            Only when…
+                                        </MudButton>
+                                    </MudTooltip>
+                                </div>
+                            }
+
+                            <MudTextField T="string"
+                                          Value="context.Message"
+                                          ValueChanged="@(v => Set(context, () => context.Message = v))"
+                                          Label="Message"
+                                          Placeholder="Optional wording shown with a failure"
+                                          MaxLength="FeatureHygieneRule.MaxMessageLength"
+                                          Dense
+                                          Variant="Variant.Outlined"
+                                          Margin="Margin.Dense"
+                                          Disabled="!CanEdit"
+                                          Class="mt-2" />
+                        </div>
+                    </MudTd>
+                    <MudTd DataLabel="On">
+                        <MudSwitch T="bool"
+                                   Value="context.IsEnabled"
+                                   ValueChanged="@(v => Set(context, () => context.IsEnabled = v))"
+                                   Color="Color.Primary"
+                                   Disabled="!CanEdit" />
+                    </MudTd>
+                    <MudTd>
+                        @if (CanEdit)
+                        {
+                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                           OnClick="@(() => Remove(context))" />
+                        }
+                    </MudTd>
+                </RowTemplate>
+                <NoRecordsContent>
+                    <MudText Class="pa-6 mud-text-secondary">
+                        No rules for this ART yet.
+                        @(CanEdit ? "Add a rule, tick a specific rule below, or copy the rules of another ART." : "")
+                    </MudText>
+                </NoRecordsContent>
+            </MudTable>
+
+            @if (CanEdit)
+            {
+                <div class="pa-2">
+                    <MudButton Variant="Variant.Text" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+                               Disabled="_busy" OnClick="AddRule">
+                        Add rule
+                    </MudButton>
+                </div>
+            }
+
+            <MudDivider Class="my-2" />
+
+            <MudText Typo="Typo.subtitle1" Class="px-3 pt-2 font-weight-bold">Specific rules</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary px-3 pb-1">
+                Checks that look at more than one field. Tick the ones this ART wants; a ticked rule can carry its own
+                wording for a failure.
+            </MudText>
+            <div class="px-3 pb-3">
+                @foreach (var specific in HygieneChecks.SpecificRules)
+                {
+                    var current = specific;
+                    var specificRow = SpecificRow(current);
+                    <div class="mb-2">
+                        <div class="d-flex align-center gap-3 flex-wrap">
+                            <MudCheckBox T="bool"
+                                         Value="specificRow is not null"
+                                         ValueChanged="@(v => SetSpecific(current, v))"
+                                         Label="@current.Title"
+                                         Dense
+                                         Color="Color.Primary"
+                                         Disabled="!CanEdit" />
+                            @if (specificRow is not null)
+                            {
+                                <MudTextField T="string"
+                                              Value="specificRow.Message"
+                                              ValueChanged="@(v => Set(specificRow, () => specificRow.Message = v))"
+                                              Placeholder="Optional wording shown with a failure"
+                                              MaxLength="FeatureHygieneRule.MaxMessageLength"
+                                              Dense
+                                              Variant="Variant.Outlined"
+                                              Margin="Margin.Dense"
+                                              Disabled="!CanEdit"
+                                              Style="min-width:320px; max-width:520px" />
+                            }
+                        </div>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block" Style="margin-left:38px">
+                            @current.Description
+                        </MudText>
+                    </div>
+                }
+            </div>
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private bool _loading;
+    private bool _busy;
+    private bool _dirty;
+    private int? _loadedArtId;
+    private List<RuleRow> _rows = new();
+    private List<RuleRow> _specificRows = new();
+    private List<string> _problems = new();
+    private HygieneChoiceValues _choices = HygieneChoiceValues.Empty;
+    private HashSet<int> _artsWithRules = new();
+
+    private IEnumerable<Art> CopySources =>
+        Arts.Where(a => a.Id != ArtId && _artsWithRules.Contains(a.Id));
+
+    private IEnumerable<RuleRow> AllRows => _rows.Concat(_specificRows);
+
+    protected override async Task OnScopeChangedAsync()
+    {
+        if (ArtId == _loadedArtId)
+        {
+            return;
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task OnArtSelectedAsync(int? artId)
+    {
+        if (artId == ArtId)
+        {
+            return;
+        }
+
+        if (_dirty && !await MessageService.Confirm(
+                "You have unsaved changes to the rules of this ART. Switch ART and discard them?",
+                "Unsaved changes",
+                "Discard"))
+        {
+            StateHasChanged();
+            return;
+        }
+
+        await OnArtChangedAsync(artId);
+    }
+
+    private async Task LoadAsync()
+    {
+        _loadedArtId = ArtId;
+        _rows = new();
+        _specificRows = new();
+        _problems = new();
+        _dirty = false;
+
+        if (ArtId is not int artId)
+        {
+            return;
+        }
+
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            var rules = await RuleService.GetForArtAsync(artId);
+            SplitRows(rules);
+            _choices = await RuleService.GetChoiceValuesAsync();
+            _artsWithRules = (await RuleService.GetArtIdsWithRulesAsync()).ToHashSet();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load hygiene rules for ART {ArtId}", artId);
+            Snackbar.Add("The rules could not be loaded.", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void SplitRows(IEnumerable<FeatureHygieneRule> rules)
+    {
+        var rows = rules.Select(RuleRow.From).ToList();
+        _rows = rows.Where(r => !HygieneChecks.IsSpecific(r.Check)).ToList();
+        _specificRows = rows.Where(r => HygieneChecks.IsSpecific(r.Check) && r.IsEnabled).ToList();
+    }
+
+    private void GoToReport() => Nav.NavigateTo(RoutingPath.FeatureHygiene);
+
+    private void Set(RuleRow row, Action apply)
+    {
+        apply();
+        MarkDirty();
+    }
+
+    private void MarkDirty()
+    {
+        _dirty = true;
+        _problems = new();
+    }
+
+    private void AddRule()
+    {
+        _rows.Add(RuleRow.New());
+        MarkDirty();
+    }
+
+    private void Remove(RuleRow row)
+    {
+        _rows.Remove(row);
+        MarkDirty();
+    }
+
+    private void AddWhen(RuleRow row)
+    {
+        row.When.Add(HygieneConditionModel.Of(HygieneField.Description, HygieneCheck.NotEmpty));
+        MarkDirty();
+    }
+
+    private void Move(RuleRow row, int delta)
+    {
+        var index = _rows.IndexOf(row);
+        var target = index + delta;
+
+        if (index < 0 || target < 0 || target >= _rows.Count)
+        {
+            return;
+        }
+
+        _rows.RemoveAt(index);
+        _rows.Insert(target, row);
+        MarkDirty();
+    }
+
+    private RuleRow? SpecificRow(HygieneSpecificRule specific) =>
+        _specificRows.FirstOrDefault(r => r.Check == specific.Check);
+
+    private void SetSpecific(HygieneSpecificRule specific, bool enabled)
+    {
+        if (enabled == (SpecificRow(specific) is not null))
+        {
+            return;
+        }
+
+        if (enabled)
+        {
+            _specificRows.Add(RuleRow.ForSpecific(specific));
+        }
+        else
+        {
+            _specificRows.RemoveAll(r => r.Check == specific.Check);
+        }
+
+        MarkDirty();
+    }
+
+    private bool Validate()
+    {
+        _problems = _rows
+            .SelectMany((row, index) => HygieneRuleValidation
+                .Problems(row.ToRule(ArtId ?? 0))
+                .Select(p => $"Rule {index + 1}: {p}"))
+            .ToList();
+
+        return _problems.Count == 0;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (ArtId is not int artId || !Validate())
+        {
+            return;
+        }
+
+        if (!CanEditArt(artId))
+        {
+            Snackbar.Add("You do not have edit rights for this ART.", Severity.Error);
+            return;
+        }
+
+        _busy = true;
+
+        try
+        {
+            var saved = await RuleService.SaveForArtAsync(artId, AllRows.Select(r => r.ToRule(artId)).ToList());
+            SplitRows(saved);
+            _artsWithRules = (await RuleService.GetArtIdsWithRulesAsync()).ToHashSet();
+            _dirty = false;
+            Snackbar.Add($"{saved.Count} rule(s) saved for {SelectedArt?.Name}.", Severity.Success);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _problems = [ex.Message];
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save hygiene rules for ART {ArtId}", artId);
+            Snackbar.Add("The rules could not be saved.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CopyFromArtAsync(Art source)
+    {
+        if (ArtId is not int artId)
+        {
+            return;
+        }
+
+        var confirmed = await MessageService.Confirm(
+            $"Replace every rule of {SelectedArt?.Name} with the rules of {source.Name}? Unsaved changes on this page are lost.",
+            "Copy from ART",
+            "Copy");
+
+        if (!confirmed)
+        {
+            return;
+        }
+
+        if (!CanEditArt(artId))
+        {
+            Snackbar.Add("You do not have edit rights for this ART.", Severity.Error);
+            return;
+        }
+
+        _busy = true;
+
+        try
+        {
+            var copied = await RuleService.CopyFromArtAsync(source.Id, artId);
+            Snackbar.Add($"Copied {copied} rule(s) from {source.Name}.", Severity.Success);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to copy hygiene rules from ART {SourceId} to ART {ArtId}", source.Id, artId);
+            Snackbar.Add("The rules could not be copied.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private sealed class RuleRow
+    {
+        public int Id { get; init; }
+
+        public List<HygieneConditionModel> Then { get; init; } =
+            [HygieneConditionModel.Of(HygieneField.Summary, HygieneCheck.NotEmpty)];
+
+        public HygieneLogic ThenLogic { get; set; } = HygieneLogic.All;
+
+        public List<HygieneConditionModel> When { get; init; } = [];
+
+        public HygieneLogic WhenLogic { get; set; } = HygieneLogic.All;
+
+        public string? Message { get; set; }
+
+        public bool IsEnabled { get; set; } = true;
+
+        public HygieneCheck Check => Then[0].Check;
+
+        public static RuleRow New() => new();
+
+        public static RuleRow ForSpecific(HygieneSpecificRule specific) =>
+            new() { Then = [HygieneConditionModel.Of(specific.Field, specific.Check)] };
+
+        public static RuleRow From(FeatureHygieneRule rule)
+        {
+            var logic = rule.Logic;
+
+            return new RuleRow
+            {
+                Id = rule.Id,
+                Then = rule.ThenConditionsOf(logic).Select(HygieneConditionModel.From).ToList(),
+                ThenLogic = logic.ThenLogic,
+                When = logic.When.Select(HygieneConditionModel.From).ToList(),
+                WhenLogic = logic.WhenLogic,
+                Message = rule.Message,
+                IsEnabled = rule.IsEnabled
+            };
+        }
+
+        public FeatureHygieneRule ToRule(int capitalProjectId)
+        {
+            var own = Then[0].ToCondition();
+
+            var logic = new HygieneRuleLogic
+            {
+                ThenLogic = ThenLogic,
+                MoreThen = Then.Skip(1).Select(c => c.ToCondition()).ToList(),
+                WhenLogic = WhenLogic,
+                When = When.Select(c => c.ToCondition()).ToList()
+            };
+
+            return new FeatureHygieneRule
+            {
+                Id = Id,
+                CapitalProjectId = capitalProjectId,
+                Field = own.Field,
+                Check = own.Check,
+                ParametersJson = own.Parameters.ToJson(),
+                LogicJson = logic.ToJsonOrNull(),
+                Message = Message,
+                IsEnabled = IsEnabled
+            };
+        }
+    }
+}
