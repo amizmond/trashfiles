@@ -1,0 +1,85 @@
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<MudDialog>
+    <TitleContent>Add Jira key without an ART</TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+            Add a Jira project that no ART uses, for example a portfolio project with Strategic Objectives,
+            Portfolio Epics or Business Outcomes. The key is checked in Jira with the service account and added
+            with sync switched off. Features on it get no ART, so only admins and General users see them; Strategic
+            Objectives, Portfolio Epics and Business Outcomes follow the ARTs of their Features.
+        </MudText>
+
+        <MudTextField T="string" Value="_key" ValueChanged="OnKeyChanged"
+                      Label="Jira key *" Variant="Variant.Outlined"
+                      MaxLength="ArtJiraKey.MaxKeyLength"
+                      Placeholder="Jira project key, e.g. PORT"
+                      Error="@(_keyError is not null)" ErrorText="@_keyError" />
+
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mt-3">@_error</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_busy">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SubmitAsync" Disabled="_busy">
+            @if (_busy)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+            }
+            Add
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public Func<string, Task<string?>> Save { get; set; } = null!;
+
+    private string? _key;
+    private string? _keyError;
+    private string? _error;
+    private bool _busy;
+
+    private void OnKeyChanged(string? value)
+    {
+        _key = JiraProjectKeys.Normalize(value);
+        _keyError = KeyError(_key);
+        _error = null;
+    }
+
+    private static string? KeyError(string? key) =>
+        key is null ? "Enter a Jira project key."
+        : ArtService.IsValidKey(key) ? null
+        : $"Not a valid Jira project key. A key starts with a letter and has up to {ArtJiraKey.MaxKeyLength} letters, digits or underscores.";
+
+    private async Task SubmitAsync()
+    {
+        _error = null;
+        _keyError = KeyError(_key);
+        if (_keyError is not null)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _error = await Save(_key!);
+        }
+        finally
+        {
+            _busy = false;
+        }
+
+        if (_error is null)
+        {
+            MudDialog.Close(DialogResult.Ok(_key));
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

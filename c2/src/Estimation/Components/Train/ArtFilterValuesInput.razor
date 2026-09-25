@@ -1,0 +1,236 @@
+@using Estimation.Core.Train.Services
+
+<div class="mb-2">
+    <div class="d-flex align-center gap-2 mb-1">
+        <MudTextField T="string" Value="_input" ValueChanged="OnInputChanged"
+                      Label="@Label" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate
+                      OnKeyDown="OnInputKeyDown"
+                      Placeholder="@Placeholder" Style="flex:1"
+                      Error="@(_inputError is not null)" ErrorText="@_inputError" />
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.Add" OnClick="AddInputAsync"
+                   Disabled="@(string.IsNullOrWhiteSpace(_input) || _inputError is not null)">Add</MudButton>
+        <MudTooltip Text="@($"Take issues with none of these {Plural} instead")">
+            <MudCheckBox T="bool" Value="_not" ValueChanged="OnNotChangedAsync"
+                         Label="Not" Dense Color="Color.Secondary"
+                         Disabled="@_filter.IsMixed" />
+        </MudTooltip>
+    </div>
+
+    @if (_filter.IsActive)
+    {
+        <div class="d-flex flex-wrap align-center gap-1">
+            @if (!_filter.IsMixed)
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">@(_filter.IsNot ? "None of:" : "One of:")</MudText>
+            }
+            @foreach (var chip in Chips())
+            {
+                <MudChip T="string" Text="@chip.Text" Size="Size.Small" Variant="Variant.Outlined"
+                         Color="@(chip.Not ? Color.Error : Color.Secondary)"
+                         OnClose="@(() => RemoveAsync(chip.Token))" />
+            }
+        </div>
+    }
+
+    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">@Caption</MudText>
+    @if (_filter.Problem(Plural) is { } problem)
+    {
+        <MudText Typo="Typo.caption" Color="Color.Error" Class="d-block">@problem</MudText>
+    }
+
+    @if (!_filter.IsMixed)
+    {
+        var suggested = Suggested();
+        <div class="d-flex flex-wrap align-center gap-1 mt-1">
+            @if (!_filter.HasEmpty)
+            {
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Icon="@Icons.Material.Filled.Add"
+                         OnClick="AddEmptyAsync" title="@WithoutTitle">
+                    @NoValueText
+                    @if (WithoutCount is { } withoutCount)
+                    {
+                        <span class="mud-text-secondary ml-1">@withoutCount</span>
+                    }
+                </MudChip>
+            }
+            @foreach (var suggestion in suggested)
+            {
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Icon="@Icons.Material.Filled.Add"
+                         OnClick="@(() => AddValueAsync(suggestion.Value))"
+                         title="@($"{FeaturesHave(suggestion.Count)} this {Singular}")">
+                    @suggestion.Value
+                    <span class="mud-text-secondary ml-1">@suggestion.Count</span>
+                </MudChip>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private const int MaxSuggestions = 8;
+
+    [Parameter, EditorRequired] public string Label { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Singular { get; set; } = "value";
+    [Parameter, EditorRequired] public string Plural { get; set; } = "values";
+    [Parameter] public string? Value { get; set; }
+    [Parameter] public EventCallback<string?> ValueChanged { get; set; }
+    [Parameter] public bool Not { get; set; }
+    [Parameter] public EventCallback<bool> NotChanged { get; set; }
+    [Parameter] public string? Placeholder { get; set; }
+    [Parameter] public string? EmptyText { get; set; }
+    [Parameter] public string? Pending { get; set; }
+    [Parameter] public EventCallback<string?> PendingChanged { get; set; }
+    [Parameter] public IReadOnlyList<JiraValueCount>? Suggestions { get; set; }
+    [Parameter] public int? WithoutCount { get; set; }
+
+    private string? _input;
+    private string? _inputError;
+    private JiraValueFilter _filter = JiraValueFilter.Any;
+    private bool _not;
+
+    public static string NoValue(string singular) => $"(no {singular})";
+
+    public static IReadOnlyList<string> SplitInput(string? text) =>
+        string.IsNullOrWhiteSpace(text)
+            ? []
+            : text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public static bool IsReserved(string value, string singular) =>
+        JiraValueFilter.IsReserved(value) || string.Equals(value.Trim(), NoValue(singular), StringComparison.OrdinalIgnoreCase);
+
+    public static JiraValueFilter Add(JiraValueFilter filter, bool not, IEnumerable<string> values) =>
+        filter.IsMixed
+            ? JiraValueFilter.Parse(TokensOf(filter).Concat(values))
+            : JiraValueFilter.Create(filter.Values.Concat(values), filter.HasEmpty, filter.IsActive ? filter.IsNot : not);
+
+    public static string? Merge(string? value, string? pending, bool not, string singular) =>
+        Add(JiraValueFilter.Parse(value), not, SplitInput(pending).Where(v => !IsReserved(v, singular))).ToCsv();
+
+    public static string? InputError(string? text, string singular)
+    {
+        var reserved = SplitInput(text).FirstOrDefault(v => IsReserved(v, singular));
+        return reserved is null ? null
+            : reserved[0] == JiraValueFilter.NotPrefix ? $"Use the Not box instead of '{JiraValueFilter.NotPrefix}'."
+            : $"Use the {NoValue(singular)} button instead.";
+    }
+
+    private string NoValueText => NoValue(Singular);
+
+    private string? WithoutTitle =>
+        WithoutCount is { } count ? $"{FeaturesHave(count)} no {Singular}" : null;
+
+    private static string FeaturesHave(int count) =>
+        count == 1 ? "1 feature on this key has" : $"{count} features on this key have";
+
+    private string? Caption =>
+        _filter.IsActive ? $"Takes issues with {_filter.Requirement(Singular, Plural)}."
+        : _not ? $"Any {Singular} for now. Not is ticked, so the {Plural} you add are left out."
+        : EmptyText;
+
+    protected override void OnParametersSet()
+    {
+        _filter = JiraValueFilter.Parse(Value);
+        if (NotChanged.HasDelegate)
+        {
+            _not = Not;
+        }
+        if (_filter.IsActive && !_filter.IsMixed)
+        {
+            _not = _filter.IsNot;
+        }
+        if (PendingChanged.HasDelegate)
+        {
+            _input = Pending;
+        }
+        _inputError = InputError(_input, Singular);
+    }
+
+    private async Task OnInputChanged(string? value)
+    {
+        _input = value;
+        _inputError = InputError(value, Singular);
+        await PendingChanged.InvokeAsync(value);
+    }
+
+    private async Task OnInputKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" or "NumpadEnter")
+        {
+            await AddInputAsync();
+        }
+    }
+
+    private async Task AddInputAsync()
+    {
+        _inputError = InputError(_input, Singular);
+        var values = SplitInput(_input);
+        if (_inputError is not null || values.Count == 0)
+        {
+            return;
+        }
+
+        _input = string.Empty;
+        await PendingChanged.InvokeAsync(null);
+        await AddAsync(values);
+    }
+
+    private Task AddValueAsync(string value) => AddAsync([value]);
+
+    private Task AddAsync(IEnumerable<string> values) => SetAsync(Add(_filter, _not, values));
+
+    private Task AddEmptyAsync() => SetAsync(_filter.IsMixed ? _filter : JiraValueFilter.Create(_filter.Values, true, _not));
+
+    private async Task OnNotChangedAsync(bool not)
+    {
+        if (_filter.IsActive)
+        {
+            await SetAsync(_filter.WithNot(not));
+            return;
+        }
+
+        _not = not;
+        await NotChanged.InvokeAsync(not);
+    }
+
+    private Task RemoveAsync(string token) =>
+        SetAsync(JiraValueFilter.Parse(Tokens().Where(t => !string.Equals(t, token, StringComparison.OrdinalIgnoreCase))));
+
+    private async Task SetAsync(JiraValueFilter filter)
+    {
+        _filter = filter;
+        if (filter.IsActive && !filter.IsMixed)
+        {
+            _not = filter.IsNot;
+        }
+        var not = _not;
+        await ValueChanged.InvokeAsync(filter.ToCsv());
+        if (not != Not)
+        {
+            _not = not;
+            await NotChanged.InvokeAsync(not);
+        }
+    }
+
+    private static IEnumerable<string> TokensOf(JiraValueFilter filter) => filter.ToCsv()?.Split(',') ?? [];
+
+    private IEnumerable<string> Tokens() => TokensOf(_filter);
+
+    private IEnumerable<(string Token, string Text, bool Not)> Chips()
+    {
+        foreach (var token in Tokens())
+        {
+            var not = token[0] == JiraValueFilter.NotPrefix;
+            var value = not ? token[1..] : token;
+            var text = string.Equals(value, JiraValueFilter.EmptyToken, StringComparison.OrdinalIgnoreCase) ? NoValueText : value;
+            yield return (token, _filter.IsMixed && not ? $"not {text}" : text, not);
+        }
+    }
+
+    private IReadOnlyList<JiraValueCount> Suggested() =>
+        (Suggestions ?? [])
+            .Where(s => !JiraValueFilter.IsReserved(s.Value) && !_filter.Included.Contains(s.Value) && !_filter.Excluded.Contains(s.Value))
+            .OrderByDescending(s => s.Count)
+            .Take(MaxSuggestions)
+            .ToList();
+}
