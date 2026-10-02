@@ -1,0 +1,275 @@
+@inject IIssueLinkService IssueLinkService
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.JiraIntegration.Services
+
+@if (Editable)
+{
+    <div class="d-flex align-center gap-2 flex-wrap px-4 pt-3">
+        <MudSelect T="LinkRelation"
+                   @bind-Value="_relation"
+                   Label="Relation"
+                   Variant="Variant.Outlined"
+                   Margin="Margin.Dense"
+                   Dense="true"
+                   ToStringFunc="@(r => r?.Phrase ?? string.Empty)"
+                   Style="min-width:180px; max-width:240px">
+            @foreach (var relation in Relations)
+            {
+                <MudSelectItem T="LinkRelation" Value="relation">@relation.Phrase</MudSelectItem>
+            }
+        </MudSelect>
+        <MudAutocomplete T="LinkTarget"
+                         @bind-Value="_target"
+                         Label="Feature"
+                         Placeholder="Type a Jira key or a name"
+                         SearchFunc="SearchTargetsAsync"
+                         ToStringFunc="@(t => t is null ? string.Empty : $"{t.Key} — {t.Name}")"
+                         Variant="Variant.Outlined"
+                         Margin="Margin.Dense"
+                         Dense="true"
+                         Strict="false"
+                         MinCharacters="2"
+                         MaxItems="20"
+                         DebounceInterval="300"
+                         ResetValueOnEmptyText="true"
+                         Style="min-width:260px; flex:1 1 260px">
+            <NoItemsTemplate>
+                <MudText Typo="Typo.body2" Class="px-4 py-2 mud-text-secondary">No feature in the tool matches.</MudText>
+            </NoItemsTemplate>
+        </MudAutocomplete>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.Add"
+                   OnClick="AddAsync"
+                   Disabled="@(_relation is null || _target is null)">
+            Add
+        </MudButton>
+    </div>
+}
+else if (!string.IsNullOrEmpty(ReadOnlyReason))
+{
+    <MudText Typo="Typo.caption" Class="px-4 pt-2 mud-text-secondary d-block">@ReadOnlyReason</MudText>
+}
+
+@if (Links.Count == 0 && Edits.Adds.Count == 0)
+{
+    <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">@EmptyText</MudText>
+}
+else
+{
+    <MudSimpleTable Dense Hover Striped Style="overflow-x:auto">
+        <thead>
+            <tr>
+                <th style="width:170px">Relation</th>
+                <th style="width:130px">Issue</th>
+                <th>@PlanningDisplayNames.Name</th>
+                <th style="width:150px">@PlanningDisplayNames.Status</th>
+                <th style="width:90px"></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var link in Links)
+            {
+                var removed = Edits.IsRemoved(link.JiraLinkId);
+                var removalError = Edits.RemovalError(link.JiraLinkId);
+                <tr @key="link.JiraLinkId" style="@(removed ? "opacity:0.6" : null)">
+                    <td style="@(removed ? "text-decoration:line-through" : null)">@link.Relation</td>
+                    <td>
+                        <a href="@(JiraTaskUrl + link.Key)" target="_blank" style="text-decoration:none">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                @link.Key
+                            </MudChip>
+                        </a>
+                    </td>
+                    <td style="overflow-wrap:anywhere">
+                        @link.Name
+                        @if (!link.InTool)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">Not a feature in the tool</MudText>
+                        }
+                        @if (removalError is not null)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Error" Class="d-block">Not removed: @removalError</MudText>
+                        }
+                        else if (removed)
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">Will be removed in Jira when you save</MudText>
+                        }
+                    </td>
+                    <td>
+                        @if (!string.IsNullOrWhiteSpace(link.Status))
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="@FeatureStatusColors.ForStatus(link.Status)" Variant="Variant.Filled">@link.Status</MudChip>
+                        }
+                    </td>
+                    <td style="white-space:nowrap">
+                        @if (link.FeatureId is { } featureId)
+                        {
+                            <MudTooltip Text="Open the feature in a new tab">
+                                <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                               Size="Size.Small"
+                                               Href="@($"{RoutingPath.Features}/{featureId}")"
+                                               Target="_blank" />
+                            </MudTooltip>
+                        }
+                        @if (removed)
+                        {
+                            <MudTooltip Text="Keep this link">
+                                <MudIconButton Icon="@Icons.Material.Filled.Undo"
+                                               Size="Size.Small"
+                                               OnClick="@(() => RestoreAsync(link))" />
+                            </MudTooltip>
+                        }
+                        else if (Editable)
+                        {
+                            <MudTooltip Text="Remove this link">
+                                <MudIconButton Icon="@Icons.Material.Filled.Close"
+                                               Size="Size.Small"
+                                               Color="Color.Error"
+                                               OnClick="@(() => RemoveAsync(link))" />
+                            </MudTooltip>
+                        }
+                    </td>
+                </tr>
+            }
+            @foreach (var add in Edits.Adds)
+            {
+                <tr @key="add">
+                    <td>@add.Relation</td>
+                    <td>
+                        <a href="@(JiraTaskUrl + add.Key)" target="_blank" style="text-decoration:none">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                @add.Key
+                            </MudChip>
+                        </a>
+                    </td>
+                    <td style="overflow-wrap:anywhere">
+                        @add.Name
+                        @if (add.Error is not null)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Error" Class="d-block">Not added: @add.Error</MudText>
+                        }
+                        else
+                        {
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block">Will be added in Jira when you save</MudText>
+                        }
+                    </td>
+                    <td>
+                        @if (!string.IsNullOrWhiteSpace(add.Status))
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="@FeatureStatusColors.ForStatus(add.Status)" Variant="Variant.Filled">@add.Status</MudChip>
+                        }
+                    </td>
+                    <td style="white-space:nowrap">
+                        @if (add.FeatureId is { } featureId)
+                        {
+                            <MudTooltip Text="Open the feature in a new tab">
+                                <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                               Size="Size.Small"
+                                               Href="@($"{RoutingPath.Features}/{featureId}")"
+                                               Target="_blank" />
+                            </MudTooltip>
+                        }
+                        <MudTooltip Text="Do not add this link">
+                            <MudIconButton Icon="@Icons.Material.Filled.Close"
+                                           Size="Size.Small"
+                                           Color="Color.Error"
+                                           OnClick="@(() => CancelAddAsync(add))" />
+                        </MudTooltip>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </MudSimpleTable>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<LinkedIssue> Links { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public LinkedIssueEdits Edits { get; set; } = new();
+
+    [Parameter]
+    public IReadOnlyList<LinkRelation> Relations { get; set; } = [];
+
+    [Parameter]
+    public string? IssueKey { get; set; }
+
+    [Parameter]
+    public bool Editable { get; set; }
+
+    [Parameter]
+    public string? ReadOnlyReason { get; set; }
+
+    [Parameter]
+    public string? JiraTaskUrl { get; set; }
+
+    [Parameter]
+    public string EmptyText { get; set; } = "No linked issues.";
+
+    [Parameter]
+    public EventCallback Changed { get; set; }
+
+    private LinkRelation? _relation;
+    private LinkTarget? _target;
+
+    protected override void OnParametersSet()
+    {
+        if (_relation is not null && !Relations.Contains(_relation))
+        {
+            _relation = null;
+        }
+    }
+
+    private async Task<IEnumerable<LinkTarget>> SearchTargetsAsync(string? value, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await IssueLinkService.SearchTargetsAsync(value, IssueKey, cancellationToken: cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return [];
+        }
+    }
+
+    private async Task AddAsync()
+    {
+        if (_relation is null || _target is null)
+        {
+            return;
+        }
+
+        var problem = Edits.TryAdd(IssueKey, _relation, _target, Links);
+        if (problem is not null)
+        {
+            Snackbar.Add(problem, Severity.Warning);
+            return;
+        }
+
+        _target = null;
+        await Changed.InvokeAsync();
+    }
+
+    private async Task CancelAddAsync(PendingLink add)
+    {
+        Edits.CancelAdd(add);
+        await Changed.InvokeAsync();
+    }
+
+    private async Task RemoveAsync(LinkedIssue link)
+    {
+        Edits.Remove(link.JiraLinkId);
+        await Changed.InvokeAsync();
+    }
+
+    private async Task RestoreAsync(LinkedIssue link)
+    {
+        Edits.Restore(link.JiraLinkId);
+        await Changed.InvokeAsync();
+    }
+}
