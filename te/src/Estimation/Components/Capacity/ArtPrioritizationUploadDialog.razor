@@ -1,0 +1,135 @@
+@using Estimation.Core.Capacity.Services
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.UploadFile" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Upload ART order</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            <b>@FileName</b> for the <b>@ScopeName</b> order.
+            Apply puts the uploaded order on the page as unsaved changes. Nothing is stored until you Save.
+            Cards keep their side of the line, and no card is added or removed.
+        </MudText>
+
+        @foreach (var warning in Result.Warnings)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">@warning</MudAlert>
+        }
+
+        @if (CreatesPiOrder)
+        {
+            <MudAlert Severity="Severity.Info" Dense="true" Class="mb-2">
+                This PI has no order of its own yet. Applying the file creates one.
+            </MudAlert>
+        }
+
+        <div class="d-flex align-center gap-2 flex-wrap mb-2">
+            @foreach (var status in Enum.GetValues<ArtUploadStatus>())
+            {
+                var count = Result.Count(status);
+                if (count > 0)
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@StatusColor(status)">
+                        @StatusLabel(status): @count
+                    </MudChip>
+                }
+            }
+        </div>
+
+        @if (Result.Rows.Count == 0)
+        {
+            <MudText Class="pa-3 mud-text-secondary">The file has no rows.</MudText>
+        }
+        else
+        {
+            <div style="max-height:55vh; overflow-y:auto">
+                <MudSimpleTable Dense="true" Hover="true" Striped="true" Bordered="true">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Jira ID</th>
+                            <th>Summary</th>
+                            <th style="text-align:right">Current rank</th>
+                            <th style="text-align:right">Uploaded ranking</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in Result.Rows)
+                        {
+                            <tr>
+                                <td>
+                                    <MudTooltip Text="@StatusTooltip(row.Status)">
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@StatusColor(row.Status)">
+                                            @StatusLabel(row.Status)
+                                        </MudChip>
+                                    </MudTooltip>
+                                </td>
+                                <td>@row.JiraId</td>
+                                <td>@row.Summary</td>
+                                <td style="text-align:right">@row.CurrentRank</td>
+                                <td style="text-align:right">@row.RankingText</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </div>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.Check"
+                   Disabled="@(!Result.HasChanges)"
+                   OnClick="Apply">
+            Apply
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public ArtUploadResult Result { get; set; } = new([], null, null, null, []);
+    [Parameter] public string FileName { get; set; } = string.Empty;
+    [Parameter] public string ScopeName { get; set; } = string.Empty;
+    [Parameter] public bool CreatesPiOrder { get; set; }
+
+    private static string StatusLabel(ArtUploadStatus status) => status switch
+    {
+        ArtUploadStatus.Updated => "Moves",
+        ArtUploadStatus.Unchanged => "Unchanged",
+        ArtUploadStatus.NotOnList => "Not on the list",
+        ArtUploadStatus.Invalid => "Invalid ranking",
+        ArtUploadStatus.Duplicate => "Duplicate",
+        ArtUploadStatus.Skipped => "Skipped",
+        _ => status.ToString(),
+    };
+
+    private static string StatusTooltip(ArtUploadStatus status) => status switch
+    {
+        ArtUploadStatus.Updated => "The uploaded ranking differs from the current rank, so the card moves within its side of the line.",
+        ArtUploadStatus.Unchanged => "The uploaded ranking is the current rank.",
+        ArtUploadStatus.NotOnList => "This item is not on the list. Use Add first, then upload again.",
+        ArtUploadStatus.Invalid => "The ranking is not a whole number of 1 or more.",
+        ArtUploadStatus.Duplicate => "The Jira ID is already in an earlier row. The first row wins.",
+        ArtUploadStatus.Skipped => "No Jira ID (the bucket row) or no ranking, so the row is ignored.",
+        _ => string.Empty,
+    };
+
+    private static Color StatusColor(ArtUploadStatus status) => status switch
+    {
+        ArtUploadStatus.Updated => Color.Success,
+        ArtUploadStatus.Unchanged => Color.Default,
+        ArtUploadStatus.NotOnList => Color.Warning,
+        ArtUploadStatus.Invalid => Color.Error,
+        ArtUploadStatus.Duplicate => Color.Warning,
+        _ => Color.Default,
+    };
+
+    private void Apply() => MudDialog.Close(DialogResult.Ok(true));
+
+    private void Cancel() => MudDialog.Cancel();
+}

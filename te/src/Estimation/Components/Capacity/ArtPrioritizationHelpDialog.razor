@@ -1,0 +1,83 @@
+@using MudBlazor
+
+<div class="d-flex flex-column">
+    <div class="pa-3" style="max-height:70vh; overflow-y:auto">
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">What you rank</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Each card is a <b>Portfolio Epic</b> or a <b>Business Outcome</b>, depending on the ART's
+            Prioritization setting. A card lists the features of this ART's teams that belong to it; in a PI that
+            includes the features the PI's label rule adds to the team boards. Features without a parent are collected in a <i>No Portfolio Epic</i> or <i>No Business Outcome</i> card,
+            which you rank like the others.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">General order and PI orders</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            <b>General</b> is the ART's main order. It holds every card with features in the current or a future
+            PI (or without a PI), plus the cards you added by hand. Every PI follows the general order unless
+            it has its own order.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Choose a PI to see the order its team boards use. A PI that follows the general order is shown
+            read-only: use <b>Edit general order</b>, or <b>Create PI order</b> to give that PI its own order.
+            A PI with its own order shows cards that are not in it yet (new features, or cards from the general
+            order) as <i>New</i>; Save keeps them. <b>Use general order</b> deletes the PI's own order, and the PI
+            follows the general order again.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Locked PIs never change by accident: when you save the general order, every locked PI with features
+            on this ART's teams that follows it, or has no order yet, first gets its current order saved as its
+            own order. A locked PI without any order gets all its cards above the line, in Jira key order.
+            Editing a locked PI needs the <i>Edit locked PI</i> right.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Numbering and moving cards</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            The cards are numbered in one sequence: above the line 1, 2, 3 …, then the line, then the cards
+            below it. Type a number in a card's <b>Ranking</b> field and press Enter (or leave the field) to move
+            the card there; it stays on its own side of the line. The arrows move a card one place.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The square button moves a card across the line: below the line it becomes the first card under the
+            line, above the line it becomes the last card above it. Changes are kept only when you <b>Save</b>.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">The line and the team boards</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            The team boards of this ART use this order as their default order and show each feature's
+            <i>ART #</i> rank. A card below the line takes its features out of the capacity of every team board
+            of this ART: they show <i>Below the ART line</i> there.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            A team that belongs to several ARTs follows the line of each of them. Its default order comes from
+            the ART that has its own order for that PI. If none has one, it comes from the ART whose general
+            order applies. When two ARTs tie, the feature Ranking decides.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Add and Remove</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>Add</b> puts a Portfolio Epic or Business Outcome without features in this order on the list, at the
+            end of the above-the-line group. Cards without features in the order can be removed with the
+            <b>X</b> button. Cards with features stay; move them below the line instead. In a PI's own order, a
+            card without features that is in the general order comes back from there, so remove it from the
+            general order or move it below the line.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Excel</MudText>
+        <MudText Typo="Typo.body2">
+            <b>Export</b> downloads the list as it is on the page, with its Ranking, line, Jira ID and summary.
+            Change the Ranking numbers and <b>Upload</b> the file: a preview shows what moves, and Apply puts the
+            new order on the page as unsaved changes. Upload never adds or removes cards and never moves a card
+            across the line. Uploading into a PI that follows the general order creates that PI's own order.
+        </MudText>
+    </div>
+</div>

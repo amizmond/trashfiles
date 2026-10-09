@@ -1,0 +1,212 @@
+@attribute [Route(RoutingPath.BusinessOutcomesEdit)]
+
+@inject IBusinessOutcomeService BoService
+@inject IPortfolioEpicService EpicService
+@inject IIssueLinkService IssueLinkService
+@inject ISolutionTrainResolver TrainResolver
+@inject IPermissionGuard PermissionGuard
+@inject IArtRankingLookupService RankingLookup
+@inject NavigationManager Nav
+@inject ISnackbar Snackbar
+@inject IConfiguration Configuration
+
+@using Serilog
+@using Estimation.Core.Capacity.Services
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.JiraIntegration.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Core.Features.Models
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="BusinessOutcomes">
+<PageTitle>@_model.Summary</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+
+        <div class="d-flex align-center gap-2 mb-4">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => Nav.NavigateTo(ListUrl))" />
+            <MudText Typo="Typo.h6">@_model.Summary</MudText>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudGrid Spacing="4">
+                <MudItem xs="12" md="6">
+                    <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                        <MudText Typo="Typo.h6" Class="mb-4">@PlanningDisplayNames.Details</MudText>
+                        <div class="d-flex align-center gap-2 mb-3">
+                            <MudTextField T="string" Value="_model.JiraId" Label="@PlanningDisplayNames.JiraId"
+                                          Variant="Variant.Outlined" ReadOnly="true" />
+                            @if (!string.IsNullOrWhiteSpace(_model.JiraId))
+                            {
+                                <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                               Color="Color.Primary"
+                                               Href="@(Configuration["JiraTaskUrl"] + _model.JiraId)"
+                                               Target="_blank" />
+                            }
+                        </div>
+                        <MudTextField T="string" Value="_model.Summary" Label="@PlanningDisplayNames.Summary"
+                                      Variant="Variant.Outlined" ReadOnly="true" Class="mb-3" />
+                        <MudTextField T="string" Value="@EpicDisplayName" Label="@PlanningDisplayNames.PortfolioEpic"
+                                      Variant="Variant.Outlined" ReadOnly="true" Class="mb-3" />
+                        <MudTextField T="string" Value="_model.RagStatus" Label="@PlanningDisplayNames.RagStatus"
+                                      Variant="Variant.Outlined" ReadOnly="true" Class="mb-3"
+                                      Adornment="@(RagStatuses.IsKnown(_model.RagStatus) ? Adornment.Start : Adornment.None)"
+                                      AdornmentIcon="@Icons.Material.Filled.Circle"
+                                      AdornmentColor="@RagStatusColors.For(_model.RagStatus)" />
+                        <MudTextField T="string" Value="_model.RagExplain" Label="@PlanningDisplayNames.RagExplain"
+                                      Variant="Variant.Outlined" ReadOnly="true" Lines="2" Class="mb-3" />
+                        <JiraTextEditor Value="@_model.Description" Label="@PlanningDisplayNames.Description" ReadOnly="true" />
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.LinkedIssues</MudText>
+                            @if (LinkedIssues.Count > 0)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@LinkedIssues.Count</MudChip>
+                            }
+                        </MudToolBar>
+                        <MudDivider />
+                        <FeatureLinkedIssuesPanel Links="LinkedIssues"
+                                                  Edits="_linkEdits"
+                                                  JiraTaskUrl="@Configuration["JiraTaskUrl"]" />
+                        @if (LinkedIssues.Count > 0)
+                        {
+                            <MudText Typo="Typo.caption" Class="px-4 pt-2 pb-2 mud-text-secondary d-block">
+                                Shown as of the last Jira sync.
+                            </MudText>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Elevation="2" Class="rounded-lg">
+                        <MudToolBar Dense Class="gap-2 flex-wrap" Style="min-height:64px">
+                            <MudText Typo="Typo.h6" Style="white-space:nowrap">@PlanningDisplayNames.Features</MudText>
+                        </MudToolBar>
+                        <MudDataGrid T="Feature" Items="_model.Features"
+                                     Hover="true" Dense="true" Striped="true" Bordered="true" Elevation="0">
+                            <Columns>
+                                <TemplateColumn Title="@PlanningDisplayNames.JiraId" Sortable="true" SortBy="@(x => x.JiraId ?? string.Empty)" CellStyle="width:150px;">
+                                    <CellTemplate>
+                                        @if (!string.IsNullOrEmpty(context.Item.JiraId))
+                                        {
+                                            <a href="@(Configuration["JiraTaskUrl"] + context.Item.JiraId)" target="_blank" style="text-decoration:none">
+                                                <MudChip T="string" Size="Size.Small"
+                                                         Color="Color.Warning" Variant="Variant.Outlined" Style="cursor:pointer">
+                                                    @context.Item.JiraId
+                                                </MudChip>
+                                            </a>
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <PropertyColumn Property="x => x.Name" Title="@PlanningDisplayNames.Name" Sortable="true" />
+
+                                <PropertyColumn Property="x => x.Description" Title="@PlanningDisplayNames.Description" Sortable="false" />
+                                <TemplateColumn Title="" CellStyle="width:100px; text-align:right" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                       Size="Size.Small" Color="Color.Primary"
+                                                       Href="@($"{RoutingPath.Features}/{context.Item.Id}")"
+                                                       Target="_blank" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                            <NoRecordsContent>
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary pa-4">No features linked yet.</MudText>
+                            </NoRecordsContent>
+                            <PagerContent>
+                                <MudDataGridPager T="Feature" PageSizeOptions="new[] { 5, 10, 25, 50 }" />
+                            </PagerContent>
+                        </MudDataGrid>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+    </MudPaper>
+</div>
+
+</AccessGuard>
+
+@code {
+    [Parameter] public int Id { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+
+    private string ListUrl => ReturnUrl ?? RoutingPath.BusinessOutcomes;
+
+    private BusinessOutcome _model = new();
+    private List<PortfolioEpic> _allEpics = new();
+    private bool _loading = true;
+    private readonly LinkedIssueEdits _linkEdits = new();
+
+    private IReadOnlyList<LinkedIssue> LinkedIssues => _model.LinkedIssues ?? [];
+
+    private string EpicDisplayName
+    {
+        get
+        {
+            var epic = _allEpics.FirstOrDefault(e => e.Id == _model.PortfolioEpicId);
+            if (epic is null)
+            {
+                return string.Empty;
+            }
+
+            return string.IsNullOrEmpty(epic.JiraId) ? epic.Summary ?? string.Empty : $"[{epic.JiraId}] {epic.Summary}";
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _allEpics = await EpicService.GetAllLightAsync();
+
+        var e = await BoService.GetByIdAsync(Id);
+        if (e is null)
+        {
+            Nav.NavigateTo(ListUrl); return;
+        }
+
+        var matcher = await TrainResolver.GetArtMatcherAsync();
+        var trainScope = TrainResolver.ResolveForChildren(e.Features, matcher);
+        if (!await PermissionGuard.CanViewAsync("BusinessOutcomes", trainScope)
+            && !await CanViewThroughRankingAsync(e.Id))
+        {
+            Snackbar.Add("You don't have access to this business outcome's Solution Trains.", Severity.Warning);
+            Nav.NavigateTo(ListUrl);
+            return;
+        }
+
+        _model = e;
+        await LoadLinkedIssuesAsync();
+        _loading = false;
+    }
+
+    private async Task<bool> CanViewThroughRankingAsync(int outcomeId)
+    {
+        var rankingArts = await RankingLookup.RankingArtIdsByItemAsync(ArtPrioritization.BusinessOutcome);
+        return rankingArts.TryGetValue(outcomeId, out var artIds)
+            && await PermissionGuard.CanViewAsync("BusinessOutcomes", TrainScope.ForTrains(artIds.ToList()));
+    }
+
+    private async Task LoadLinkedIssuesAsync()
+    {
+        try
+        {
+            await IssueLinkService.LoadAsync(_model);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load linked issues of {JiraId}", _model.JiraId);
+            _model.LinkedIssues = [];
+        }
+    }
+}

@@ -1,0 +1,1613 @@
+@attribute [Route(RoutingPath.ArtPrioritization)]
+@implements IAsyncDisposable
+
+@inject IArtService ArtService
+@inject IPiService PiService
+@inject IArtPrioritizationService PrioritizationService
+@inject IUserPermissionService Permissions
+@inject IWindowsAuthService WindowsAuth
+@inject GlobalFilterState GlobalFilter
+@inject IModalDialogService ModalDialogService
+@inject IDialogService DialogService
+@inject IBrowserDownloadService DownloadService
+@inject NavigationManager Navigation
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Capacity.Services
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Shared.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Microsoft.AspNetCore.WebUtilities
+@using Serilog
+
+<PageTitle>@PlanningDisplayNames.ArtPrioritization</PageTitle>
+
+<AccessGuard PageKey="@PageKey">
+    <div class="container-fluid mt-3 mb-5">
+        <MudPaper Class="p-3 rounded-lg" Elevation="2">
+            <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.ArtPrioritization</MudText>
+                <MudSelect T="int?"
+                           Value="_artId"
+                           ValueChanged="OnArtChangedAsync"
+                           Label="@PlanningDisplayNames.Art"
+                           Variant="Variant.Outlined"
+                           Dense
+                           Disabled="@(_loading || _saving)"
+                           AnchorOrigin="Origin.BottomCenter"
+                           Style="width:260px">
+                    @foreach (var art in _arts)
+                    {
+                        <MudSelectItem T="int?" Value="@art.Id">@art.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSelect T="int"
+                           Value="ScopeValue"
+                           ValueChanged="OnScopeChangedAsync"
+                           Label="Order"
+                           Variant="Variant.Outlined"
+                           Dense
+                           Disabled="@(_loading || _saving)"
+                           AnchorOrigin="Origin.BottomCenter"
+                           Style="width:220px">
+                    <MudSelectItem T="int" Value="GeneralScope">@ArtPrioritizationExcel.GeneralScopeName</MudSelectItem>
+                    @foreach (var pi in _pis)
+                    {
+                        <MudSelectItem T="int" Value="@pi.Id">@pi.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                @if (SelectedPiLocked)
+                {
+                    <MudTooltip Text="@(_canEditLockedPi ? "This PI is locked, but your profile allows editing locked PIs." : "This PI is locked. Its ART order is read-only.")">
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                                 Icon="@Icons.Material.Filled.Lock">
+                            Locked
+                        </MudChip>
+                    </MudTooltip>
+                }
+                <MudSpacer />
+                @if (_board?.Level is not null && !_loadingBoard)
+                {
+                    @if (IsEditable)
+                    {
+                        <MudTooltip Text="@($"Add a {LevelName} that has no features in this order yet. It goes to the end of the above-the-line group.")">
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.Add"
+                                       Disabled="_saving"
+                                       OnClick="AddItemAsync">
+                                Add
+                            </MudButton>
+                        </MudTooltip>
+                    }
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.FileDownload"
+                               Disabled="@(_items.Count == 0 || _saving || _exporting)"
+                               OnClick="ExportAsync">
+                        Export
+                    </MudButton>
+                    <MudFileUpload T="IBrowserFile"
+                                   @ref="_upload"
+                                   Accept=".xlsx"
+                                   MaximumFileCount="1"
+                                   FilesChanged="OnUploadFileSelectedAsync">
+                        <CustomContent>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.UploadFile"
+                                       Disabled="@(!CanUpload || _saving)"
+                                       OnClick="@context.OpenFilePickerAsync">
+                                Upload
+                            </MudButton>
+                        </CustomContent>
+                    </MudFileUpload>
+                    @if (IsEditable)
+                    {
+                        <MudButton Variant="Variant.Filled" Color="Color.Success"
+                                   StartIcon="@Icons.Material.Filled.Save"
+                                   Disabled="@(!CanSave || _saving)"
+                                   OnClick="SaveAsync">
+                            Save
+                        </MudButton>
+                    }
+                }
+            </div>
+
+            <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.HelpOutline" Color="Color.Primary" OnClick="ShowHelpAsync">How does ART prioritization work?</MudButton>
+            </div>
+
+            @if (_loading || _loadingBoard)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" />
+            }
+            else if (_arts.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info">No ART is available to you on this page.</MudAlert>
+            }
+            else if (_artId is null)
+            {
+                <MudText Class="mud-text-secondary">Select an ART.</MudText>
+            }
+            else if (_board is null)
+            {
+                <MudAlert Severity="Severity.Warning">The ART could not be loaded.</MudAlert>
+            }
+            else if (_board.Level is null)
+            {
+                <MudAlert Severity="Severity.Info">
+                    @_board.ArtName has no @PlanningDisplayNames.Prioritization yet. Choose Portfolio Epic or Business Outcome on the
+                    <MudLink Href="@ArtUrl">ART page</MudLink> to rank its work here.
+                </MudAlert>
+            }
+            else
+            {
+                @if (_saving)
+                {
+                    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+                }
+
+                @ScopeBanner()
+
+                @if (_piId is not null && SelectedPiLocked && CanEditArt && !CanEditScope)
+                {
+                    <MudAlert Severity="Severity.Warning" Class="mb-3">
+                        This PI is locked, so its ART order is read-only.
+                    </MudAlert>
+                }
+                else if (_piId is not null && SelectedPiLocked && CanEditScope && IsEditable)
+                {
+                    <MudAlert Severity="Severity.Info" Class="mb-3">
+                        This PI is locked, but your profile ("Edit locked PI") allows changes.
+                    </MudAlert>
+                }
+
+                <div class="d-flex align-center gap-1 mb-2">
+                    <MudIcon Icon="@Icons.Material.Filled.Sort" Size="Size.Small" Class="mud-text-secondary" />
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">@CaptionText</MudText>
+                </div>
+
+                <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+                    <MudTextField T="string"
+                                  Value="_search"
+                                  ValueChanged="OnSearchChanged"
+                                  Placeholder="Search Jira ID or name"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Filled.Search"
+                                  Variant="Variant.Outlined"
+                                  Margin="Margin.Dense"
+                                  Clearable="true"
+                                  Immediate="true"
+                                  DebounceInterval="300"
+                                  Style="max-width:320px" />
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@(AllExpanded ? Icons.Material.Filled.UnfoldLess : Icons.Material.Filled.UnfoldMore)"
+                               OnClick="ToggleExpandAll">
+                        @(AllExpanded ? "Collapse all" : "Expand all")
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Visibility"
+                               EndIcon="@(_detailsOpen ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                               OnClick="() => _detailsOpen = !_detailsOpen">
+                        Details
+                    </MudButton>
+                </div>
+
+                <MudCollapse Expanded="_detailsOpen">
+                    <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-2" Style="border:1px solid var(--mud-palette-lines-default)">
+                        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mb-2">Show on each card</MudText>
+                        <MudGrid Spacing="1">
+                            <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showStatus" ValueChanged="@(v => SetToggleAsync(() => _showStatus = v))" Label="Status" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                            <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showTargetDates" ValueChanged="@(v => SetToggleAsync(() => _showTargetDates = v))" Label="Target dates" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                            @if (Level == ArtPrioritization.PortfolioEpic)
+                            {
+                                <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showStrategicObjectives" ValueChanged="@(v => SetToggleAsync(() => _showStrategicObjectives = v))" Label="@PlanningDisplayNames.StrategicObjectives" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                                <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showFunding" ValueChanged="@(v => SetToggleAsync(() => _showFunding = v))" Label="@PlanningDisplayNames.FundingStatus" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                                <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showOwner" ValueChanged="@(v => SetToggleAsync(() => _showOwner = v))" Label="L6 Owner" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                                <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showComments" ValueChanged="@(v => SetToggleAsync(() => _showComments = v))" Label="Comments" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                            }
+                            else
+                            {
+                                <MudItem xs="6" sm="4" md="3"><MudSwitch T="bool" Value="_showRagExplain" ValueChanged="@(v => SetToggleAsync(() => _showRagExplain = v))" Label="RAG Explain" Color="Color.Primary" Size="Size.Small" /></MudItem>
+                            }
+                        </MudGrid>
+                    </MudPaper>
+                </MudCollapse>
+
+                <div class="art-prio-list">
+                    @{
+                        var above = Filtered(_items.Where(i => i.IsIncluded));
+                        var below = Filtered(_items.Where(i => !i.IsIncluded));
+                    }
+                    @if (above.Count == 0)
+                    {
+                        <MudText Class="pa-3 mud-text-secondary">@AboveEmptyText</MudText>
+                    }
+                    @foreach (var item in above)
+                    {
+                        <div @key="item.Id">@ItemCard(item)</div>
+                    }
+                    <div class="art-prio-line">
+                        <span>ART line</span>
+                    </div>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary px-1 d-block">
+                        Below the line: their features use no capacity on this ART's team boards.
+                    </MudText>
+                    @if (below.Count == 0)
+                    {
+                        <MudText Class="pa-3 mud-text-secondary">
+                            @(FilterActive ? "No cards below the line match the search." : "No cards below the line.")
+                        </MudText>
+                    }
+                    @foreach (var item in below)
+                    {
+                        <div @key="item.Id">@ItemCard(item)</div>
+                    }
+                </div>
+            }
+        </MudPaper>
+    </div>
+</AccessGuard>
+
+<style>
+    .art-prio-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+        background: var(--mud-palette-background-grey);
+        min-height: 100px;
+    }
+
+    .art-prio-card {
+        position: relative;
+        padding: 8px 12px 8px 10px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-left: 4px solid var(--mud-palette-primary);
+        border-bottom: 3px solid var(--mud-palette-primary);
+        border-radius: 8px;
+        background: var(--mud-palette-surface);
+        transition: box-shadow 0.15s ease;
+        scroll-margin: 80px;
+    }
+
+    .art-prio-card:hover {
+        box-shadow: var(--mud-elevation-2);
+    }
+
+    .art-prio-card.below-line {
+        background: #ffd5d5;
+    }
+
+    .art-prio-card.flash {
+        animation: art-prio-flash 1.6s ease-out;
+    }
+
+    @@keyframes art-prio-flash {
+        0% { box-shadow: 0 0 0 4px var(--mud-palette-warning); }
+        100% { box-shadow: 0 0 0 0 transparent; }
+    }
+
+    .art-prio-move {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 76px;
+        flex: 0 0 76px;
+    }
+
+    .art-prio-move .mud-input-control {
+        margin: 0;
+    }
+
+    .art-prio-move input {
+        text-align: center;
+        font-weight: 600;
+    }
+
+    .art-prio-line-button {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        border-radius: 6px;
+        align-self: center;
+    }
+
+    .art-prio-label {
+        min-width: 55px;
+        display: inline-block;
+    }
+
+    .art-prio-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 4px 2px 4px;
+        color: var(--mud-palette-error);
+        font-size: 0.85rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .art-prio-line::before,
+    .art-prio-line::after {
+        content: "";
+        flex: 1;
+        border-top: 3px dashed var(--mud-palette-error);
+    }
+
+    .art-prio-features {
+        margin: 8px 0 0 132px;
+        padding-top: 4px;
+        border-top: 1px solid var(--mud-palette-lines-default);
+    }
+
+    .art-prio-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        font-size: 0.8rem;
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .art-prio-feature {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 4px 0;
+        border-bottom: 1px dashed var(--mud-palette-lines-default);
+    }
+
+    .art-prio-feature:last-child {
+        border-bottom: none;
+    }
+
+    .art-prio-feature-name {
+        min-width: 160px;
+        flex: 1 1 200px;
+    }
+</style>
+
+@code {
+    private RenderFragment ScopeBanner() =>
+        @<div>
+            @if (_piId is null)
+            {
+                <MudAlert Severity="Severity.Info" Class="mb-3" Icon="@Icons.Material.Filled.Public">
+                    @if (_board!.Mode == ArtOrderMode.Empty)
+                    {
+                        <span>@_board.ArtName has no general order yet. The cards are in Jira key order. Save to create the general order.</span>
+                    }
+                    else
+                    {
+                        <span>This is the general order of @_board.ArtName.</span>
+                    }
+                    <span>
+                        Every PI follows it unless the PI has its own order. When you save, locked PIs that follow it, or
+                        have no order yet, keep their current order, so they don't change.
+                    </span>
+                </MudAlert>
+            }
+            else if (IsPiOwnView)
+            {
+                <MudAlert Severity="Severity.Info" Class="mb-3" Icon="@Icons.Material.Filled.EventNote">
+                    <div class="d-flex align-center gap-2 flex-wrap">
+                        <span>
+                            @if (_draftPiOrder)
+                            {
+                                @($"You are creating {SelectedPiName}'s own order. Save to keep it.")
+                            }
+                            else
+                            {
+                                @($"{SelectedPiName} has its own order.")
+                                @if (_items.Any(i => !i.IsSaved))
+                                {
+                                    @(" Cards marked New are not in it yet: they come from the general order or have features in this PI. Save to keep them.")
+                                }
+                            }
+                        </span>
+                        @if (CanEditScope)
+                        {
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.Public"
+                                       Disabled="_saving"
+                                       OnClick="UseGeneralOrderAsync">
+                                Use general order
+                            </MudButton>
+                        }
+                    </div>
+                </MudAlert>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Normal" Class="mb-3" Icon="@Icons.Material.Filled.Public">
+                    <div class="d-flex align-center gap-2 flex-wrap">
+                        <span>
+                            @if (_board!.Mode == ArtOrderMode.FollowsGeneral)
+                            {
+                                @($"{SelectedPiName} follows the general order. The team boards of {_board.ArtName} use it for {SelectedPiName}.")
+                            }
+                            else
+                            {
+                                @($"{_board.ArtName} has no general order and no order for {SelectedPiName}, so its team boards have no ART order for {SelectedPiName}. The cards are in Jira key order.")
+                            }
+                        </span>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.Public"
+                                   Disabled="_saving"
+                                   OnClick="EditGeneralOrderAsync">
+                            @(CanEditArt ? "Edit general order" : "View general order")
+                        </MudButton>
+                        @if (CanEditScope)
+                        {
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.EventNote"
+                                       Disabled="_saving"
+                                       OnClick="CreatePiOrder">
+                                Create @SelectedPiName order
+                            </MudButton>
+                        }
+                    </div>
+                </MudAlert>
+            }
+        </div>;
+
+    private RenderFragment ItemCard(ArtBoardItem item) =>
+        @<div class="art-prio-card @(item.IsIncluded ? "" : "below-line") @(_flashId == item.Id ? "flash" : "")"
+              id="@CardElementId(item.Id)">
+            @{
+                var expanded = _expanded.Contains(item.Id);
+                var index = _items.FindIndex(i => i.Id == item.Id);
+                var canUp = IsEditable && index > 0 && _items[index - 1].IsIncluded == item.IsIncluded;
+                var canDown = IsEditable && index >= 0 && index < _items.Count - 1 && _items[index + 1].IsIncluded == item.IsIncluded;
+            }
+            <div class="d-flex align-start gap-3" style="width:100%">
+                <div class="d-flex align-center gap-2">
+                    <div class="art-prio-move">
+                        <MudTooltip Text="Move up one place">
+                            <MudIconButton Icon="@Icons.Material.Filled.KeyboardArrowUp"
+                                           Size="Size.Small"
+                                           Color="Color.Primary"
+                                           aria-label="Move up one place"
+                                           Disabled="@(!canUp || _saving)"
+                                           OnClick="@(() => MoveBy(item.Id, -1))" />
+                        </MudTooltip>
+                        <MudTextField T="string"
+                                      Value="@RankText(item)"
+                                      ValueChanged="@(v => OnRankTyped(item.Id, v))"
+                                      Label="Ranking"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense"
+                                      InputMode="InputMode.numeric"
+                                      Immediate="true"
+                                      ReadOnly="@(!IsEditable || _saving)"
+                                      OnKeyDown="@(e => OnRankKeyDownAsync(item.Id, e))"
+                                      OnBlur="@(_ => ApplyRankAsync(item.Id))" />
+                        <MudTooltip Text="Move down one place">
+                            <MudIconButton Icon="@Icons.Material.Filled.KeyboardArrowDown"
+                                           Size="Size.Small"
+                                           Color="Color.Primary"
+                                           aria-label="Move down one place"
+                                           Disabled="@(!canDown || _saving)"
+                                           OnClick="@(() => MoveBy(item.Id, 1))" />
+                        </MudTooltip>
+                    </div>
+                    <MudTooltip Text="@(item.IsIncluded ? "Move below the line: its features stop counting toward capacity on this ART's team boards" : "Move above the line")">
+                        <MudIconButton Icon="@(item.IsIncluded ? Icons.Material.Filled.MoveDown : Icons.Material.Filled.MoveUp)"
+                                       Variant="Variant.Outlined"
+                                       Color="@(item.IsIncluded ? Color.Error : Color.Success)"
+                                       Class="art-prio-line-button"
+                                       aria-label="@(item.IsIncluded ? "Move below the line" : "Move above the line")"
+                                       Disabled="@(!IsEditable || _saving)"
+                                       OnClick="@(() => ToggleLineAsync(item.Id))" />
+                    </MudTooltip>
+                </div>
+                <div class="flex-grow-1" style="min-width:0">
+                    <div class="d-flex align-center gap-2 flex-wrap">
+                        @if (item.IsNone)
+                        {
+                            <MudText Typo="Typo.body1" Class="font-weight-bold">@NoneTitle</MudText>
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">@NoneCaption</MudText>
+                        }
+                        else
+                        {
+                            <span class="art-prio-label">@LevelShort:</span>
+                            @if (!string.IsNullOrEmpty(item.JiraId))
+                            {
+                                <a href="@(_jiraTaskUrl + item.JiraId)" target="_blank" style="text-decoration:none">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                        @item.JiraId
+                                    </MudChip>
+                                </a>
+                            }
+                            <MudText Typo="Typo.body1" Class="font-weight-bold">@item.Summary</MudText>
+                        }
+                        @if (NewChipTooltip(item) is { } newTooltip)
+                        {
+                            <MudTooltip Text="@newTooltip">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">New</MudChip>
+                            </MudTooltip>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(item.RagStatus))
+                        {
+                            <MudTooltip Text="@RagStatuses.Label(item.RagStatus)">
+                                <MudChip T="string" Size="Size.Small" Color="@RagStatusColors.For(item.RagStatus)" Variant="Variant.Filled">RAG @item.RagStatus</MudChip>
+                            </MudTooltip>
+                        }
+                        @if (_showStatus && !string.IsNullOrWhiteSpace(item.Status))
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="@FeatureStatusColors.ForStatus(item.Status)" Variant="Variant.Outlined">@item.Status</MudChip>
+                        }
+                    </div>
+                    @if (Level == ArtPrioritization.BusinessOutcome && !item.IsNone)
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span class="art-prio-label">PE:</span>
+                            @if (string.IsNullOrEmpty(item.ParentJiraId))
+                            {
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary">No Portfolio Epic</MudText>
+                            }
+                            else
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">@item.ParentJiraId</MudChip>
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary">@item.ParentSummary</MudText>
+                            }
+                        </div>
+                    }
+                    @if (_showTargetDates && (item.TargetStart is not null || item.TargetEnd is not null))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span class="art-prio-label">Target:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                                @(item.TargetStart?.ToString("dd MMM yyyy") ?? "—") – @(item.TargetEnd?.ToString("dd MMM yyyy") ?? "—")
+                            </MudText>
+                        </div>
+                    }
+                    @if (Level == ArtPrioritization.PortfolioEpic && _showStrategicObjectives && item.StrategicObjectives.Count > 0)
+                    {
+                        <div class="d-flex align-center gap-2 mt-1 flex-wrap">
+                            <span class="art-prio-label">SO:</span>
+                            @foreach (var so in item.StrategicObjectives)
+                            {
+                                <MudTooltip Text="@so.Summary">
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@so.JiraId</MudChip>
+                                </MudTooltip>
+                            }
+                        </div>
+                    }
+                    @if (Level == ArtPrioritization.PortfolioEpic && _showFunding && !string.IsNullOrWhiteSpace(item.FundingStatus))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span class="art-prio-label">Funding:</span>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">@item.FundingStatus</MudChip>
+                        </div>
+                    }
+                    @if (Level == ArtPrioritization.PortfolioEpic && _showOwner && !string.IsNullOrWhiteSpace(item.L6Owner))
+                    {
+                        <div class="d-flex align-center gap-2 mt-1">
+                            <span class="art-prio-label">Owner:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@item.L6Owner</MudText>
+                        </div>
+                    }
+                    @if (Level == ArtPrioritization.PortfolioEpic && _showComments && !string.IsNullOrWhiteSpace(item.Comments))
+                    {
+                        <div class="d-flex align-start gap-2 mt-1">
+                            <span class="art-prio-label">Comments:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary" Style="white-space:pre-line">@item.Comments</MudText>
+                        </div>
+                    }
+                    @if (Level == ArtPrioritization.BusinessOutcome && _showRagExplain && !string.IsNullOrWhiteSpace(item.RagExplain))
+                    {
+                        <div class="d-flex align-start gap-2 mt-1">
+                            <span class="art-prio-label">RAG:</span>
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@item.RagExplain</MudText>
+                        </div>
+                    }
+                </div>
+                <div class="d-flex flex-column align-end gap-1" style="text-align:right; min-width:120px">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                        @item.FeatureIds.Count feature@(item.FeatureIds.Count == 1 ? "" : "s")
+                    </MudChip>
+                    @if (!item.HasFeaturesInScope && !item.IsNone)
+                    {
+                        <MudTooltip Text="@NoFeaturesTooltip">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined"
+                                     Icon="@Icons.Material.Filled.Info">
+                                No features in scope
+                            </MudChip>
+                        </MudTooltip>
+                    }
+                </div>
+                <div class="d-flex flex-column gap-1">
+                    <MudTooltip Text="@(expanded ? "Hide features" : "Show features")">
+                        <MudIconButton Icon="@(expanded ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                                       Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                       aria-label="@(expanded ? "Hide features" : "Show features")"
+                                       OnClick="@(() => ToggleExpanded(item.Id))" />
+                    </MudTooltip>
+                    @if (!item.IsNone)
+                    {
+                        <MudTooltip Text="@($"Open the {LevelName}")">
+                            <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                           Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                           aria-label="@($"Open the {LevelName}")"
+                                           OnClick="@(() => OpenInNewWindowAsync(ItemUrl(item)))" />
+                        </MudTooltip>
+                    }
+                    @if (IsEditable && !item.IsNone && !item.HasFeaturesInScope && item.IsKeptByGeneralOrder)
+                    {
+                        <MudTooltip Text="It is in the general order. Remove it there, or move it below the line.">
+                            <MudIconButton Icon="@Icons.Material.Filled.Close"
+                                           Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small"
+                                           aria-label="It is in the general order. Remove it there, or move it below the line."
+                                           Disabled="true" />
+                        </MudTooltip>
+                    }
+                    else if (IsEditable && !item.IsNone && !item.HasFeaturesInScope)
+                    {
+                        <MudTooltip Text="Remove it from this order">
+                            <MudIconButton Icon="@Icons.Material.Filled.Close"
+                                           Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small"
+                                           aria-label="Remove it from this order"
+                                           Disabled="_saving"
+                                           OnClick="@(() => RemoveItem(item.Id))" />
+                        </MudTooltip>
+                    }
+                </div>
+            </div>
+            @if (expanded)
+            {
+                @FeatureList(item)
+            }
+        </div>;
+
+    private RenderFragment FeatureList(ArtBoardItem item) =>
+        @<div class="art-prio-features">
+            @{
+                string? group = null;
+                var first = true;
+            }
+            @if (item.FeatureIds.Count == 0)
+            {
+                <MudText Typo="Typo.body2" Class="mud-text-secondary py-1">@NoFeaturesTooltip</MudText>
+            }
+            @foreach (var featureId in item.FeatureIds)
+            {
+                if (_board is null || !_board.Features.TryGetValue(featureId, out var f))
+                {
+                    continue;
+                }
+                @if (Level == ArtPrioritization.PortfolioEpic && (first || !string.Equals(group, f.BusinessOutcomeJiraId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    group = f.BusinessOutcomeJiraId;
+                    <div class="art-prio-group">
+                        <span class="art-prio-label">BO:</span>
+                        @if (string.IsNullOrEmpty(f.BusinessOutcomeJiraId))
+                        {
+                            <span>No Business Outcome</span>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">@f.BusinessOutcomeJiraId</MudChip>
+                            <span>@f.BusinessOutcomeSummary</span>
+                        }
+                    </div>
+                }
+                first = false;
+                <div class="art-prio-feature" @key="featureId">
+                    @if (!string.IsNullOrEmpty(f.JiraId))
+                    {
+                        <a href="@(_jiraTaskUrl + f.JiraId)" target="_blank" style="text-decoration:none">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">
+                                @f.JiraId
+                            </MudChip>
+                        </a>
+                    }
+                    <MudText Typo="Typo.body2" Class="art-prio-feature-name">@f.Name</MudText>
+                    @if (!string.IsNullOrWhiteSpace(f.Status))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@FeatureStatusColors.ForStatus(f.Status)" Variant="Variant.Filled">@f.Status</MudChip>
+                    }
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">
+                        @(string.IsNullOrWhiteSpace(f.PiName) ? "No PI" : f.PiName)
+                    </MudChip>
+                    <MudTooltip Text="Open the feature">
+                        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                       Color="Color.Primary" Size="Size.Small"
+                                       aria-label="Open the feature"
+                                       OnClick="@(() => OpenInNewWindowAsync($"{RoutingPath.Features}/{featureId}"))" />
+                    </MudTooltip>
+                </div>
+            }
+        </div>;
+
+    private const string PageKey = "ArtPrioritization";
+    private const string ArtStorageKey = "artPrioritization.selectedArtId";
+    private const string DetailTogglesStorageKey = "artPrioritization.detailToggles";
+    private const string ArtQueryKey = "artId";
+    private const string PiQueryKey = "piId";
+    private const int GeneralScope = 0;
+
+    private List<Art> _arts = new();
+    private List<Pi> _pis = new();
+    private int? _artId;
+    private int? _piId;
+    private bool _initialized;
+    private bool _restored;
+    private bool _loading = true;
+    private bool _loadingBoard;
+    private bool _saving;
+    private bool _exporting;
+    private bool _disposed;
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private bool _canEditLockedPi;
+    private string? _jiraTaskUrl;
+
+    private ArtPrioritizationBoard? _board;
+    private List<ArtBoardItem> _items = new();
+    private bool _hasUnsavedChanges;
+    private bool _draftPiOrder;
+    private readonly HashSet<int> _expanded = new();
+    private readonly Dictionary<int, string?> _rankDrafts = new();
+    private int? _flashId;
+    private int _flashToken;
+    private MudFileUpload<IBrowserFile>? _upload;
+
+    private string? _search;
+    private bool _detailsOpen;
+    private bool _showStatus;
+    private bool _showTargetDates;
+    private bool _showStrategicObjectives;
+    private bool _showFunding;
+    private bool _showOwner;
+    private bool _showComments;
+    private bool _showRagExplain;
+
+    private IDisposable? _locationChangingRegistration;
+
+    private ArtPrioritization Level => _board?.Level ?? ArtPrioritization.PortfolioEpic;
+    private string LevelName => ArtPrioritizations.Label(Level);
+    private string LevelShort => ArtPrioritizations.ShortLabel(Level);
+    private string LevelPlural => Level == ArtPrioritization.PortfolioEpic ? PlanningDisplayNames.PortfolioEpics : PlanningDisplayNames.BusinessOutcomes;
+    private string NoneTitle => ArtPrioritizationExcel.BucketName(Level);
+    private string NoneCaption => Level == ArtPrioritization.PortfolioEpic
+        ? "Features whose Business Outcome has no Portfolio Epic, or that have no Business Outcome"
+        : "Features without a Business Outcome";
+
+    private int ScopeValue => _piId ?? GeneralScope;
+    private Pi? SelectedPi => _piId is int piId ? _pis.FirstOrDefault(p => p.Id == piId) : null;
+    private string SelectedPiName => SelectedPi?.Name ?? "this PI";
+    private string ScopeName => ArtPrioritizationExcel.ScopeName(_piId is null ? null : SelectedPi?.Name);
+    private bool SelectedPiLocked => SelectedPi?.IsLocked == true;
+
+    private bool CanEditArt => _artId is int artId && _permissions.CanEdit(PageKey, TrainScope.ForTrains([artId]));
+    private bool CanEditScope => _board?.Level is not null
+        && CanEditArt
+        && (_piId is null || !SelectedPiLocked || _canEditLockedPi);
+    private bool IsPiOwnView => _piId is not null && (_board?.Mode == ArtOrderMode.PiOrder || _draftPiOrder);
+    private bool IsEditable => CanEditScope && (_piId is null || IsPiOwnView);
+    private bool CanUpload => CanEditScope && _items.Count > 0;
+    private bool CanSave => IsEditable && (_hasUnsavedChanges || _items.Any(i => !i.IsSaved));
+    private bool FilterActive => !string.IsNullOrWhiteSpace(_search);
+    private bool AllExpanded => _items.Count > 0 && _items.All(i => _expanded.Contains(i.Id));
+
+    private string ArtUrl => $"{RoutingPath.CapitalProjects}/{_artId}";
+
+    private string CaptionText =>
+        $"Ranking {LevelPlural} of the ART. The team boards of this ART follow this order and line: cards below the line take their features out of capacity on those boards.";
+
+    private string NoFeaturesTooltip => _piId is null
+        ? "None of its features are on this ART's teams in the current or a future PI. It stays in the order because it was saved or added by hand."
+        : $"None of its features are on this ART's teams in {SelectedPiName}. It stays in the order because it was saved or added by hand.";
+
+    private string AboveEmptyText
+    {
+        get
+        {
+            if (FilterActive)
+            {
+                return "No cards above the line match the search.";
+            }
+            if (_items.Count > 0)
+            {
+                return "All cards are below the line.";
+            }
+            var scope = _piId is null ? "in the current or a future PI" : $"in {SelectedPiName}";
+            return IsEditable
+                ? $"No features of this ART's teams are {scope}. Use Add to rank {LevelPlural} without features."
+                : $"No features of this ART's teams are {scope}.";
+        }
+    }
+
+    private string? NewChipTooltip(ArtBoardItem item)
+    {
+        if (item.Origin == ArtOrderOrigin.New)
+        {
+            if (IsEditable)
+            {
+                return "Not saved in this order yet. It sits at the end of the above-the-line group. Save to keep it.";
+            }
+
+            return IsPiOwnView
+                ? $"Not in {SelectedPiName}'s own order yet, so it sits at the end of the above-the-line group."
+                : "Not in the general order yet, so it sits at the end of the above-the-line group.";
+        }
+
+        if (item.Origin == ArtOrderOrigin.FromGeneral && IsPiOwnView)
+        {
+            return IsEditable
+                ? $"Comes from the general order. It becomes part of {SelectedPiName}'s own order when you Save."
+                : $"Comes from the general order. It is not in {SelectedPiName}'s own order yet.";
+        }
+
+        return null;
+    }
+
+    private static string CardElementId(int itemId) => $"art-prio-card-{itemId}";
+
+    private string RankText(ArtBoardItem item) =>
+        _rankDrafts.TryGetValue(item.Id, out var draft) ? draft ?? string.Empty : item.Rank.ToString();
+
+    private string ItemUrl(ArtBoardItem item) => Level == ArtPrioritization.PortfolioEpic
+        ? $"{RoutingPath.PortfolioEpics}/{item.Id}"
+        : $"{RoutingPath.BusinessOutcomes}/{item.Id}";
+
+    private List<ArtBoardItem> Filtered(IEnumerable<ArtBoardItem> items) =>
+        FilterActive ? items.Where(Matches).ToList() : items.ToList();
+
+    private bool Matches(ArtBoardItem item)
+    {
+        if (string.IsNullOrWhiteSpace(_search))
+        {
+            return true;
+        }
+
+        var term = _search.Trim();
+        return Contains(item.JiraId, term)
+            || Contains(item.Summary, term)
+            || (item.IsNone && Contains(NoneTitle, term))
+            || Contains(item.ParentJiraId, term)
+            || Contains(item.ParentSummary, term)
+            || item.FeatureIds.Any(id => _board is not null
+                && _board.Features.TryGetValue(id, out var f)
+                && (Contains(f.JiraId, term) || Contains(f.Name, term)));
+    }
+
+    private static bool Contains(string? value, string term) =>
+        value is not null && value.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _jiraTaskUrl = Configuration["JiraTaskUrl"];
+
+        var userName = await WindowsAuth.GetUserName();
+        _permissions = userName is null
+            ? UserPermissionSet.Empty
+            : await Permissions.GetPermissionSetAsync(userName);
+        _canEditLockedPi = _permissions.IsActionAvailable(AppActionKeys.EditLockedPi);
+
+        _arts = (await ArtService.GetAllLightAsync())
+            .Where(a => _permissions.CanView(PageKey, TrainScope.ForTrains([a.Id])))
+            .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _pis = await PiService.GetAllLightAsync();
+        _initialized = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _locationChangingRegistration = Navigation.RegisterLocationChangingHandler(OnLocationChanging);
+            await RestoreDetailTogglesAsync();
+        }
+
+        if (!_initialized || _restored)
+        {
+            return;
+        }
+
+        _restored = true;
+        await RestoreScopeAsync();
+        _loading = false;
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _locationChangingRegistration?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+
+    private async Task RestoreScopeAsync()
+    {
+        var query = QueryHelpers.ParseQuery(Navigation.ToAbsoluteUri(Navigation.Uri).Query);
+        var requestedArt = query.TryGetValue(ArtQueryKey, out var art) && int.TryParse(art, out var artId) ? artId : (int?)null;
+        var requestedPi = query.TryGetValue(PiQueryKey, out var pi) && int.TryParse(pi, out var piId) ? piId : (int?)null;
+
+        int? globalArt = null;
+        try
+        {
+            await GlobalFilter.EnsureLoadedAsync();
+            var values = GlobalFilter.Values;
+            globalArt = values.CapitalProjectIds.Count == 1 ? values.CapitalProjectIds[0] : null;
+        }
+        catch
+        {
+        }
+
+        _artId = FirstSelectable(_arts.Select(a => a.Id), requestedArt, await ReadStoredIntAsync(ArtStorageKey), globalArt)
+            ?? _arts.FirstOrDefault()?.Id;
+        _piId = FirstSelectable(_pis.Select(p => p.Id), requestedPi);
+    }
+
+    private static int? FirstSelectable(IEnumerable<int> selectable, params int?[] candidates)
+    {
+        var allowed = selectable.ToHashSet();
+        return candidates.FirstOrDefault(c => c is int id && allowed.Contains(id));
+    }
+
+    private async Task LoadAsync(bool quiet = false)
+    {
+        _draftPiOrder = false;
+        _rankDrafts.Clear();
+        if (_artId is null)
+        {
+            _board = null;
+            _items = new();
+            _hasUnsavedChanges = false;
+            return;
+        }
+
+        if (!quiet)
+        {
+            _loadingBoard = true;
+            _expanded.Clear();
+            StateHasChanged();
+        }
+
+        try
+        {
+            _board = await PrioritizationService.GetAsync(_artId.Value, _piId);
+            _items = _board?.Items.ToList() ?? new();
+            Renumber();
+            _hasUnsavedChanges = false;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load ART prioritization");
+            Snackbar.Add($"Failed to load: {ex.Message}", Severity.Error);
+            _board = null;
+            _items = new();
+            _hasUnsavedChanges = false;
+        }
+        finally
+        {
+            _loadingBoard = false;
+        }
+    }
+
+    private async Task<bool> ConfirmDiscardAsync(string change) =>
+        !_hasUnsavedChanges
+        || await ModalDialogService.Confirm($"{change} will discard unsaved changes. Continue?", "Unsaved Changes", "Discard");
+
+    private async Task OnArtChangedAsync(int? artId)
+    {
+        if (artId == _artId || !await ConfirmDiscardAsync("Changing the ART"))
+        {
+            return;
+        }
+
+        _artId = artId;
+        _search = null;
+        await WriteStoredIntAsync(ArtStorageKey, artId);
+        await LoadAsync();
+    }
+
+    private async Task OnScopeChangedAsync(int scope)
+    {
+        var piId = scope == GeneralScope ? (int?)null : scope;
+        if (piId == _piId || !await ConfirmDiscardAsync("Changing the order"))
+        {
+            return;
+        }
+
+        _piId = piId;
+        await LoadAsync();
+    }
+
+    private Task EditGeneralOrderAsync() => OnScopeChangedAsync(GeneralScope);
+
+    private void OnSearchChanged(string? value) => _search = value;
+
+    private void ToggleExpanded(int itemId)
+    {
+        if (!_expanded.Remove(itemId))
+        {
+            _expanded.Add(itemId);
+        }
+    }
+
+    private void ToggleExpandAll()
+    {
+        if (AllExpanded)
+        {
+            _expanded.Clear();
+            return;
+        }
+
+        foreach (var item in _items)
+        {
+            _expanded.Add(item.Id);
+        }
+    }
+
+    private void Renumber()
+    {
+        var ordered = _items
+            .Select((item, index) => (Item: item, Index: index))
+            .OrderByDescending(x => x.Item.IsIncluded)
+            .ThenBy(x => x.Index)
+            .Select(x => x.Item)
+            .ToList();
+        _items = ordered
+            .Select((item, index) => item.Rank == index + 1 ? item : item with { Rank = index + 1 })
+            .ToList();
+    }
+
+    private int AboveCount => _items.Count(i => i.IsIncluded);
+
+    private void MarkChanged()
+    {
+        Renumber();
+        _hasUnsavedChanges = true;
+    }
+
+    private void MoveBy(int itemId, int delta)
+    {
+        if (!IsEditable)
+        {
+            return;
+        }
+
+        var index = _items.FindIndex(i => i.Id == itemId);
+        var target = index + delta;
+        if (index < 0 || target < 0 || target >= _items.Count || _items[target].IsIncluded != _items[index].IsIncluded)
+        {
+            return;
+        }
+
+        (_items[index], _items[target]) = (_items[target], _items[index]);
+        _rankDrafts.Remove(itemId);
+        MarkChanged();
+    }
+
+    private bool MoveTo(int itemId, int rank)
+    {
+        var index = _items.FindIndex(i => i.Id == itemId);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        var item = _items[index];
+        var aboveCount = AboveCount;
+        var (first, last) = item.IsIncluded ? (1, aboveCount) : (aboveCount + 1, _items.Count);
+        var targetRank = Math.Clamp(rank, first, last);
+        if (targetRank == index + 1)
+        {
+            return false;
+        }
+
+        _items.RemoveAt(index);
+        _items.Insert(targetRank - 1, item);
+        MarkChanged();
+        return true;
+    }
+
+    private void OnRankTyped(int itemId, string? value) => _rankDrafts[itemId] = value;
+
+    private async Task OnRankKeyDownAsync(int itemId, KeyboardEventArgs e)
+    {
+        if (e.Key is "Enter" || e.Code is "Enter" or "NumpadEnter")
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("eval", "if(document.activeElement){document.activeElement.blur();}");
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+            await ApplyRankAsync(itemId);
+        }
+    }
+
+    private async Task ApplyRankAsync(int itemId)
+    {
+        if (!_rankDrafts.Remove(itemId, out var text) || !IsEditable)
+        {
+            return;
+        }
+
+        var item = _items.FirstOrDefault(i => i.Id == itemId);
+        if (item is null || string.IsNullOrWhiteSpace(text) || text.Trim() == item.Rank.ToString())
+        {
+            return;
+        }
+
+        if (!int.TryParse(text.Trim(), out var rank))
+        {
+            Snackbar.Add("Type a whole number for the Ranking.", Severity.Warning);
+            return;
+        }
+
+        MoveTo(itemId, rank);
+        await RevealAsync(itemId);
+    }
+
+    private async Task ToggleLineAsync(int itemId)
+    {
+        if (!IsEditable)
+        {
+            return;
+        }
+
+        var index = _items.FindIndex(i => i.Id == itemId);
+        if (index < 0)
+        {
+            return;
+        }
+
+        var item = _items[index] with { IsIncluded = !_items[index].IsIncluded };
+        _items.RemoveAt(index);
+        _items.Insert(AboveCount, item);
+        _rankDrafts.Remove(itemId);
+        MarkChanged();
+        await RevealAsync(itemId);
+    }
+
+    private void RemoveItem(int itemId)
+    {
+        if (!IsEditable)
+        {
+            return;
+        }
+
+        var index = _items.FindIndex(i => i.Id == itemId);
+        if (index < 0 || _items[index].IsNone || _items[index].HasFeaturesInScope)
+        {
+            return;
+        }
+
+        _items.RemoveAt(index);
+        _rankDrafts.Remove(itemId);
+        _expanded.Remove(itemId);
+        MarkChanged();
+    }
+
+    private async Task AddItemAsync()
+    {
+        if (!IsEditable || _board?.Level is not { } level)
+        {
+            return;
+        }
+
+        var parameters = new MudBlazor.DialogParameters<ArtPrioritizationAddDialog>
+        {
+            { x => x.Level, level },
+            { x => x.ExcludeIds, _items.Where(i => !i.IsNone).Select(i => i.Id).ToList() },
+        };
+        var options = new MudBlazor.DialogOptions
+        {
+            MaxWidth = MudBlazor.MaxWidth.Medium,
+            FullWidth = true,
+            CloseButton = true,
+        };
+        var dialog = await DialogService.ShowAsync<ArtPrioritizationAddDialog>($"Add a {LevelName}", parameters, options);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not int itemId || _items.Any(i => i.Id == itemId))
+        {
+            return;
+        }
+
+        try
+        {
+            var item = await PrioritizationService.GetItemAsync(level, itemId);
+            if (item is null)
+            {
+                Snackbar.Add($"The {LevelName} could not be found.", Severity.Warning);
+                return;
+            }
+
+            _items.Insert(AboveCount, item with { IsIncluded = true, Origin = ArtOrderOrigin.New, FeatureIds = [] });
+            MarkChanged();
+            await RevealAsync(itemId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to add an item to the ART prioritization");
+            Snackbar.Add($"Add failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void CreatePiOrder()
+    {
+        if (_piId is null || !CanEditScope || IsPiOwnView)
+        {
+            return;
+        }
+
+        _draftPiOrder = true;
+        _hasUnsavedChanges = true;
+        Snackbar.Add($"This is now {SelectedPiName}'s own order. Change it and Save to keep it.", Severity.Info);
+    }
+
+    private async Task UseGeneralOrderAsync()
+    {
+        if (_artId is null || _piId is null || _board?.Level is not { } level || !CanEditScope || !IsPiOwnView)
+        {
+            return;
+        }
+
+        if (_draftPiOrder && _board.Mode != ArtOrderMode.PiOrder)
+        {
+            if (await ConfirmDiscardAsync("Going back to the general order"))
+            {
+                await LoadAsync(quiet: true);
+            }
+            return;
+        }
+
+        var message = _board.HasGeneralOrder
+            ? $"Delete {SelectedPiName}'s own order? {SelectedPiName} then follows the general order of {_board.ArtName}."
+            : $"Delete {SelectedPiName}'s own order? {_board.ArtName} has no general order, so its team boards then have no ART order for {SelectedPiName}.";
+        if (!await ModalDialogService.Confirm(message, "Use general order", "Use general order"))
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            await PrioritizationService.UseGeneralOrderAsync(_artId.Value, _piId.Value, level);
+            await LoadAsync(quiet: true);
+            Snackbar.Add($"{SelectedPiName} now follows the general order.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to delete the PI order of the ART prioritization");
+            Snackbar.Add($"Use general order failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!IsEditable || _board?.Level is not { } level)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            Renumber();
+            var rows = _items
+                .Select(item => new ArtPrioritizationOrderRow(item.Id, item.Rank, item.IsIncluded))
+                .ToList();
+            await PrioritizationService.SaveAsync(_board.ArtId, _piId, level, rows);
+            _hasUnsavedChanges = false;
+            await LoadAsync(quiet: true);
+            Snackbar.Add(
+                _piId is null
+                    ? "Saved the general order. PIs without their own order follow it."
+                    : $"Saved {SelectedPiName}'s order. The team boards of this ART follow it for {SelectedPiName}.",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to save ART prioritization");
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_board?.Level is not { } level || _items.Count == 0)
+        {
+            return;
+        }
+
+        _exporting = true;
+        try
+        {
+            Renumber();
+            var bytes = ArtPrioritizationExcel.Export(_board.ArtName, level, ScopeName, _items, DateTime.UtcNow);
+            var fileName = ArtPrioritizationExcel.FileName(_board.ArtName, ScopeName).Replace("'", "_");
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export the ART prioritization");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private async Task OnUploadFileSelectedAsync(IBrowserFile? file)
+    {
+        if (file is null || _board?.Level is not { } level || !CanUpload)
+        {
+            await ClearUploadAsync();
+            return;
+        }
+
+        ArtUploadResult result;
+        try
+        {
+            using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 20 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+            Renumber();
+            result = ArtPrioritizationExcel.Parse(stream, level, ArtPrioritizationExcel.PositionsOf(_items), _board.ArtName, ScopeName);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+            return;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to read the ART prioritization upload");
+            Snackbar.Add($"The file could not be read: {ex.Message}", Severity.Error);
+            return;
+        }
+        finally
+        {
+            await ClearUploadAsync();
+        }
+
+        var createsPiOrder = _piId is not null && !IsPiOwnView;
+        var parameters = new MudBlazor.DialogParameters<ArtPrioritizationUploadDialog>
+        {
+            { x => x.Result, result },
+            { x => x.FileName, file.Name },
+            { x => x.ScopeName, ScopeName },
+            { x => x.CreatesPiOrder, createsPiOrder },
+        };
+        var options = new MudBlazor.DialogOptions
+        {
+            MaxWidth = MudBlazor.MaxWidth.Large,
+            FullWidth = true,
+            CloseButton = true,
+        };
+        var dialog = await DialogService.ShowAsync<ArtPrioritizationUploadDialog>("Upload ART order", parameters, options);
+        var choice = await dialog.Result;
+        if (choice is null || choice.Canceled)
+        {
+            return;
+        }
+
+        if (createsPiOrder)
+        {
+            var confirmed = await ModalDialogService.Confirm(
+                $"This creates {SelectedPiName}'s own order. It no longer follows the general order once you Save. Continue?",
+                $"Create {SelectedPiName} order",
+                "Create");
+            if (!confirmed || _piId is null || IsPiOwnView || !CanEditScope)
+            {
+                return;
+            }
+            _draftPiOrder = true;
+        }
+
+        if (!IsEditable)
+        {
+            return;
+        }
+
+        _items = ArtPrioritizationExcel.ApplyTo(_items, result.Rows);
+        _rankDrafts.Clear();
+        MarkChanged();
+        Snackbar.Add("The uploaded order is on the page. Save to keep it.", Severity.Info);
+    }
+
+    private async Task ClearUploadAsync()
+    {
+        try
+        {
+            if (_upload is not null)
+            {
+                await _upload.ClearAsync();
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task RevealAsync(int itemId)
+    {
+        var token = ++_flashToken;
+        _flashId = itemId;
+        StateHasChanged();
+        await Task.Yield();
+
+        var script = "(function(){"
+            + $"var el=document.getElementById('{CardElementId(itemId)}');"
+            + "if(el){el.scrollIntoView({block:'center',behavior:'smooth'});}})()";
+        try
+        {
+            await JS.InvokeVoidAsync("eval", script);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not scroll the ART prioritization card into view");
+        }
+
+        _ = ClearFlashLaterAsync(token);
+    }
+
+    private async Task ClearFlashLaterAsync(int token)
+    {
+        await Task.Delay(1700);
+        if (_disposed || token != _flashToken)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                _flashId = null;
+                StateHasChanged();
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    private async ValueTask OnLocationChanging(LocationChangingContext context)
+    {
+        if (!_hasUnsavedChanges)
+        {
+            return;
+        }
+        var confirmed = await ModalDialogService.Confirm(
+            "You have unsaved changes. Do you want to leave without saving?",
+            "Unsaved Changes",
+            "Leave");
+        if (!confirmed)
+        {
+            context.PreventNavigation();
+        }
+    }
+
+    private async Task OpenInNewWindowAsync(string url)
+    {
+        await JS.InvokeVoidAsync("open", url, "_blank");
+    }
+
+    private async Task ShowHelpAsync()
+    {
+        var options = new MudBlazor.DialogOptions { MaxWidth = MudBlazor.MaxWidth.Medium, FullWidth = true };
+        await ModalDialogService.Component<ArtPrioritizationHelpDialog>(
+            "How ART prioritization works", new Dictionary<string, object?>(), options);
+    }
+
+    private sealed class DetailTogglePrefs
+    {
+        public bool Status { get; set; }
+        public bool TargetDates { get; set; }
+        public bool StrategicObjectives { get; set; }
+        public bool Funding { get; set; }
+        public bool Owner { get; set; }
+        public bool Comments { get; set; }
+        public bool RagExplain { get; set; }
+    }
+
+    private async Task SetToggleAsync(Action apply)
+    {
+        apply();
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(new DetailTogglePrefs
+            {
+                Status = _showStatus,
+                TargetDates = _showTargetDates,
+                StrategicObjectives = _showStrategicObjectives,
+                Funding = _showFunding,
+                Owner = _showOwner,
+                Comments = _showComments,
+                RagExplain = _showRagExplain,
+            });
+            await JS.InvokeVoidAsync("localStorage.setItem", DetailTogglesStorageKey, json);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task RestoreDetailTogglesAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", DetailTogglesStorageKey);
+            if (string.IsNullOrEmpty(raw)
+                || System.Text.Json.JsonSerializer.Deserialize<DetailTogglePrefs>(raw) is not { } prefs)
+            {
+                return;
+            }
+
+            _showStatus = prefs.Status;
+            _showTargetDates = prefs.TargetDates;
+            _showStrategicObjectives = prefs.StrategicObjectives;
+            _showFunding = prefs.Funding;
+            _showOwner = prefs.Owner;
+            _showComments = prefs.Comments;
+            _showRagExplain = prefs.RagExplain;
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task<int?> ReadStoredIntAsync(string key)
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", key);
+            return int.TryParse(raw, out var value) ? value : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task WriteStoredIntAsync(string key, int? value)
+    {
+        try
+        {
+            if (value is null)
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", key);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", key, value.Value.ToString());
+            }
+        }
+        catch
+        {
+        }
+    }
+}

@@ -1,0 +1,147 @@
+@inject IArtPrioritizationService PrioritizationService
+
+@using Estimation.Core.Capacity.Services
+@using Estimation.Core.Train.Models
+@using Serilog
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.Add" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Add a @ArtPrioritizations.Label(Level)</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary mb-2 d-block">
+            The card goes to the end of the above-the-line group. Items already on the list are not shown.
+        </MudText>
+        <div class="d-flex align-center gap-3 flex-wrap mb-2">
+            <MudTextField T="string"
+                          Value="_term"
+                          ValueChanged="OnTermChangedAsync"
+                          Placeholder="Search Jira ID or summary"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          Variant="Variant.Outlined"
+                          Margin="Margin.Dense"
+                          Clearable="true"
+                          Immediate="true"
+                          DebounceInterval="300"
+                          Style="min-width:280px" />
+            <MudSwitch T="bool"
+                       Value="_includeDone"
+                       ValueChanged="OnIncludeDoneChangedAsync"
+                       Label="Show done"
+                       Color="Color.Primary"
+                       Size="Size.Small" />
+        </div>
+
+        @if (_searching)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+        }
+
+        <div style="max-height:55vh; min-height:200px; overflow-y:auto">
+            @if (!_searching && _results.Count == 0)
+            {
+                <MudText Class="pa-3 mud-text-secondary">Nothing matches.</MudText>
+            }
+            @foreach (var result in _results)
+            {
+                <div class="d-flex align-center gap-2 py-1 art-prio-add-row" @key="result.Id">
+                    @if (!string.IsNullOrEmpty(result.JiraId))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined">@result.JiraId</MudChip>
+                    }
+                    <MudText Typo="Typo.body2" Class="flex-grow-1">@result.Summary</MudText>
+                    @if (!string.IsNullOrWhiteSpace(result.Status))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="@FeatureStatusColors.ForStatus(result.Status)" Variant="Variant.Outlined">@result.Status</MudChip>
+                    }
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Add"
+                               OnClick="@(() => Pick(result.Id))">
+                        Add
+                    </MudButton>
+                </div>
+            }
+        </div>
+        @if (_results.Count >= Take)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">
+                Showing the first @Take matches. Type more of the Jira ID or summary to narrow them down.
+            </MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .art-prio-add-row {
+        border-bottom: 1px dashed var(--mud-palette-lines-default);
+    }
+</style>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public ArtPrioritization Level { get; set; }
+    [Parameter] public IReadOnlyCollection<int> ExcludeIds { get; set; } = Array.Empty<int>();
+
+    private const int Take = 50;
+
+    private string? _term;
+    private bool _includeDone;
+    private bool _searching;
+    private int _searchVersion;
+    private List<ArtItemSearchResult> _results = new();
+
+    protected override Task OnInitializedAsync() => SearchAsync();
+
+    private Task OnTermChangedAsync(string? value)
+    {
+        _term = value;
+        return SearchAsync();
+    }
+
+    private Task OnIncludeDoneChangedAsync(bool value)
+    {
+        _includeDone = value;
+        return SearchAsync();
+    }
+
+    private async Task SearchAsync()
+    {
+        var version = ++_searchVersion;
+        _searching = true;
+        try
+        {
+            var results = await PrioritizationService.SearchItemsAsync(Level, _term, _includeDone, ExcludeIds, Take);
+            if (version == _searchVersion)
+            {
+                _results = results;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "ART prioritization item search failed");
+            if (version == _searchVersion)
+            {
+                _results = new();
+            }
+        }
+        finally
+        {
+            if (version == _searchVersion)
+            {
+                _searching = false;
+            }
+        }
+    }
+
+    private void Pick(int itemId) => MudDialog.Close(DialogResult.Ok(itemId));
+
+    private void Cancel() => MudDialog.Cancel();
+}
