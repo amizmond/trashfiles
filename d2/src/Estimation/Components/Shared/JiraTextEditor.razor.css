@@ -1,0 +1,59 @@
+.jira-text-editor-toolbar {
+    gap: 2px;
+    min-height: 36px;
+}
+
+.jira-text-editor-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 8px;
+    border-radius: 2px;
+    border: 1px solid var(--mud-palette-lines-default);
+}
+
+.jira-text-editor-heading-1 { font-size: 1.25rem; font-weight: 600; }
+.jira-text-editor-heading-2 { font-size: 1.15rem; font-weight: 600; }
+.jira-text-editor-heading-3 { font-size: 1.05rem; font-weight: 600; }
+.jira-text-editor-heading-4 { font-size: 1rem; font-weight: 600; }
+.jira-text-editor-heading-5 { font-size: 0.9rem; font-weight: 600; }
+.jira-text-editor-heading-6 { font-size: 0.85rem; font-weight: 600; }
+
+.jira-text-editor-preview,
+.jira-text-editor ::deep textarea {
+    min-height: 150px;
+}
+
+.jira-text-editor-preview {
+    position: relative;
+    border: 1px solid var(--mud-palette-lines-inputs);
+    border-radius: var(--mud-default-borderradius);
+    padding: 18px 14px 14px;
+}
+
+.jira-text-editor-preview-label {
+    position: absolute;
+    top: 0;
+    left: 9px;
+    transform: translateY(-50%);
+    padding: 0 5px;
+    background: var(--mud-palette-surface);
+    font-size: 0.75rem;
+    line-height: 1;
+    color: var(--mud-palette-text-secondary);
+}
+
+::deep .jira-text-editor-cheatsheet {
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+::deep .jira-text-editor-cheatsheet td {
+    padding: 2px 12px 2px 0;
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+::deep .jira-text-editor-cheatsheet code {
+    color: var(--mud-palette-primary);
+}

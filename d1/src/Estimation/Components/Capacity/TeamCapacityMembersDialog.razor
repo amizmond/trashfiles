@@ -1,0 +1,106 @@
+@using MudBlazor
+@using Estimation.Core.Capacity.Services
+
+<div class="d-flex flex-column" style="min-width:640px">
+    <div class="pa-2">
+        @if (Result is null || Result.Members.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary pa-2">
+                No active team members for the selected PI.
+            </MudText>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+                <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                    Window: <b>@Result.WindowMode</b> @WindowRangeText
+                </MudText>
+                <MudSpacer />
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">
+                    Total: @Format(Result.TotalCapacity) SP
+                </MudChip>
+            </div>
+
+            <MudTable T="TeamCapacityMemberRow"
+                      Items="Result.Members"
+                      Hover Dense Bordered="true"
+                      Class="rounded-0"
+                      Elevation="0">
+                <HeaderContent>
+                    <MudTh>Member</MudTh>
+                    <MudTh>Role</MudTh>
+                    <MudTh Style="text-align:right">Working days</MudTh>
+                    <MudTh Style="text-align:right">Holiday days</MudTh>
+                    <MudTh Style="text-align:right">Public holidays</MudTh>
+                    <MudTh Style="text-align:right">Coefficient</MudTh>
+                    @if (ShowEffectiveDays)
+                    {
+                        <MudTh Style="text-align:right">Effective days</MudTh>
+                    }
+                    <MudTh Style="text-align:right">Capacity (SP)</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Member">@context.FullName</MudTd>
+                    <MudTd DataLabel="Role">@context.RoleName</MudTd>
+                    <MudTd DataLabel="Working days" Style="text-align:right">@Format(context.BusinessDays)</MudTd>
+                    <MudTd DataLabel="Holiday days" Style="text-align:right">@Format(context.HolidayDays)</MudTd>
+                    <MudTd DataLabel="Public holidays" Style="text-align:right">@Format(context.PublicHolidayDays)</MudTd>
+                    <MudTd DataLabel="Coefficient" Style="text-align:right">@context.Coefficient.ToString("F2")</MudTd>
+                    @if (ShowEffectiveDays)
+                    {
+                        <MudTd DataLabel="Effective days" Style="text-align:right">@Format(context.EffectiveDays)</MudTd>
+                    }
+                    <MudTd DataLabel="Capacity (SP)" Style="text-align:right">@Format(context.Capacity)</MudTd>
+                </RowTemplate>
+                <FooterContent>
+                    <MudTd Style="font-weight:bold">Total</MudTd>
+                    <MudTd />
+                    <MudTd Style="text-align:right; font-weight:bold">@Format(Result.Members.Sum(m => m.BusinessDays))</MudTd>
+                    <MudTd Style="text-align:right; font-weight:bold">@Format(Result.Members.Sum(m => m.HolidayDays))</MudTd>
+                    <MudTd Style="text-align:right; font-weight:bold">@Format(Result.Members.Sum(m => m.PublicHolidayDays))</MudTd>
+                    <MudTd />
+                    @if (ShowEffectiveDays)
+                    {
+                        <MudTd Style="text-align:right; font-weight:bold">@Format(Result.Members.Sum(m => m.EffectiveDays))</MudTd>
+                    }
+                    <MudTd Style="text-align:right; font-weight:bold">@Format(Result.TotalCapacity)</MudTd>
+                </FooterContent>
+            </MudTable>
+
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                Capacity (SP) = (working days − holiday days − public holidays) × coefficient × @Result.StoryPointsPerDay.ToString("0.##"),
+                the team's story points per day (set on the Team page).
+            </MudText>
+        }
+    </div>
+
+    <MudDivider />
+
+    <div class="d-flex justify-end pa-3">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Close">Close</MudButton>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance? MudDialog { get; set; }
+
+    [Parameter] public TeamCapacityResult? Result { get; set; }
+
+    private bool ShowEffectiveDays => Result is not null && Result.StoryPointsPerDay != 1m;
+
+    private string WindowRangeText
+    {
+        get
+        {
+            if (Result?.WindowStart is null || Result?.WindowEnd is null)
+            {
+                return "";
+            }
+            return $"({Result.WindowStart:dd MMM yyyy} – {Result.WindowEnd:dd MMM yyyy})";
+        }
+    }
+
+    private static string Format(double v) => v.ToString("F1");
+
+    private void Close() => MudDialog?.Close();
+}

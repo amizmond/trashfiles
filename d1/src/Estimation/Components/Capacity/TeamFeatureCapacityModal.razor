@@ -1,0 +1,84 @@
+@namespace Estimation.Components.Capacity
+
+<div style="min-width:600px; max-width:90vw; max-height:80vh; display:flex; flex-direction:column;">
+    @if (Allocation is not null)
+    {
+        <div class="pa-4" style="flex:1; overflow-y:auto;">
+            <MudText Typo="Typo.h6" Class="mb-2">@FeatureName</MudText>
+            <div class="d-flex gap-3 mb-3 flex-wrap align-center">
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">
+                    Mode: @Allocation.Mode
+                </MudChip>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled"
+                         Color="@(Allocation.IsFullyReserved ? Color.Success : Allocation.Reserved > 0m ? Color.Warning : Color.Error)">
+                    Reserved @Allocation.Reserved.ToString("0.##") / @Allocation.Required.ToString("0.##")
+                </MudChip>
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                    Capacity is in story points: a member's effective days (working days × coefficient) × @StoryPointsPerDay.ToString("0.##") SP per day.
+                </MudText>
+            </div>
+
+            @if (Allocation.Skills.Count == 0)
+            {
+                <MudText Class="mud-text-secondary">No capacity demand for this feature.</MudText>
+            }
+            else
+            {
+                <MudTable Items="Allocation.Skills" Dense Hover Bordered>
+                    <HeaderContent>
+                        <MudTh>Technology stack</MudTh>
+                        <MudTh>Required</MudTh>
+                        <MudTh>Reserved</MudTh>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Allocated members (SP)</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd>@context.Label</MudTd>
+                        <MudTd>@context.Required.ToString("0.##")</MudTd>
+                        <MudTd>@context.Reserved.ToString("0.##")</MudTd>
+                        <MudTd>
+                            <MudIcon Icon="@(context.IsReserved ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.Warning)"
+                                     Color="@(context.IsReserved ? Color.Success : Color.Error)" Size="Size.Small" />
+                        </MudTd>
+                        <MudTd>
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var m in context.Members)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info">
+                                        @m.Name (@m.AllocatedStoryPoints.ToString("0.##") SP)
+                                    </MudChip>
+                                }
+                                @if (context.Members.Count == 0)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Error">No one available</MudText>
+                                }
+                            </div>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </div>
+        <div class="pa-4 d-flex justify-end" style="border-top:1px solid var(--mud-palette-lines-default); flex-shrink:0;">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Close">Close</MudButton>
+        </div>
+    }
+</div>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+    [Parameter] public FeatureAllocVm? Allocation { get; set; }
+    [Parameter] public string? FeatureName { get; set; }
+    [Parameter] public decimal StoryPointsPerDay { get; set; } = 1m;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await MudDialog.SetOptionsAsync(new DialogOptions
+        {
+            MaxWidth = MudDialog.Options.MaxWidth ?? MaxWidth.Large,
+            FullWidth = false,
+            BackdropClick = MudDialog.Options.BackdropClick,
+        });
+    }
+
+    private void Close() => MudDialog.Close();
+}

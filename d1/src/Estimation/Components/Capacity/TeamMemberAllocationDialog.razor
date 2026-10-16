@@ -1,0 +1,104 @@
+@namespace Estimation.Components.Capacity
+
+@using MudBlazor
+
+<div class="d-flex flex-column" style="min-width:680px; max-width:90vw; max-height:80vh;">
+    <div class="pa-3" style="overflow-y:auto;">
+        @if (Members is null || Members.Count == 0)
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary pa-2">No team members to show.</MudText>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">Capacity: @Fmt(TotalCapacity)</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Allocated: @Fmt(TotalAllocated)</MudChip>
+                <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">Remaining: @Fmt(TotalRemaining)</MudChip>
+                <MudSpacer />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">Story points (1 effective day = @StoryPointsPerDay.ToString("0.##") SP).</MudText>
+            </div>
+
+            <MudExpansionPanels MultiExpansion="true" Elevation="0" Outlined="true">
+                @foreach (var m in Members)
+                {
+                    <MudExpansionPanel @key="m.HumanResourceId">
+                        <TitleContent>
+                            <div class="d-flex align-center gap-2" style="width:100%">
+                                <MudText Typo="Typo.body2" Class="font-weight-bold">@m.Name</MudText>
+                                @if (!string.IsNullOrEmpty(m.Role))
+                                {
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary">@m.Role</MudText>
+                                }
+                                <MudSpacer />
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">Capacity @Fmt(m.Capacity)</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">Allocated @Fmt(m.Allocated)</MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled"
+                                         Color="@(m.Allocated <= 0m ? Color.Default : m.Remaining <= 0m ? Color.Success : Color.Warning)">
+                                    Remaining @Fmt(m.Remaining)
+                                </MudChip>
+                            </div>
+                        </TitleContent>
+                        <ChildContent>
+                            @if (m.Lines.Count == 0)
+                            {
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    Nothing allocated — full capacity remaining.
+                                </MudText>
+                            }
+                            else
+                            {
+                                <table style="width:100%; border-collapse:collapse; font-size:0.85rem">
+                                    <thead>
+                                        <tr style="color:var(--mud-palette-text-secondary)">
+                                            <th style="text-align:left; padding:4px 8px">Stack</th>
+                                            <th style="text-align:left; padding:4px 8px">Feature</th>
+                                            <th style="text-align:right; padding:4px 8px">Allocated SP</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var line in m.Lines)
+                                        {
+                                            <tr style="border-top:1px solid var(--mud-palette-lines-default)">
+                                                <td style="text-align:left; padding:4px 8px">@line.StackName</td>
+                                                <td style="text-align:left; padding:4px 8px">
+                                                    @(string.IsNullOrEmpty(line.JiraId) ? "" : line.JiraId + " — ")@line.FeatureName
+                                                </td>
+                                                <td style="text-align:right; padding:4px 8px">@Fmt(line.StoryPoints)</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                        </ChildContent>
+                    </MudExpansionPanel>
+                }
+            </MudExpansionPanels>
+
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-3">
+                Story points are reserved against features in their above-the-line order. Members with no technology
+                stack (or whose stacks have no demand) keep their full capacity as Remaining.
+            </MudText>
+        }
+    </div>
+
+    <MudDivider />
+    <div class="d-flex justify-end pa-3">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Close">Close</MudButton>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance? MudDialog { get; set; }
+
+    [Parameter] public List<MemberCapacityDetailVm>? Members { get; set; }
+
+    [Parameter] public decimal StoryPointsPerDay { get; set; } = 1m;
+
+    private decimal TotalCapacity => Members?.Sum(m => m.Capacity) ?? 0m;
+    private decimal TotalAllocated => Members?.Sum(m => m.Allocated) ?? 0m;
+    private decimal TotalRemaining => TotalCapacity - TotalAllocated;
+
+    private static string Fmt(decimal v) => v.ToString("0.##");
+
+    private void Close() => MudDialog?.Close();
+}

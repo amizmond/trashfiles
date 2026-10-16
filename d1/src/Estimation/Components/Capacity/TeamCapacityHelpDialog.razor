@@ -1,0 +1,208 @@
+@using MudBlazor
+
+<div class="d-flex flex-column">
+    <div class="pa-3" style="max-height:70vh; overflow-y:auto">
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Team capacity (story points)</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Capacity is measured in story points. Each team sets how many story points one working day is worth
+            as <b>Story points per day</b> on the
+            <MudLink Href="@($"{Estimation.RoutingPath.Teams}/{TeamId}")" Target="_blank">Team page</MudLink>
+            (1 by default). This team: <b>1 working day = @StoryPointsPerDay.ToString("0.##") SP</b>.
+            For each active team member:
+        </MudText>
+        <MudPaper Elevation="0" Class="pa-2 mb-3 rounded" Style="background: var(--mud-palette-background-gray); font-family: monospace">
+            member_capacity_sp = (working_days_in_window − holiday_days − public_holidays) × coefficient × story_points_per_day
+        </MudPaper>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The team's total capacity is the sum across all active members.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            The window is the union of the team's <b>Sprints</b> for the selected PI. If no sprints are
+            defined the PI's start/end dates are used instead. The window indicator chip shows which mode
+            was applied (<i>Sprints</i> / <i>PI</i> / <i>None</i>).
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Working days exclude Saturdays and Sundays. Holiday days count any
+            <MudLink Href="@($"{Estimation.RoutingPath.Teams}/{TeamId}/holidays")" Target="_blank">team-member holiday</MudLink>
+            overlapping the window (half-day entries count as 0.5). Public holidays count the
+            <MudLink Href="@($"{Estimation.RoutingPath.HolidaysSetup}")" Target="_blank">public holidays</MudLink>
+            for the member's country that fall on a working day in the window. A leave day that
+            lands on a public holiday is only subtracted once.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The coefficient (0.00–1.00, default 1.00) is set per team member per PI on the
+            <MudLink Href="@($"{Estimation.RoutingPath.Teams}/{TeamId}/coefficients")" Target="_blank">Coefficients page</MudLink>.
+            If a PI has no saved values the team's <b>Default</b> coefficients are used (and 1.00 where no Default is set).
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Technology stacks</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Each member is assigned to one or more of the team's <b>technology stacks</b> (on the Team page).
+            A member's capacity is a single shared pool of days: if they belong to several stacks, those
+            stacks draw from the <i>same</i> days, so a day spent on one stack is no longer free for another.
+            That is why a multi-stack member's days appear in every stack they belong to.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Members who belong to no stack still count toward the team's total capacity, but their days
+            cannot be reserved against any feature that asks for a stack.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Feature demand and reservation</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            The <b>Effort</b> chip on a card is the feature's total story points — the team's story points
+            on the feature (auto-summed from its stacks when the team uses stacks), or the feature's own
+            <code>Story Points</code> otherwise.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            Capacity is reserved <b>per technology stack</b>. For each stack's story points on a feature,
+            only the members assigned to that stack contribute their remaining capacity (1 effective day =
+            the team's story points per day). Features are processed <b>top-to-bottom</b> and share one per-member
+            ledger, so capacity consumed by a higher card is no longer available to the cards below it.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The <b>Reserved x / y</b> chip shows how much was reserved (<i>x</i>) against how much the
+            feature needs (<i>y</i>). A feature with no team-stack story points shows
+            <b>No stack capacity</b>: its effort is still displayed, but nothing can be reserved for it.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Resource and Demand tables</MudText>
+        <ul style="margin: 4px 0 12px 24px; padding:0">
+            <li>
+                <MudText Typo="Typo.body2">
+                    <b>Resource capacity</b> — the supply side: each stack (or exact stack combination) of
+                    members, their total story points, how many are already <i>Allocated</i>, and what
+                    <i>Remains</i>. Every member is counted in exactly one row, so the rows sum to the team total.
+                </MudText>
+            </li>
+            <li>
+                <MudText Typo="Typo.body2">
+                    <b>Demand capacity</b> — the feature side: the story points each stack is asked for by
+                    above-the-line features, how much was <i>Allocated</i> (capped by member availability),
+                    the unmet remainder, and how much sits <i>below the line</i>.
+                </MudText>
+            </li>
+        </ul>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Card coloring</MudText>
+        <MudText Typo="Typo.body2" Class="mb-1">
+            Each included card is colored by how much of its demand could be reserved:
+        </MudText>
+        <ul style="margin: 4px 0 12px 24px; padding:0">
+            <li><MudText Typo="Typo.body2"><b style="color:var(--mud-palette-success)">Green</b> — fully reserved: every stack got all the days it needed.</MudText></li>
+            <li><MudText Typo="Typo.body2"><b style="color:var(--mud-palette-warning)">Yellow</b> — partly reserved: some days were found, but not enough to cover the demand.</MudText></li>
+            <li><MudText Typo="Typo.body2"><b style="color:var(--mud-palette-error)">Red</b> — nothing could be reserved: the stacks it needs were already exhausted by the cards above it.</MudText></li>
+            <li><MudText Typo="Typo.body2"><b style="color:var(--mud-palette-warning)">Dashed amber</b> — <i>No stack capacity</i>: the feature has no team-stack story points, so it can't be planned.</MudText></li>
+            <li><MudText Typo="Typo.body2">Features moved <b>below the line</b> with the square button next to the position consume no capacity.</MudText></li>
+        </ul>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Example</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            A team has two stacks: <b>Backend</b> (Alice, Bob) and <b>Frontend</b> (Carol). For the selected
+            PI each member has <b>10 effective days</b> — so Backend has 20 days, Frontend 10, and the team
+            total is 30. Four features sit above the line, in this order:
+        </MudText>
+        <div style="overflow-x:auto">
+            <table class="help-example-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>Demand</th>
+                        <th>Reserved</th>
+                        <th>Result</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>F1</td>
+                        <td>Backend 15</td>
+                        <td>15 / 15</td>
+                        <td><b style="color:var(--mud-palette-success)">Green</b> — Backend has 20 days, easily covered (5 left).</td>
+                    </tr>
+                    <tr>
+                        <td>F2</td>
+                        <td>Backend 8, Frontend 4</td>
+                        <td>9 / 12</td>
+                        <td><b style="color:var(--mud-palette-warning)">Yellow</b> — only 5 Backend days remain (reserves 5); Frontend covers its 4.</td>
+                    </tr>
+                    <tr>
+                        <td>F3</td>
+                        <td>Backend 6</td>
+                        <td>0 / 6</td>
+                        <td><b style="color:var(--mud-palette-error)">Red</b> — Backend is already exhausted.</td>
+                    </tr>
+                    <tr>
+                        <td>F4</td>
+                        <td>—</td>
+                        <td>—</td>
+                        <td><b style="color:var(--mud-palette-warning)">No stack capacity</b> — has story points but no team stack.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">
+            F1 consuming Backend days is exactly why F2 is only partial and F3 is starved — the cards share
+            one pool, top to bottom. Reorder them (drag a card, use the arrows, or type a position) to change who gets the days first.
+        </MudText>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary mt-2 d-block">
+            The example uses 1 story point per day. With 2 story points per day the same 10 effective days give
+            each member 20 story points, so Backend has 40 and Frontend 20, and F1, F2 and F3 are all fully reserved.
+        </MudText>
+
+        <MudDivider Class="my-3" />
+
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+            Both capacity and feature demand are measured in story points (1 working day = the team's story
+            points per day), so reserved story points can be compared directly to the team's capacity.
+        </MudText>
+    </div>
+
+    <MudDivider />
+
+    <div class="d-flex justify-end pa-3">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Close">Close</MudButton>
+    </div>
+</div>
+
+<style>
+    .help-example-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.8rem;
+    }
+
+    .help-example-table th,
+    .help-example-table td {
+        padding: 6px 8px;
+        border: 1px solid var(--mud-palette-lines-default);
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .help-example-table thead th {
+        background: var(--mud-palette-background-gray);
+        font-weight: 600;
+    }
+</style>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance? MudDialog { get; set; }
+
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public decimal StoryPointsPerDay { get; set; } = 1m;
+
+    private void Close()
+    {
+        MudDialog?.Close();
+    }
+}

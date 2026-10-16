@@ -1,0 +1,403 @@
+@inject IPiService PiService
+@inject IArtCapacityService CapacityService
+@inject IBrowserDownloadService DownloadService
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Capacity.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Serilog
+
+<PageTitle>@($"{ArtName} — ART Capacity")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+            <MudSelect T="int?"
+                       Value="_selectedPiId"
+                       ValueChanged="OnPiChangedAsync"
+                       Label="Select PI"
+                       Variant="Variant.Outlined"
+                       Dense
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:260px">
+                @foreach (var pi in _allPis)
+                {
+                    <MudSelectItem T="int?" Value="pi.Id">@pi.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <MudText Typo="Typo.h6" Class="ml-2">@($"{ArtName} — ART Capacity")</MudText>
+            @if (ArtId > 0 && UserPageAccess.ContainsKey("ArtPrioritization"))
+            {
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.LowPriority"
+                           Href="@($"{RoutingPath.ArtPrioritization}?artId={ArtId}&piId={_selectedPiId}")">
+                    @PlanningDisplayNames.ArtPrioritization
+                </MudButton>
+            }
+            @if (SelectedPiLocked)
+            {
+                <MudTooltip Text="This PI is locked. The ART view is read-only anyway; the lock affects the per-team boards.">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                             Icon="@Icons.Material.Filled.Lock">
+                        Locked
+                    </MudChip>
+                </MudTooltip>
+            }
+            <MudSpacer />
+            <MudTooltip Text="Exports every feature of every team in this ART for the PI, above and below the line. A feature planned by several teams gets a row for each.">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="@(_result is null || _result.Teams.Count == 0 || _exporting)"
+                           OnClick="ExportAsync">
+                    Export to excel
+                </MudButton>
+            </MudTooltip>
+            <MudSwitch T="bool"
+                       Value="_includeIpSprints"
+                       ValueChanged="OnIncludeIpSprintsChangedAsync"
+                       Label="Include IP sprint in the calculation"
+                       Color="Color.Primary" />
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_selectedPiId is null)
+        {
+            <MudText Class="mud-text-secondary">Select a PI to view capacity.</MudText>
+        }
+        else if (_result is null)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_result.Teams.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info">This ART has no teams.</MudAlert>
+        }
+        else
+        {
+            <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-3" Style="border:1px solid var(--mud-palette-lines-default)">
+                <div class="d-flex align-center gap-2 flex-wrap">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined"
+                             Icon="@Icons.Material.Filled.AccountTree">
+                        @_result.Teams.Count team@(_result.Teams.Count != 1 ? "s" : "")
+                    </MudChip>
+                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined"
+                             Icon="@Icons.Material.Filled.Groups">
+                        @_result.MemberCount members
+                    </MudChip>
+                    <MudTooltip Text="Sum of every member's effective days (a person in several ART teams is counted once, with their largest team window).">
+                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">
+                            Total capacity: @_result.TotalCapacity.ToString("0.##") d
+                        </MudChip>
+                    </MudTooltip>
+                </div>
+            </MudPaper>
+
+            <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-3" Style="border:1px solid var(--mud-palette-lines-default)">
+                <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Teams</MudText>
+                <div style="overflow-x:auto">
+                    <table class="art-capacity-table">
+                        <thead>
+                            <tr>
+                                <th>Team</th>
+                                <th>Window</th>
+                                <th>Members</th>
+                                <th title="Story points one working day is worth on the team's own board, set on its Team page. The days here are the team board's story points divided by this.">SP per day</th>
+                                <th title="The team's own effective member-days over its own window — its board's Total capacity in days. A member on several ART teams is counted in each of them, so per-team capacities can overlap; the ART total above counts each once.">Capacity</th>
+                                <th title="The team's own board: days reserved for its above-the-line features by its own stack members — its board's Allocated story points in days.">Allocated</th>
+                                <th title="Capacity − Allocated, in days.">Remaining</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var team in _result.Teams)
+                            {
+                                var remaining = (decimal)team.Capacity - team.Allocated;
+                                <tr @key="team.TeamId">
+                                    <td><span class="font-weight-bold">@team.TeamName</span></td>
+                                    <td>
+                                        @team.WindowMode
+                                        @if (team.WindowStart is not null && team.WindowEnd is not null)
+                                        {
+                                            <span class="mud-text-secondary"> (@team.WindowStart.Value.ToString("dd MMM") – @team.WindowEnd.Value.ToString("dd MMM yyyy"))</span>
+                                        }
+                                    </td>
+                                    <td>@team.MemberCount</td>
+                                    <td>@team.StoryPointsPerDay.ToString("0.##")</td>
+                                    <td>@team.Capacity.ToString("0.##")</td>
+                                    <td>@team.Allocated.ToString("0.##")</td>
+                                    <td style="@(remaining < 0m ? "color:var(--mud-palette-error)" : "")">@remaining.ToString("0.##")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </MudPaper>
+
+            @if (_result.StackDemands.Count > 0)
+            {
+                <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-3" Style="border:1px solid var(--mud-palette-lines-default)">
+                    <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Demand capacity</MudText>
+                    @if (HasNonStandardStoryPointsPerDay)
+                    {
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                            Not every team of this ART counts a working day as 1 story point, so this table is in days:
+                            each team's story points divided by its story points per day.
+                        </MudText>
+                    }
+                    <div style="overflow-x:auto">
+                        <table class="art-capacity-table">
+                            <thead>
+                                <tr>
+                                    <th>Stack</th>
+                                    <th title="Days of work the above-the-line features of every ART team ask of this stack: each team's story points divided by its story points per day.">Demand</th>
+                                    <th title="Days reserved against this stack across the ART, capped by member availability.">Allocated</th>
+                                    <th title="Demand minus Allocated — unmet demand in days (green = covered, amber = partial, red = none).">Remaining</th>
+                                    <th title="Days demanded by below-the-line (excluded) features across the ART.">Below the line</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in _result.StackDemands)
+                                {
+                                    <tr @key="row.TechnologyStackId">
+                                        <td><span class="font-weight-bold">@row.StackName</span></td>
+                                        <td>@row.Demand.ToString("0.##")</td>
+                                        <td>@row.Allocated.ToString("0.##")</td>
+                                        <td style="color:@DemandRemainingColor(row.Demand, row.Allocated)">@row.Remaining.ToString("0.##")</td>
+                                        <td>@row.BelowLine.ToString("0.##")</td>
+                                    </tr>
+                                }
+                            </tbody>
+                            <tfoot>
+                                <tr class="total-row">
+                                    <td>Total</td>
+                                    <td>@(_result.StackDemands.Sum(r => r.Demand).ToString("0.##"))</td>
+                                    <td>@(_result.StackDemands.Sum(r => r.Allocated).ToString("0.##"))</td>
+                                    <td style="color:@DemandRemainingColor(_result.StackDemands)">@((_result.StackDemands.Sum(r => r.Demand) - _result.StackDemands.Sum(r => r.Allocated)).ToString("0.##"))</td>
+                                    <td>@(_result.StackDemands.Sum(r => r.BelowLine).ToString("0.##"))</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </MudPaper>
+            }
+        }
+    </MudPaper>
+</div>
+
+<style>
+    .art-capacity-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .art-capacity-table th,
+    .art-capacity-table td {
+        padding: 6px 10px;
+        font-size: 0.85rem;
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    .art-capacity-table th:first-child,
+    .art-capacity-table td:first-child {
+        text-align: left;
+        white-space: normal;
+    }
+
+    .art-capacity-table thead th {
+        color: var(--mud-palette-text-secondary);
+        font-weight: 600;
+        border-bottom: 1px solid var(--mud-palette-lines-default);
+    }
+
+    .art-capacity-table tbody td {
+        border-bottom: 1px solid var(--mud-palette-lines-default);
+    }
+
+    .art-capacity-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .art-capacity-table tfoot td {
+        font-weight: 600;
+        border-top: 2px solid var(--mud-palette-lines-default);
+    }
+</style>
+
+@code {
+    [Parameter] public int ArtId { get; set; }
+    [Parameter] public string ArtName { get; set; } = string.Empty;
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private const string SelectedPiStorageKey = "teamCapacity.selectedPiId";
+
+    private List<Pi> _allPis = new();
+    private Task _pisLoad = Task.CompletedTask;
+    private int? _selectedPiId;
+    private bool _includeIpSprints;
+    private bool _loading = true;
+    private bool _restored;
+    private bool _exporting;
+
+    private ArtCapacityResult? _result;
+    private (int ArtId, int PiId, bool IncludeIpSprints)? _loadedKey;
+
+    private bool SelectedPiLocked => _allPis.FirstOrDefault(p => p.Id == _selectedPiId)?.IsLocked == true;
+
+    private bool HasNonStandardStoryPointsPerDay => _result?.Teams.Any(t => t.StoryPointsPerDay != 1m) == true;
+
+    private static string DemandRemainingColor(decimal demand, decimal allocated)
+    {
+        if (demand - allocated <= 0m)
+        {
+            return "var(--mud-palette-success)";
+        }
+        if (allocated > 0m)
+        {
+            return "var(--mud-palette-warning)";
+        }
+        return "var(--mud-palette-error)";
+    }
+
+    private static string DemandRemainingColor(IEnumerable<ArtCapacityStackDemandRow> rows) =>
+        DemandRemainingColor(rows.Sum(r => r.Demand), rows.Sum(r => r.Allocated));
+
+    protected override async Task OnInitializedAsync()
+    {
+        _pisLoad = LoadPisAsync();
+        await _pisLoad;
+    }
+
+    private async Task LoadPisAsync() => _allPis = await PiService.GetAllLightAsync();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _restored)
+        {
+            return;
+        }
+        _restored = true;
+
+        int? storedPiId = null;
+        try
+        {
+            var rawPi = await JS.InvokeAsync<string?>("localStorage.getItem", SelectedPiStorageKey);
+            if (int.TryParse(rawPi, out var piId))
+            {
+                storedPiId = piId;
+            }
+        }
+        catch
+        {
+        }
+
+        await _pisLoad;
+        _selectedPiId = storedPiId is not null && _allPis.Any(p => p.Id == storedPiId)
+            ? storedPiId
+            : _allPis.FirstOrDefault()?.Id;
+        _loading = false;
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    private async Task OnPiChangedAsync(int? piId)
+    {
+        if (piId == _selectedPiId)
+        {
+            return;
+        }
+        _selectedPiId = piId;
+        try
+        {
+            if (piId is null)
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", SelectedPiStorageKey);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", SelectedPiStorageKey, piId.Value.ToString());
+            }
+        }
+        catch
+        {
+        }
+        await LoadAsync();
+    }
+
+    private async Task OnIncludeIpSprintsChangedAsync(bool value)
+    {
+        _includeIpSprints = value;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_selectedPiId is null)
+        {
+            _result = null;
+            _loadedKey = null;
+            return;
+        }
+
+        var key = (ArtId, _selectedPiId.Value, _includeIpSprints);
+        if (_loadedKey == key)
+        {
+            return;
+        }
+        _loadedKey = key;
+        _result = null;
+        StateHasChanged();
+        try
+        {
+            _result = await CapacityService.GetAsync(ArtId < 0 ? null : ArtId, key.Item2, _includeIpSprints);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load ART capacity");
+            Snackbar.Add($"Failed to load: {ex.Message}", Severity.Error);
+            _loadedKey = null;
+        }
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_selectedPiId is not { } piId || _exporting)
+        {
+            return;
+        }
+
+        _exporting = true;
+
+        try
+        {
+            var boards = await CapacityService.GetTeamBoardsAsync(ArtId < 0 ? null : ArtId, piId, _includeIpSprints);
+            if (boards.Count == 0)
+            {
+                Snackbar.Add("This ART has no teams to export.", Severity.Warning);
+                return;
+            }
+
+            var piName = _allPis.FirstOrDefault(p => p.Id == piId)?.Name ?? string.Empty;
+            var info = new TeamCapacityExportInfo(ArtName, piId, piName, _includeIpSprints, false, DateTime.UtcNow);
+            var bytes = TeamCapacityExcelExportService.Build(
+                info, boards.Select(b => TeamCapacityExportBoard.From(b.TeamName, b.Board)).ToList());
+            await DownloadService.DownloadAsync(bytes, TeamCapacityExcelExportService.FileName(ArtName, piName, info.ExportedUtc));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export the capacity of ART {ArtId} to Excel", ArtId);
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+}
