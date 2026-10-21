@@ -1,0 +1,214 @@
+﻿@using Estimation.Core.Features.Hygiene.Models
+@using Estimation.Core.Features.Hygiene.Services
+
+<div class="d-flex align-center gap-2 flex-wrap">
+    <div style="width:186px">
+        <MudSelect T="HygieneField"
+                   Value="Condition.Field"
+                   ValueChanged="OnFieldChanged"
+                   Dense
+                   Variant="Variant.Outlined"
+                   Margin="Margin.Dense"
+                   Disabled="ReadOnly"
+                   AnchorOrigin="Origin.BottomCenter">
+            @foreach (var info in HygieneFieldCatalog.ByName)
+            {
+                <MudSelectItem T="HygieneField" Value="@info.Field">@info.DisplayName</MudSelectItem>
+            }
+        </MudSelect>
+    </div>
+
+    <div style="width:170px">
+        <MudSelect T="HygieneCheck"
+                   Value="Condition.Check"
+                   ValueChanged="OnCheckChanged"
+                   Dense
+                   Variant="Variant.Outlined"
+                   Margin="Margin.Dense"
+                   Disabled="ReadOnly"
+                   AnchorOrigin="Origin.BottomCenter">
+            @foreach (var check in HygieneChecks.AllowedFor(Condition.Kind))
+            {
+                <MudSelectItem T="HygieneCheck" @key="check" Value="@check">@HygieneChecks.DisplayName(check, Condition.Kind)</MudSelectItem>
+            }
+        </MudSelect>
+    </div>
+
+    @switch (Condition.Check)
+    {
+        case HygieneCheck.ContainsWords:
+            <div style="width:480px">
+                <MudTextField T="string"
+                              Value="Condition.WordsText"
+                              ValueChanged="@(v => Apply(() => Condition.WordsText = v))"
+                              Label="Words or phrases"
+                              Placeholder="Comma separated"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Disabled="ReadOnly" />
+            </div>
+            <div style="width:110px">
+                <MudSelect T="HygieneWordMode"
+                           Value="Condition.Parameters.Mode"
+                           ValueChanged="@(v => Apply(() => Condition.Parameters.Mode = v))"
+                           Dense
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Disabled="ReadOnly">
+                    <MudSelectItem T="HygieneWordMode" Value="HygieneWordMode.And">All</MudSelectItem>
+                    <MudSelectItem T="HygieneWordMode" Value="HygieneWordMode.Or">Any</MudSelectItem>
+                </MudSelect>
+            </div>
+            @CaseSwitch
+            break;
+
+        case HygieneCheck.NotOnlyWords:
+            <div style="width:480px">
+                <MudTextField T="string"
+                              Value="Condition.WordsText"
+                              ValueChanged="@(v => Apply(() => Condition.WordsText = v))"
+                              Label="Words or phrases"
+                              Placeholder="Comma separated"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Disabled="ReadOnly" />
+            </div>
+            <div style="width:170px">
+                <MudNumericField T="int"
+                                 Value="Condition.Parameters.MinOtherWords"
+                                 ValueChanged="@(v => Apply(() => Condition.Parameters.MinOtherWords = v))"
+                                 Label="Other words needed"
+                                 Min="1"
+                                 Variant="Variant.Outlined"
+                                 Margin="Margin.Dense"
+                                 Disabled="ReadOnly" />
+            </div>
+            @CaseSwitch
+            break;
+
+        case HygieneCheck.NotGreaterThan:
+        case HygieneCheck.NotLessThan:
+            if (Condition.Kind == HygieneFieldKind.Date)
+            {
+                <div style="width:130px">
+                    <MudSelect T="bool"
+                               Value="Condition.Parameters.Today"
+                               ValueChanged="@(v => Apply(() => Condition.Parameters.Today = v))"
+                               Dense
+                               Variant="Variant.Outlined"
+                               Margin="Margin.Dense"
+                               Disabled="ReadOnly"
+                               AnchorOrigin="Origin.BottomCenter">
+                        <MudSelectItem T="bool" Value="false">Fixed date</MudSelectItem>
+                        <MudSelectItem T="bool" Value="true">Today</MudSelectItem>
+                    </MudSelect>
+                </div>
+                if (!Condition.Parameters.Today)
+                {
+                    <div style="width:160px">
+                        <MudDatePicker Date="Condition.DateValue"
+                                       DateChanged="@(d => Apply(() => Condition.DateValue = d))"
+                                       Label="Date"
+                                       Variant="Variant.Outlined"
+                                       Margin="Margin.Dense"
+                                       Disabled="ReadOnly"
+                                       DateFormat="yyyy-MM-dd" />
+                    </div>
+                }
+            }
+            else
+            {
+                <div style="width:160px">
+                    <MudNumericField T="decimal?"
+                                     Value="Condition.Parameters.Number"
+                                     ValueChanged="@(v => Apply(() => Condition.Parameters.Number = v))"
+                                     Label="Limit"
+                                     Variant="Variant.Outlined"
+                                     Margin="Margin.Dense"
+                                     Disabled="ReadOnly" />
+                </div>
+            }
+            break;
+
+        case HygieneCheck.InValues:
+        case HygieneCheck.NotInValues:
+            <div style="width:240px">
+                <MudSelect T="string"
+                           MultiSelection="true"
+                           SelectedValues="Condition.Parameters.Values"
+                           SelectedValuesChanged="@(v => Apply(() => Condition.Parameters.Values = v.ToList()))"
+                           Label="Values"
+                           Dense
+                           Variant="Variant.Outlined"
+                           Margin="Margin.Dense"
+                           Disabled="ReadOnly"
+                           AnchorOrigin="Origin.BottomCenter">
+                    <MudSelectItem T="string" Value="@HygieneRuleParameters.EmptyValue">@HygieneRuleParameters.EmptyValue</MudSelectItem>
+                    @foreach (var value in Values)
+                    {
+                        <MudSelectItem T="string" Value="@value">@value</MudSelectItem>
+                    }
+                </MudSelect>
+            </div>
+            @if (UnknownValues.Count > 0)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Warning">
+                    Not in the database: @string.Join(", ", UnknownValues)
+                </MudText>
+            }
+            break;
+    }
+</div>
+
+@code {
+    private RenderFragment CaseSwitch =>
+        @<MudTooltip Text="Match the words letter for letter. Off: Result also matches result.">
+            <MudSwitch T="bool"
+                       Value="Condition.Parameters.CaseSensitive"
+                       ValueChanged="@(v => Apply(() => Condition.Parameters.CaseSensitive = v))"
+                       Label="Aa"
+                       Color="Color.Primary"
+                       Size="Size.Small"
+                       Disabled="ReadOnly" />
+        </MudTooltip>;
+
+    [Parameter, EditorRequired] public HygieneConditionModel Condition { get; set; } = null!;
+
+    [Parameter] public HygieneChoiceValues Choices { get; set; } = HygieneChoiceValues.Empty;
+
+    [Parameter] public bool ReadOnly { get; set; }
+
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private IReadOnlyList<string> Values
+    {
+        get
+        {
+            var known = Choices.For(Condition.Field);
+            return known.Concat(UnknownValues).ToList();
+        }
+    }
+
+    private List<string> UnknownValues
+    {
+        get
+        {
+            var known = Choices.For(Condition.Field);
+
+            return Condition.Parameters.CleanValues
+                .Where(v => !string.Equals(v, HygieneRuleParameters.EmptyValue, StringComparison.OrdinalIgnoreCase))
+                .Where(v => !known.Contains(v, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    private Task OnFieldChanged(HygieneField field) => Apply(() => Condition.SetField(field));
+
+    private Task OnCheckChanged(HygieneCheck check) => Apply(() => Condition.Check = check);
+
+    private Task Apply(Action change)
+    {
+        change();
+        return OnChanged.InvokeAsync();
+    }
+}
