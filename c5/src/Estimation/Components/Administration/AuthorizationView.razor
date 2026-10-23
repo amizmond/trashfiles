@@ -1,0 +1,843 @@
+@attribute [Route(RoutingPath.Authorization)]
+
+@inject IAppAuthorizationService AppAuthService
+@inject IProfileService ProfileService
+@inject IWindowsAuthService WindowsAuthService
+@inject IActiveDirectoryService AdService
+@inject IOnlineUserTracker OnlineUsers
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject IModalDialogService MessageService
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+@implements IDisposable
+
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.JSInterop
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+
+<PageTitle>Authorization</PageTitle>
+
+<AdminOnly>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center justify-space-between flex-wrap gap-2 mb-4">
+            <MudText Typo="Typo.h5">Authorization Management</MudText>
+            <MudChip T="string" Icon="@Icons.Material.Filled.Sensors" Color="Color.Success"
+                     Variant="Variant.Outlined" Size="Size.Medium" Class="ma-0"
+                     OnClick="OpenOnlineUsersDialog" title="Show who is online">
+                @_onlineUsers.Count @(_onlineUsers.Count == 1 ? "user" : "users") online
+            </MudChip>
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else
+        {
+            <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" TabPanelsClass="pa-4">
+                <MudTabPanel Text="Users" BadgeData="@_rows.Count" BadgeColor="Color.Primary">
+                    <MudStack Row="true" Class="mb-3">
+                        <MudSpacer />
+                        <div style="position:relative;">
+                            <MudButton Variant="Variant.Outlined"
+                                       Color="Color.Primary"
+                                       StartIcon="@Icons.Material.Filled.ViewColumn"
+                                       OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                                Columns
+                            </MudButton>
+                            <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:240px; max-height:75vh; overflow-y:auto">
+                                <div class="d-flex align-center justify-space-between mb-2">
+                                    <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                                </div>
+                                <div class="d-flex flex-column gap-1">
+                                    <MudSwitch T="bool" Value="@Show(ColWindowsUser)" ValueChanged="@(v => OnColumnToggledAsync(ColWindowsUser, v))" Label="Windows User" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColDisplayName)" ValueChanged="@(v => OnColumnToggledAsync(ColDisplayName, v))" Label="Display Name" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColSamAccount)" ValueChanged="@(v => OnColumnToggledAsync(ColSamAccount, v))" Label="SAM Account" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColEmployeeId)" ValueChanged="@(v => OnColumnToggledAsync(ColEmployeeId, v))" Label="Employee Id" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColEmail)" ValueChanged="@(v => OnColumnToggledAsync(ColEmail, v))" Label="Email" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColTeams)" ValueChanged="@(v => OnColumnToggledAsync(ColTeams, v))" Label="Teams" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColTeamRoles)" ValueChanged="@(v => OnColumnToggledAsync(ColTeamRoles, v))" Label="Team Roles" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColProfiles)" ValueChanged="@(v => OnColumnToggledAsync(ColProfiles, v))" Label="Profiles" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColArts)" ValueChanged="@(v => OnColumnToggledAsync(ColArts, v))" Label="ARTs" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColAdmin)" ValueChanged="@(v => OnColumnToggledAsync(ColAdmin, v))" Label="Admin" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColStatus)" ValueChanged="@(v => OnColumnToggledAsync(ColStatus, v))" Label="Status" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColApprovedBy)" ValueChanged="@(v => OnColumnToggledAsync(ColApprovedBy, v))" Label="Approved By" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColApprovedAt)" ValueChanged="@(v => OnColumnToggledAsync(ColApprovedAt, v))" Label="Approved At" Color="Color.Primary" Size="Size.Small" />
+                                    <MudSwitch T="bool" Value="@Show(ColActions)" ValueChanged="@(v => OnColumnToggledAsync(ColActions, v))" Label="Actions" Color="Color.Primary" Size="Size.Small" />
+                                </div>
+                            </MudPopover>
+                        </div>
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.FilterList"
+                                   OnClick="() => _filterDrawerOpen = !_filterDrawerOpen">
+                            Filter
+                        </MudButton>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                                   OnClick="RefreshAdInfoAsync" Disabled="_refreshingAd">
+                            @if (_refreshingAd)
+                            {
+                                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                            }
+                            Refresh AD Info
+                        </MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.PersonAdd"
+                                   OnClick="OpenAddUserDialog">Add User</MudButton>
+                    </MudStack>
+
+                    <MudDrawer @bind-Open="_filterDrawerOpen" Anchor="Anchor.End" Elevation="2"
+                               Variant="DrawerVariant.Temporary" Width="400px"
+                               Style="background: var(--mud-palette-surface)">
+                        <MudDrawerHeader>
+                            <div class="d-flex align-center justify-space-between" style="width:100%">
+                                <MudText Typo="Typo.h6">Filters</MudText>
+                                <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _filterDrawerOpen = false" />
+                            </div>
+                        </MudDrawerHeader>
+                        <div class="d-flex flex-column gap-3 pa-4">
+                            <MudTextField @bind-Value="FilterSearch" Label="Search" Adornment="Adornment.Start"
+                                          AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                                          DebounceInterval="300" Variant="Variant.Outlined" />
+
+                            <SearchableDropdown T="string" MultiSelect="true" SelectAll="true"
+                                                Items="_availableTeams"
+                                                Values="FilterTeams"
+                                                ValuesChanged="OnFilterTeamsChanged"
+                                                Label="Teams" />
+
+                            <SearchableDropdown T="string" MultiSelect="true" SelectAll="true"
+                                                Items="_availableArts"
+                                                Values="FilterArts"
+                                                ValuesChanged="OnFilterArtsChanged"
+                                                Label="ARTs" />
+
+                            <SearchableDropdown T="string" MultiSelect="true" SelectAll="true"
+                                                Items="_availableProfiles"
+                                                Values="FilterProfiles"
+                                                ValuesChanged="OnFilterProfilesChanged"
+                                                Label="Profiles" />
+
+                            <SearchableDropdown T="string" MultiSelect="true" SelectAll="true"
+                                                Items="_availableRoles"
+                                                Values="FilterRoles"
+                                                ValuesChanged="OnFilterRolesChanged"
+                                                Label="Team Roles" />
+
+                            <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                                       StartIcon="@Icons.Material.Filled.ClearAll"
+                                       FullWidth OnClick="ClearFilters" Class="mt-2">
+                                Clear filters
+                            </MudButton>
+                        </div>
+                    </MudDrawer>
+
+                    <MudDataGrid T="AppUserListRow" Items="_filteredRows" Dense Hover Striped Bordered="true" RowsPerPage="25">
+                        <Columns>
+                            <PropertyColumn Property="x => x.User.WindowsUserName" Title="Windows User" Hidden="@(!Show(ColWindowsUser))" />
+                            <PropertyColumn Property="x => x.User.DisplayName" Title="Display Name" Hidden="@(!Show(ColDisplayName))" />
+                            <PropertyColumn Property="x => x.User.SamAccountName" Title="SAM Account" Hidden="@(!Show(ColSamAccount))" />
+                            <PropertyColumn Property="x => x.User.EmployeeId" Title="Employee Id" Hidden="@(!Show(ColEmployeeId))" />
+                            <PropertyColumn Property="x => x.User.EmailAddress" Title="Email" Hidden="@(!Show(ColEmail))" />
+                            <TemplateColumn Title="Teams" SortBy="@(x => string.Join(", ", x.Teams))" CellStyle="max-width:250px;" Hidden="@(!Show(ColTeams))">
+                                <CellTemplate>
+                                    @foreach (var team in context.Item.Teams)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary" Class="mr-1">@team</MudChip>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Team Roles" SortBy="@(x => string.Join(", ", x.TeamRoles))" CellStyle="max-width:220px;" Hidden="@(!Show(ColTeamRoles))">
+                                <CellTemplate>
+                                    @string.Join(", ", context.Item.TeamRoles)
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Profiles" SortBy="@(x => string.Join(", ", x.Profiles))" CellStyle="max-width:250px;" Hidden="@(!Show(ColProfiles))">
+                                <CellTemplate>
+                                    @foreach (var profile in context.Item.Profiles)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Class="mr-1">@profile</MudChip>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="ARTs" SortBy="@(x => string.Join(", ", x.Arts))" CellStyle="max-width:220px;" Hidden="@(!Show(ColArts))">
+                                <CellTemplate>
+                                    @string.Join(", ", context.Item.Arts)
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <PropertyColumn Property="x => x.User.IsAdmin" Title="Admin" Hidden="@(!Show(ColAdmin))">
+                                <CellTemplate>
+                                    @if (context.Item.User.IsAdmin)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled">Admin</MudChip>
+                                    }
+                                </CellTemplate>
+                            </PropertyColumn>
+                            <PropertyColumn Property="x => x.User.IsApproved" Title="Status" Hidden="@(!Show(ColStatus))">
+                                <CellTemplate>
+                                    @if (context.Item.User.IsApproved)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Active</MudChip>
+                                    }
+                                    else if (context.Item.User.IsAccessRequested)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled">Pending</MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Filled">Revoked</MudChip>
+                                    }
+                                </CellTemplate>
+                            </PropertyColumn>
+                            <PropertyColumn Property="x => x.User.ApprovedBy" Title="Approved By" Hidden="@(!Show(ColApprovedBy))" />
+                            <PropertyColumn Property="x => x.User.ApprovedAt" Title="Approved At" Format="yyyy-MM-dd HH:mm" Hidden="@(!Show(ColApprovedAt))" />
+                            <TemplateColumn Title="Actions" Sortable="false" Filterable="false" Hidden="@(!Show(ColActions))">
+                                <CellTemplate>
+                                    <MudStack Row="true" Spacing="1">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                                       title="Edit user"
+                                                       OnClick="@(() => OpenEditUserDialog(context.Item))" />
+                                        @if (context.Item.User.IsApproved)
+                                        {
+                                            <MudIconButton Icon="@Icons.Material.Filled.Block" Size="Size.Small" Color="Color.Warning"
+                                                           title="Revoke access"
+                                                           OnClick="@(() => RevokeUserAsync(context.Item.User))" />
+                                        }
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                                       title="Delete user"
+                                                       OnClick="@(() => DeleteUserAsync(context.Item.User))" />
+                                    </MudStack>
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-6 mud-text-secondary">No users found.</MudText></NoRecordsContent>
+                        <PagerContent>
+                            <MudDataGridPager T="AppUserListRow" PageSizeOptions="new[] { 10, 25, 50 }" />
+                        </PagerContent>
+                    </MudDataGrid>
+                </MudTabPanel>
+
+                <MudTabPanel Text="Pending Requests" BadgeData="@_pendingRequests.Count" BadgeColor="@(_pendingRequests.Count > 0 ? Color.Error : Color.Default)">
+                    @if (_pendingRequests.Count == 0)
+                    {
+                        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No pending access requests.</MudAlert>
+                    }
+                    else
+                    {
+                        <MudDataGrid T="AccessRequestRow" Items="_pendingRequests" Dense Hover Striped Bordered="true">
+                            <Columns>
+                                <PropertyColumn Property="x => x.User.WindowsUserName" Title="Windows User" />
+                                <PropertyColumn Property="x => x.User.DisplayName" Title="Display Name" />
+                                <PropertyColumn Property="x => x.User.RequestedAt" Title="Requested At" Format="yyyy-MM-dd HH:mm" />
+                                <PropertyColumn Property="x => x.RequestedDepartment" Title="Requested Department" />
+                                <PropertyColumn Property="x => x.RequestedArt" Title="Requested ART" />
+                                <PropertyColumn Property="x => x.User.RequestComment" Title="Comment" CellStyle="max-width:320px; white-space:pre-wrap;" />
+                                <TemplateColumn Title="Actions" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        <MudStack Row="true" Spacing="1">
+                                            <MudButton Variant="Variant.Filled" Color="Color.Success" Size="Size.Small"
+                                                       OnClick="@(() => OpenApproveUserDialog(context.Item))">Approve</MudButton>
+                                            <MudButton Variant="Variant.Filled" Color="Color.Error" Size="Size.Small"
+                                                       OnClick="@(() => DeleteUserAsync(context.Item.User))">Reject</MudButton>
+                                        </MudStack>
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                        </MudDataGrid>
+                    }
+                </MudTabPanel>
+            </MudTabs>
+        }
+    </MudPaper>
+</div>
+</AdminOnly>
+
+@code {
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private List<AppUserListRow> _rows = [];
+    private List<AppUserListRow> _filteredRows = [];
+    private List<AccessRequestRow> _pendingRequests = [];
+    private List<Profile> _allProfiles = [];
+    private List<OnlineUser> _onlineUsers = [];
+    private bool _loading = true;
+    private bool _refreshingAd;
+    private const int MaxAdFailuresInARow = 3;
+    private string? _currentUserName;
+
+    private static readonly TimeSpan OnlineRefreshInterval = TimeSpan.FromSeconds(10);
+
+    private System.Threading.Timer? _onlineTimer;
+    private bool _disposed;
+
+    private async Task OpenOnlineUsersDialog()
+    {
+        var parameters = new DialogParameters<OnlineUsersDialog>
+        {
+            { x => x.KnownUsers, _rows },
+            { x => x.CurrentUserName, _currentUserName }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = true };
+        await DialogService.ShowAsync<OnlineUsersDialog>("Online users", parameters, options);
+    }
+
+    private void RefreshOnlineUsers() => _onlineUsers = OnlineUsers.GetOnlineUsers();
+
+    private async Task RefreshOnlineUsersAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                RefreshOnlineUsers();
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Authorization page failed to refresh the online user list");
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _onlineTimer?.Dispose();
+        _onlineTimer = null;
+    }
+
+    private const string ColWindowsUser = "windowsUser";
+    private const string ColDisplayName = "displayName";
+    private const string ColSamAccount = "samAccount";
+    private const string ColEmployeeId = "employeeId";
+    private const string ColEmail = "email";
+    private const string ColTeams = "teams";
+    private const string ColTeamRoles = "teamRoles";
+    private const string ColProfiles = "profiles";
+    private const string ColArts = "arts";
+    private const string ColAdmin = "admin";
+    private const string ColStatus = "status";
+    private const string ColApprovedBy = "approvedBy";
+    private const string ColApprovedAt = "approvedAt";
+    private const string ColActions = "actions";
+
+    private static readonly Dictionary<string, bool> DefaultColumnVisibility = new()
+    {
+        [ColWindowsUser] = false,
+        [ColDisplayName] = true,
+        [ColSamAccount] = false,
+        [ColEmployeeId] = false,
+        [ColEmail] = false,
+        [ColTeams] = true,
+        [ColTeamRoles] = true,
+        [ColProfiles] = true,
+        [ColArts] = false,
+        [ColAdmin] = true,
+        [ColStatus] = true,
+        [ColApprovedBy] = false,
+        [ColApprovedAt] = false,
+        [ColActions] = true,
+    };
+
+    private bool _columnsPopoverOpen;
+    private bool _filterDrawerOpen;
+    private Dictionary<string, bool> _columnVisibility = new(DefaultColumnVisibility);
+
+    private bool Show(string key)
+        => _columnVisibility.TryGetValue(key, out var visible)
+            ? visible
+            : DefaultColumnVisibility.GetValueOrDefault(key, true);
+
+    private const string ColumnPrefsKey = "authView.columns.v1";
+    private bool _columnPrefsLoaded;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadColumnPrefsAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadColumnPrefsAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", ColumnPrefsKey);
+            if (!string.IsNullOrEmpty(json))
+            {
+                var saved = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(json);
+                if (saved is not null)
+                {
+                    foreach (var (key, visible) in saved)
+                    {
+                        if (DefaultColumnVisibility.ContainsKey(key))
+                        {
+                            _columnVisibility[key] = visible;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _columnPrefsLoaded = true;
+        }
+    }
+
+    private async Task OnColumnToggledAsync(string key, bool value)
+    {
+        _columnVisibility[key] = value;
+        await SaveColumnPrefsAsync();
+    }
+
+    private async Task SaveColumnPrefsAsync()
+    {
+        if (!_columnPrefsLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(_columnVisibility);
+            await JS.InvokeVoidAsync("localStorage.setItem", ColumnPrefsKey, json);
+        }
+        catch
+        {
+        }
+    }
+
+    private List<string> _availableTeams = [];
+    private List<string> _availableArts = [];
+    private List<string> _availableProfiles = [];
+    private List<string> _availableRoles = [];
+
+    private bool _suppressUrlUpdate = true;
+
+    private string? _filterSearchBacking;
+    private string? FilterSearch
+    {
+        get => _filterSearchBacking;
+        set
+        {
+            _filterSearchBacking = value;
+            ApplyFilters();
+        }
+    }
+
+    private IReadOnlyCollection<string> _filterTeamsBacking = Array.Empty<string>();
+    private HashSet<string> _filterTeamsSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterTeams => _filterTeamsBacking;
+
+    private void OnFilterTeamsChanged(IReadOnlyCollection<string> values)
+    {
+        _filterTeamsBacking = values;
+        _filterTeamsSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        ApplyFilters();
+    }
+
+    private IReadOnlyCollection<string> _filterArtsBacking = Array.Empty<string>();
+    private HashSet<string> _filterArtsSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterArts => _filterArtsBacking;
+
+    private void OnFilterArtsChanged(IReadOnlyCollection<string> values)
+    {
+        _filterArtsBacking = values;
+        _filterArtsSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        ApplyFilters();
+    }
+
+    private IReadOnlyCollection<string> _filterProfilesBacking = Array.Empty<string>();
+    private HashSet<string> _filterProfilesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterProfiles => _filterProfilesBacking;
+
+    private void OnFilterProfilesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterProfilesBacking = values;
+        _filterProfilesSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        ApplyFilters();
+    }
+
+    private IReadOnlyCollection<string> _filterRolesBacking = Array.Empty<string>();
+    private HashSet<string> _filterRolesSet = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyCollection<string> FilterRoles => _filterRolesBacking;
+
+    private void OnFilterRolesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterRolesBacking = values;
+        _filterRolesSet = new HashSet<string>(values, StringComparer.OrdinalIgnoreCase);
+        ApplyFilters();
+    }
+
+    private void ClearFilters()
+    {
+        _filterSearchBacking = null;
+        _filterTeamsBacking = Array.Empty<string>();
+        _filterTeamsSet.Clear();
+        _filterArtsBacking = Array.Empty<string>();
+        _filterArtsSet.Clear();
+        _filterProfilesBacking = Array.Empty<string>();
+        _filterProfilesSet.Clear();
+        _filterRolesBacking = Array.Empty<string>();
+        _filterRolesSet.Clear();
+        ApplyFilters();
+    }
+
+    private void ApplyFilters()
+    {
+        RecomputeFilteredRows();
+        UpdateUrl();
+    }
+
+    private void RecomputeFilteredRows()
+    {
+        _filteredRows = _rows.Where(MatchesFilter).ToList();
+    }
+
+    private bool MatchesFilter(AppUserListRow row)
+    {
+        if (!string.IsNullOrWhiteSpace(_filterSearchBacking))
+        {
+            var s = _filterSearchBacking.Trim();
+            var u = row.User;
+            if (!(u.WindowsUserName.Contains(s, StringComparison.OrdinalIgnoreCase)
+                || (u.DisplayName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (u.SamAccountName?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (u.EmailAddress?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (u.EmployeeId?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)))
+            {
+                return false;
+            }
+        }
+
+        if (_filterTeamsSet.Count > 0 && !row.Teams.Any(_filterTeamsSet.Contains))
+        {
+            return false;
+        }
+
+        if (_filterArtsSet.Count > 0 && !row.Arts.Any(_filterArtsSet.Contains))
+        {
+            return false;
+        }
+
+        if (_filterProfilesSet.Count > 0 && !row.Profiles.Any(_filterProfilesSet.Contains))
+        {
+            return false;
+        }
+
+        if (_filterRolesSet.Count > 0 && !row.TeamRoles.Any(_filterRolesSet.Contains))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private void RebuildFilterOptions()
+    {
+        _availableTeams = _rows.SelectMany(r => r.Teams)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+        _availableArts = _rows.SelectMany(r => r.Arts)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+        _availableProfiles = _rows.SelectMany(r => r.Profiles)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+        _availableRoles = _rows.SelectMany(r => r.TeamRoles)
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToList();
+    }
+
+    private void ReadUrlParams()
+    {
+        var uri = Nav.ToAbsoluteUri(Nav.Uri);
+        var q = QueryHelpers.ParseQuery(uri.Query);
+
+        if (q.TryGetValue("search", out var search) && !string.IsNullOrWhiteSpace(search))
+        {
+            _filterSearchBacking = search.ToString();
+        }
+
+        if (q.TryGetValue("teams", out var teams) && !string.IsNullOrWhiteSpace(teams))
+        {
+            var vals = teams.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterTeamsBacking = vals;
+            _filterTeamsSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("arts", out var arts) && !string.IsNullOrWhiteSpace(arts))
+        {
+            var vals = arts.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterArtsBacking = vals;
+            _filterArtsSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("profiles", out var profiles) && !string.IsNullOrWhiteSpace(profiles))
+        {
+            var vals = profiles.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterProfilesBacking = vals;
+            _filterProfilesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (q.TryGetValue("roles", out var roles) && !string.IsNullOrWhiteSpace(roles))
+        {
+            var vals = roles.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            _filterRolesBacking = vals;
+            _filterRolesSet = new HashSet<string>(vals, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        if (_suppressUrlUpdate)
+        {
+            return;
+        }
+
+        var query = new Dictionary<string, object?>
+        {
+            ["search"] = string.IsNullOrWhiteSpace(_filterSearchBacking) ? null : _filterSearchBacking,
+            ["teams"] = _filterTeamsBacking.Count > 0 ? string.Join(",", _filterTeamsBacking) : null,
+            ["arts"] = _filterArtsBacking.Count > 0 ? string.Join(",", _filterArtsBacking) : null,
+            ["profiles"] = _filterProfilesBacking.Count > 0 ? string.Join(",", _filterProfilesBacking) : null,
+            ["roles"] = _filterRolesBacking.Count > 0 ? string.Join(",", _filterRolesBacking) : null,
+        };
+
+        var uri = Nav.GetUriWithQueryParameters(query);
+        Nav.NavigateTo(uri, replace: true);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!IsAdmin)
+        {
+            return;
+        }
+
+        RefreshOnlineUsers();
+
+        if (!RendererInfo.IsInteractive)
+        {
+            return;
+        }
+
+        _currentUserName = await WindowsAuthService.GetUserName();
+        await LoadDataAsync();
+        ReadUrlParams();
+        RecomputeFilteredRows();
+        _onlineTimer = new System.Threading.Timer(
+            _ => _ = RefreshOnlineUsersAsync(), null, OnlineRefreshInterval, OnlineRefreshInterval);
+        _suppressUrlUpdate = false;
+        _loading = false;
+    }
+
+    private async Task LoadDataAsync()
+    {
+        _rows = await AppAuthService.GetUserRowsAsync();
+        _pendingRequests = await AppAuthService.GetPendingRequestsAsync();
+        _allProfiles = await ProfileService.GetAllAsync();
+        RebuildFilterOptions();
+        RecomputeFilteredRows();
+    }
+
+    private async Task OpenAddUserDialog()
+    {
+        var parameters = new DialogParameters<UserPermissionDialog>
+        {
+            { x => x.AllProfiles, _allProfiles },
+            { x => x.IsNewUser, true }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<UserPermissionDialog>("Add User", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is UserPermissionDialog.UserPermissionResult data)
+        {
+            var lookup = await AdService.GetUserAsync(data.WindowsUserName, skipCache: true);
+            var adInfo = lookup.User;
+            var displayName = string.IsNullOrWhiteSpace(data.DisplayName) ? adInfo?.DisplayName : data.DisplayName;
+            await AppAuthService.AddUserAsync(data.WindowsUserName, displayName, data.IsAdmin, data.ProfileIds, _currentUserName ?? "System", adInfo?.SamAccountName, adInfo?.EmployeeId, adInfo?.EmailAddress);
+            Snackbar.Add($"User '{data.WindowsUserName}' added successfully.", Severity.Success);
+            if (lookup.Status == AdLookupStatus.Failed)
+            {
+                Snackbar.Add("Active Directory did not respond, so the user's AD details are empty. Use Refresh AD Info later.", Severity.Warning);
+            }
+            else if (lookup.Status == AdLookupStatus.NotFound)
+            {
+                Snackbar.Add($"No Active Directory account was found for '{data.WindowsUserName}'.", Severity.Warning);
+            }
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task RefreshAdInfoAsync()
+    {
+        if (_refreshingAd || _rows.Count == 0)
+        {
+            return;
+        }
+
+        _refreshingAd = true;
+        var refreshed = 0;
+        var notFound = 0;
+        var failed = 0;
+        var failedInARow = 0;
+        var users = _rows.Select(r => r.User).ToList();
+
+        try
+        {
+            foreach (var user in users)
+            {
+                var lookup = await AdService.GetUserAsync(user.WindowsUserName, skipCache: true);
+                if (lookup.Status == AdLookupStatus.Failed)
+                {
+                    failed++;
+                    failedInARow++;
+                    if (failedInARow >= MaxAdFailuresInARow)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
+                failedInARow = 0;
+                if (lookup.User is not { } adInfo)
+                {
+                    notFound++;
+                    continue;
+                }
+
+                if (await AppAuthService.SetAdInfoAsync(user.Id, adInfo.DisplayName, adInfo.SamAccountName, adInfo.EmployeeId, adInfo.EmailAddress))
+                {
+                    refreshed++;
+                }
+            }
+
+            await LoadDataAsync();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "AD refresh failed");
+            Snackbar.Add("AD refresh failed. See the log for details.", Severity.Error);
+            return;
+        }
+        finally
+        {
+            _refreshingAd = false;
+        }
+
+        if (failedInARow >= MaxAdFailuresInARow)
+        {
+            Snackbar.Add($"AD refresh stopped: Active Directory is not responding. {refreshed} updated before it stopped.", Severity.Error);
+            return;
+        }
+
+        var failedText = failed > 0 ? $", {failed} failed" : string.Empty;
+        Snackbar.Add($"AD refresh complete: {refreshed} updated, {notFound} not found{failedText}.", notFound + failed > 0 ? Severity.Warning : Severity.Success);
+    }
+
+    private async Task OpenEditUserDialog(AppUserListRow row)
+    {
+        var user = row.User;
+        var existingProfileIds = await AppAuthService.GetUserProfileIdsAsync(user.Id);
+        var parameters = new DialogParameters<UserPermissionDialog>
+        {
+            { x => x.AllProfiles, _allProfiles },
+            { x => x.IsNewUser, false },
+            { x => x.WindowsUserName, user.WindowsUserName },
+            { x => x.DisplayName, user.DisplayName },
+            { x => x.SamAccountName, user.SamAccountName },
+            { x => x.EmailAddress, user.EmailAddress },
+            { x => x.IsAdmin, user.IsAdmin },
+            { x => x.ExistingProfileIds, existingProfileIds },
+            { x => x.RequestedDepartment, row.RequestedDepartment },
+            { x => x.RequestedArt, row.RequestedArt },
+            { x => x.RequestComment, user.RequestComment }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<UserPermissionDialog>("Edit User", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is UserPermissionDialog.UserPermissionResult data)
+        {
+            await AppAuthService.UpdateUserDetailsAsync(user.Id, data.DisplayName, data.SamAccountName, data.EmailAddress);
+            if (user.IsAccessRequested && !user.IsApproved)
+            {
+                await AppAuthService.ApproveUserAsync(user.Id, data.IsAdmin, data.ProfileIds, _currentUserName ?? "System");
+                Snackbar.Add($"User '{user.WindowsUserName}' approved.", Severity.Success);
+            }
+            else
+            {
+                await AppAuthService.UpdateUserProfilesAsync(user.Id, data.IsAdmin, data.ProfileIds);
+                Snackbar.Add($"User '{user.WindowsUserName}' updated.", Severity.Success);
+            }
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task OpenApproveUserDialog(AccessRequestRow row)
+    {
+        var user = row.User;
+        var parameters = new DialogParameters<UserPermissionDialog>
+        {
+            { x => x.AllProfiles, _allProfiles },
+            { x => x.IsNewUser, false },
+            { x => x.WindowsUserName, user.WindowsUserName },
+            { x => x.IsApproving, true },
+            { x => x.RequestedDepartment, row.RequestedDepartment },
+            { x => x.RequestedArt, row.RequestedArt },
+            { x => x.RequestComment, user.RequestComment }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<UserPermissionDialog>("Approve User", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is UserPermissionDialog.UserPermissionResult data)
+        {
+            await AppAuthService.ApproveUserAsync(user.Id, data.IsAdmin, data.ProfileIds, _currentUserName ?? "System");
+            Snackbar.Add($"User '{user.WindowsUserName}' approved.", Severity.Success);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task RevokeUserAsync(AppUser user)
+    {
+        if (await MessageService.Confirm($"Revoke access for '{user.WindowsUserName}'?"))
+        {
+            await AppAuthService.RevokeUserAsync(user.Id);
+            Snackbar.Add($"Access revoked for '{user.WindowsUserName}'.", Severity.Warning);
+            await LoadDataAsync();
+        }
+    }
+
+    private async Task DeleteUserAsync(AppUser user)
+    {
+        if (await MessageService.Confirm($"Delete '{user.WindowsUserName}'? This will remove all permissions."))
+        {
+            await AppAuthService.DeleteUserAsync(user.Id);
+            Snackbar.Add($"User '{user.WindowsUserName}' deleted.", Severity.Error);
+            await LoadDataAsync();
+        }
+    }
+}

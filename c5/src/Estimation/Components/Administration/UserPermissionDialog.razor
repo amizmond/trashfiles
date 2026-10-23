@@ -1,0 +1,177 @@
+@using Estimation.Core.Administration.Models
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="3">
+            @if (IsNewUser)
+            {
+                <MudTextField @bind-Value="_windowsUserName" Label="Windows User Name" Placeholder="DOMAIN\username"
+                              Required="true" RequiredError="Windows user name is required" />
+                <MudTextField @bind-Value="_displayName" Label="Display Name" Placeholder="John Doe" />
+            }
+            else
+            {
+                <MudText Typo="Typo.body1">User: <strong>@WindowsUserName</strong></MudText>
+                @if (!IsApproving)
+                {
+                    <MudTextField @bind-Value="_displayName" Label="Display Name" MaxLength="200" />
+                    <MudTextField @bind-Value="_samAccountName" Label="SAM Account" MaxLength="256" />
+                    <MudTextField @bind-Value="_emailAddress" Label="Email" InputType="InputType.Email" MaxLength="256"
+                                  Error="EmailInvalid" ErrorText="Not a valid email address" />
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Refresh AD Info replaces these with the values from Active Directory.
+                    </MudText>
+                }
+            }
+
+            @if (HasRequestDetails)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                    <MudText Typo="Typo.subtitle2" Class="mb-1">Access request details</MudText>
+                    <MudText Typo="Typo.body2">
+                        Department: <strong>@(string.IsNullOrWhiteSpace(RequestedDepartment) ? NotSpecified : RequestedDepartment)</strong>
+                    </MudText>
+                    <MudText Typo="Typo.body2">
+                        ART: <strong>@(string.IsNullOrWhiteSpace(RequestedArt) ? NotSpecified : RequestedArt)</strong>
+                    </MudText>
+                    <MudText Typo="Typo.body2">
+                        Justification: <strong style="white-space:pre-wrap;">@(string.IsNullOrWhiteSpace(RequestComment) ? NotSpecified : RequestComment)</strong>
+                    </MudText>
+                </MudAlert>
+            }
+
+            <div class="d-flex align-center">
+                <MudCheckBox @bind-Value="_isAdmin" Color="Color.Warning" T="bool" Class="ma-0 flex-none" />
+                <MudText Typo="Typo.body1">Administrator (full access to all pages)</MudText>
+            </div>
+
+            @if (!_isAdmin)
+            {
+                <MudDivider />
+                <MudText Typo="Typo.subtitle1">Profiles</MudText>
+
+                @if (AllProfiles.Count == 0)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true">
+                        No profiles exist yet. Create profiles on the admin "Profiles" page first.
+                        Without a profile the user only gets access to the Dashboard.
+                    </MudAlert>
+                }
+                else
+                {
+                    <MudSelect T="int" MultiSelection="true" @bind-SelectedValues="_selectedProfileIds"
+                               Label="Assigned profiles" Placeholder="Select one or more profiles"
+                               MultiSelectionTextFunc="GetSelectionText" Clearable="true" Dense="true">
+                        @foreach (var profile in AllProfiles)
+                        {
+                            <MudSelectItem T="int" Value="@profile.Id">
+                                @profile.Name
+                                @if (!string.IsNullOrWhiteSpace(profile.Description))
+                                {
+                                    <MudText Typo="Typo.caption" Class="ml-2 mud-text-secondary">@profile.Description</MudText>
+                                }
+                            </MudSelectItem>
+                        }
+                    </MudSelect>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                        Access from multiple profiles is combined — the most permissive level wins.
+                        Dashboard is always available to approved users.
+                    </MudText>
+                }
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Submit"
+                   Disabled="@((IsNewUser && string.IsNullOrWhiteSpace(_windowsUserName)) || EmailInvalid)">
+            @(IsApproving ? "Approve" : "Save")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public List<Profile> AllProfiles { get; set; } = [];
+    [Parameter] public bool IsNewUser { get; set; }
+    [Parameter] public bool IsApproving { get; set; }
+    [Parameter] public string? WindowsUserName { get; set; }
+    [Parameter] public string? DisplayName { get; set; }
+    [Parameter] public string? SamAccountName { get; set; }
+    [Parameter] public string? EmailAddress { get; set; }
+    [Parameter] public bool IsAdmin { get; set; }
+    [Parameter] public List<int>? ExistingProfileIds { get; set; }
+    [Parameter] public string? RequestedDepartment { get; set; }
+    [Parameter] public string? RequestedArt { get; set; }
+    [Parameter] public string? RequestComment { get; set; }
+
+    private const string NotSpecified = "not specified";
+
+    private bool HasRequestDetails
+        => !string.IsNullOrWhiteSpace(RequestedDepartment)
+            || !string.IsNullOrWhiteSpace(RequestedArt)
+            || !string.IsNullOrWhiteSpace(RequestComment);
+
+    private string _windowsUserName = string.Empty;
+    private string? _displayName;
+    private string? _samAccountName;
+    private string? _emailAddress;
+    private bool _isAdmin;
+    private IReadOnlyCollection<int> _selectedProfileIds = [];
+
+    private bool EmailInvalid
+        => !string.IsNullOrWhiteSpace(_emailAddress)
+            && !System.Net.Mail.MailAddress.TryCreate(_emailAddress.Trim(), out _);
+
+    protected override void OnInitialized()
+    {
+        _windowsUserName = WindowsUserName ?? string.Empty;
+        _displayName = DisplayName;
+        _samAccountName = SamAccountName;
+        _emailAddress = EmailAddress;
+        _isAdmin = IsAdmin;
+        _selectedProfileIds = ExistingProfileIds ?? [];
+    }
+
+    private string GetSelectionText(IReadOnlyList<string> selectedValues)
+    {
+        var ids = selectedValues
+            .Select(v => int.TryParse(v, out var id) ? id : (int?)null)
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
+            .ToHashSet();
+        return string.Join(", ", AllProfiles.Where(p => ids.Contains(p.Id)).Select(p => p.Name));
+    }
+
+    private void Submit()
+    {
+        if (EmailInvalid)
+        {
+            return;
+        }
+
+        MudDialog.Close(DialogResult.Ok(new UserPermissionResult
+        {
+            WindowsUserName = _windowsUserName.Trim(),
+            DisplayName = _displayName?.Trim(),
+            SamAccountName = _samAccountName?.Trim(),
+            EmailAddress = _emailAddress?.Trim(),
+            IsAdmin = _isAdmin,
+            ProfileIds = _isAdmin ? [] : _selectedProfileIds.ToList()
+        }));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    public class UserPermissionResult
+    {
+        public string WindowsUserName { get; set; } = string.Empty;
+        public string? DisplayName { get; set; }
+        public string? SamAccountName { get; set; }
+        public string? EmailAddress { get; set; }
+        public bool IsAdmin { get; set; }
+        public List<int> ProfileIds { get; set; } = [];
+    }
+}
