@@ -1,0 +1,57 @@
+@attribute [Route(RoutingPath.MyTeamHolidays)]
+@layout SelfServiceLayout
+
+@inject ISelfServiceResolver SelfService
+@inject NavigationManager Navigation
+
+@if (!_checked)
+{
+    <div class="container-fluid mt-3">
+        <MudProgressLinear Indeterminate Color="Color.Primary" />
+    </div>
+}
+else if (_directoryUnavailable)
+{
+    <div class="container-fluid mt-3">
+        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">
+            Active Directory is not responding, so your account could not be matched to a team member. Please try again in a minute.
+        </MudAlert>
+    </div>
+}
+else if (_hrId is not null)
+{
+    <HolidayPlannerView TeamId="TeamId" SelfServiceHrId="_hrId" @key="TeamId" />
+}
+
+@code {
+    [Parameter] public int TeamId { get; set; }
+
+    private bool _checked;
+    private bool _directoryUnavailable;
+    private int? _hrId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _checked = false;
+        _directoryUnavailable = false;
+        _hrId = null;
+
+        var resolution = await SelfService.ResolveAsync();
+        if (resolution.DirectoryUnavailable)
+        {
+            _directoryUnavailable = true;
+            _checked = true;
+            return;
+        }
+
+        var context = resolution.Context;
+        if (context is null || !context.IsMemberOf(TeamId))
+        {
+            Navigation.NavigateTo(RoutingPath.Base);
+            return;
+        }
+
+        _hrId = context.HumanResourceId;
+        _checked = true;
+    }
+}
