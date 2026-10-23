@@ -1,0 +1,360 @@
+@inherits LocalTimeComponentBase
+@implements IDisposable
+
+@inject IOnlineUserTracker OnlineUsers
+@inject NavigationManager Nav
+
+@using Estimation.Core.Administration.Services
+
+<MudDialog>
+    <TitleContent>
+        <div class="d-flex align-center gap-2">
+            <MudIcon Icon="@Icons.Material.Filled.Sensors" Color="Color.Success" />
+            <MudText Typo="Typo.h6">Online users</MudText>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudDataGrid @ref="_grid" T="OnlineUserRow" Items="_rows" QuickFilter="MatchesSearch"
+                     Dense Hover Bordered Elevation="0" SortMode="SortMode.Single"
+                     RowClick="OnRowClick" RowStyle="cursor:pointer">
+            <ToolBarContent>
+                <MudText Typo="Typo.body2" Class="mud-text-secondary">@Summary</MudText>
+                <MudSpacer />
+                <MudTextField @bind-Value="_search" Placeholder="Search name, email or page"
+                              Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                              Immediate Clearable Margin="Margin.Dense" Variant="Variant.Outlined"
+                              Style="max-width:300px" />
+            </ToolBarContent>
+            <Columns>
+                <HierarchyColumn T="OnlineUserRow" EnableHeaderToggle="true" />
+                <TemplateColumn Title="User" SortBy="@(x => x.Label)">
+                    <CellTemplate>
+                        <div class="d-flex flex-column">
+                            <span class="d-flex align-center gap-1">
+                                <span class="font-weight-medium">@context.Item.Label</span>
+                                @if (IsCurrentUser(context.Item))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Class="my-0">you</MudChip>
+                                }
+                            </span>
+                            @if (!string.Equals(context.Item.Label, context.Item.WindowsUserName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                <span class="mud-text-secondary text-caption">@context.Item.WindowsUserName</span>
+                            }
+                        </div>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Access" SortBy="@(x => x.AccessText)">
+                    <CellTemplate>
+                        <MudChip T="string" Size="Size.Small" Variant="@(context.Item.Known is null ? Variant.Outlined : Variant.Filled)"
+                                 Color="@context.Item.AccessColor" Class="my-0">@context.Item.AccessText</MudChip>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Online since" SortBy="@(x => x.Online.ConnectedAtUtc)">
+                    <CellTemplate>
+                        @Clock(context.Item.Online.ConnectedAtUtc)
+                        <span class="mud-text-secondary">(@Duration(_nowUtc - context.Item.Online.ConnectedAtUtc))</span>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Last activity" SortBy="@(x => x.Online.LastActivityUtc)">
+                    <CellTemplate>
+                        <span class="d-flex align-center gap-1 text-nowrap">
+                            @if (context.Item.Online.Sessions.All(s => !s.IsConnected))
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.WifiOff" Color="Color.Warning" Size="Size.Small"
+                                         title="Connection lost, waiting for the browser to reconnect" />
+                            }
+                            else
+                            {
+                                <MudIcon Icon="@Icons.Material.Filled.Circle" Size="Size.Small" Style="font-size:0.7rem"
+                                         Color="@(IsActive(context.Item.Online.LastActivityUtc) ? Color.Success : Color.Default)"
+                                         title="@(IsActive(context.Item.Online.LastActivityUtc) ? "Active" : "Idle")" />
+                            }
+                            @Ago(context.Item.Online.LastActivityUtc)
+                        </span>
+                    </CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Tabs" SortBy="@(x => x.Online.Sessions.Count)">
+                    <CellTemplate>@context.Item.Online.Sessions.Count</CellTemplate>
+                </TemplateColumn>
+                <TemplateColumn Title="Current page" SortBy="@(x => x.CurrentPage ?? string.Empty)">
+                    <CellTemplate>
+                        @PageLink(context.Item.CurrentPage)
+                        @if (context.Item.Online.Sessions.Count > 1)
+                        {
+                            <span class="mud-text-secondary text-caption ml-1">+@(context.Item.Online.Sessions.Count - 1) more</span>
+                        }
+                    </CellTemplate>
+                </TemplateColumn>
+            </Columns>
+            <ChildRowContent>
+                <div class="pa-2">
+                    @if (context.Item.Known is { } known)
+                    {
+                        <div class="d-flex flex-wrap mb-2 text-body-2" style="column-gap:24px; row-gap:4px;">
+                            <span><span class="mud-text-secondary">Email:</span> @Text(known.User.EmailAddress)</span>
+                            <span><span class="mud-text-secondary">Teams:</span> @Text(string.Join(", ", known.Teams))</span>
+                            <span><span class="mud-text-secondary">ARTs:</span> @Text(string.Join(", ", known.Arts))</span>
+                            <span><span class="mud-text-secondary">Profiles:</span> @Text(string.Join(", ", known.Profiles))</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-2">Not in the user list yet.</MudText>
+                    }
+                    <MudSimpleTable Dense Bordered Elevation="0">
+                        <thead>
+                            <tr>
+                                <th>Tab</th>
+                                <th>Page</th>
+                                <th>Opened</th>
+                                <th>Last activity</th>
+                                <th>Connection</th>
+                                <th>Browser</th>
+                                <th>IP address</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{ var tab = 0; }
+                            @foreach (var session in context.Item.Online.Sessions.OrderBy(s => s.OpenedAtUtc))
+                            {
+                                tab++;
+                                <tr @key="session.CircuitId">
+                                    <td>@tab</td>
+                                    <td>@PageLink(session.Page)</td>
+                                    <td class="text-nowrap">@Clock(session.OpenedAtUtc) <span class="mud-text-secondary">(@Duration(_nowUtc - session.OpenedAtUtc))</span></td>
+                                    <td class="text-nowrap">@Ago(session.LastActivityUtc)</td>
+                                    <td class="text-nowrap">
+                                        @if (session.IsConnected)
+                                        {
+                                            <MudText Typo="Typo.body2" Color="Color.Success">Connected</MudText>
+                                        }
+                                        else
+                                        {
+                                            <MudText Typo="Typo.body2" Color="Color.Warning">
+                                                Lost @(session.ConnectionLostAtUtc is { } lostAt ? Ago(lostAt) : string.Empty), reconnecting
+                                            </MudText>
+                                        }
+                                    </td>
+                                    <td title="@session.UserAgent">@Text(UserAgentDescription.Describe(session.UserAgent))</td>
+                                    <td>@Text(session.IpAddress)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </div>
+            </ChildRowContent>
+            <NoRecordsContent>
+                <MudText Class="pa-6 mud-text-secondary">@(_rows.Count == 0 ? "Nobody is connected right now." : "Nobody matches the search.")</MudText>
+            </NoRecordsContent>
+        </MudDataGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary mr-auto ml-4">
+            Updates every @RefreshInterval.TotalSeconds seconds. A green dot means a click, key press, scroll or page change in the last @ActiveWithin.TotalMinutes minutes.
+        </MudText>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter]
+    public IReadOnlyCollection<AppUserListRow> KnownUsers { get; set; } = [];
+
+    [Parameter]
+    public string? CurrentUserName { get; set; }
+
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ActiveWithin = TimeSpan.FromMinutes(5);
+
+    private MudDataGrid<OnlineUserRow> _grid = null!;
+    private Dictionary<string, AppUserListRow> _known = new(StringComparer.OrdinalIgnoreCase);
+    private List<OnlineUserRow> _rows = [];
+    private DateTime _nowUtc = DateTime.UtcNow;
+    private string? _search;
+    private System.Threading.Timer? _timer;
+    private bool _disposed;
+
+    protected override void OnParametersSet()
+    {
+        _known = KnownUsers
+            .GroupBy(r => r.User.WindowsUserName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        Refresh();
+    }
+
+    protected override void OnInitialized()
+    {
+        _timer = new System.Threading.Timer(_ => _ = RefreshFromTimerAsync(), null, RefreshInterval, RefreshInterval);
+    }
+
+    private void Refresh()
+    {
+        _nowUtc = DateTime.UtcNow;
+        _rows = OnlineUsers.GetOnlineUsers()
+            .Select(online =>
+            {
+                _known.TryGetValue(online.WindowsUserName, out var known);
+                return new OnlineUserRow(online, known);
+            })
+            .OrderBy(r => r.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task RefreshFromTimerAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                Refresh();
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Online users dialog failed to refresh");
+        }
+    }
+
+    private string Summary
+    {
+        get
+        {
+            var users = _rows.Count;
+            var tabs = _rows.Sum(r => r.Online.Sessions.Count);
+            var active = _rows.Count(r => IsActive(r.Online.LastActivityUtc));
+            return $"{users} {(users == 1 ? "user" : "users")} in {tabs} {(tabs == 1 ? "tab" : "tabs")}, {active} active";
+        }
+    }
+
+    private bool MatchesSearch(OnlineUserRow row)
+    {
+        if (string.IsNullOrWhiteSpace(_search))
+        {
+            return true;
+        }
+
+        var s = _search.Trim();
+        return row.Label.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || row.WindowsUserName.Contains(s, StringComparison.OrdinalIgnoreCase)
+            || (row.Known?.User.EmailAddress?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+            || row.Online.Sessions.Any(x => x.Page?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false);
+    }
+
+    private Task OnRowClick(DataGridRowClickEventArgs<OnlineUserRow> args)
+        => _grid.ToggleHierarchyVisibilityAsync(args.Item);
+
+    private bool IsCurrentUser(OnlineUserRow row)
+        => string.Equals(row.WindowsUserName, CurrentUserName, StringComparison.OrdinalIgnoreCase);
+
+    private bool IsActive(DateTime lastActivityUtc) => _nowUtc - lastActivityUtc <= ActiveWithin;
+
+    private string Clock(DateTime utc)
+    {
+        var sameDay = UserTime.ToLocal(utc).Date == UserTime.ToLocal(_nowUtc).Date;
+        return UserTime.Format(utc, sameDay ? "HH:mm" : "dd MMM HH:mm");
+    }
+
+    private string Ago(DateTime utc)
+        => _nowUtc - utc < TimeSpan.FromMinutes(1) ? "just now" : $"{Duration(_nowUtc - utc)} ago";
+
+    private static string Duration(TimeSpan span)
+    {
+        if (span < TimeSpan.FromMinutes(1))
+        {
+            return "under 1 min";
+        }
+
+        if (span < TimeSpan.FromHours(1))
+        {
+            return $"{(int)span.TotalMinutes} min";
+        }
+
+        if (span < TimeSpan.FromDays(1))
+        {
+            return span.Minutes == 0 ? $"{(int)span.TotalHours} h" : $"{(int)span.TotalHours} h {span.Minutes} min";
+        }
+
+        return span.Hours == 0 ? $"{(int)span.TotalDays} d" : $"{(int)span.TotalDays} d {span.Hours} h";
+    }
+
+    private static string Text(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value;
+
+    private RenderFragment PageLink(string? pageUrl) => __builder =>
+    {
+        if (string.IsNullOrWhiteSpace(pageUrl))
+        {
+            <span class="mud-text-secondary">—</span>
+            return;
+        }
+
+        var path = pageUrl.Split('?', 2)[0];
+        <a href="@(Nav.BaseUri + pageUrl.TrimStart('/'))" target="_blank" title="@pageUrl" @onclick:stopPropagation="true"
+           style="word-break:break-all">@path</a>
+    };
+
+    private void Close() => MudDialog.Close();
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _timer?.Dispose();
+        _timer = null;
+    }
+
+    public sealed class OnlineUserRow : IEquatable<OnlineUserRow>
+    {
+        public OnlineUserRow(OnlineUser online, AppUserListRow? known)
+        {
+            Online = online;
+            Known = known;
+            Label = string.IsNullOrWhiteSpace(known?.User.DisplayName) ? online.WindowsUserName : known!.User.DisplayName!;
+            (AccessText, AccessColor) = known?.User switch
+            {
+                null => ("Not registered", Color.Default),
+                { IsApproved: false, IsAccessRequested: true } => ("Pending", Color.Info),
+                { IsApproved: false } => ("Revoked", Color.Default),
+                { IsAdmin: true } => ("Admin", Color.Warning),
+                _ => ("Active", Color.Success)
+            };
+        }
+
+        public OnlineUser Online { get; }
+
+        public AppUserListRow? Known { get; }
+
+        public string Label { get; }
+
+        public string AccessText { get; }
+
+        public Color AccessColor { get; }
+
+        public string WindowsUserName => Online.WindowsUserName;
+
+        public string? CurrentPage => Online.Sessions.FirstOrDefault()?.Page;
+
+        public bool Equals(OnlineUserRow? other)
+            => other is not null && string.Equals(WindowsUserName, other.WindowsUserName, StringComparison.OrdinalIgnoreCase);
+
+        public override bool Equals(object? obj) => Equals(obj as OnlineUserRow);
+
+        public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(WindowsUserName);
+    }
+}

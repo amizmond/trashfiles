@@ -1,0 +1,34 @@
+@implements IDisposable
+
+@inject IJSRuntime JS
+@inject OnlineUserCircuitHandler OnlineCircuit
+
+@code {
+    private DotNetObjectReference<UserActivityReporter>? _self;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        _self = DotNetObjectReference.Create(this);
+        try
+        {
+            await JS.InvokeVoidAsync("userActivity.start", _self);
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (JSException ex)
+        {
+            Serilog.Log.Warning(ex, "User activity reporting could not start");
+        }
+    }
+
+    [JSInvokable]
+    public void Ping() => OnlineCircuit.RecordUserActivity();
+
+    public void Dispose() => _self?.Dispose();
+}

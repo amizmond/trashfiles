@@ -1,0 +1,45 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+
+    <link rel="stylesheet" href="@Assets["lib/bootstrap/bootstrap.min.css"]" />
+
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["Estimation.styles.css"]" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link href="@Assets["_content/MudBlazor/MudBlazor.min.css"]" rel="stylesheet" />
+    <ImportMap />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+
+<body>
+    <Routes @rendermode="InteractiveServer" />
+    <script src="@Assets["_content/MudBlazor/MudBlazor.min.js"]"></script>
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script src="@Assets["js/rankStepper.min.js"]"></script>
+    <script>
+        window.getBrowserTimeZone = () => {
+            try { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
+            catch (e) { return ''; }
+        };
+        window.userActivity = (() => {
+            let reporter = null;
+            let lastSent = 0;
+            const report = () => {
+                const now = Date.now();
+                if (!reporter || now - lastSent < 20000) return;
+                lastSent = now;
+                reporter.invokeMethodAsync('Ping').catch(() => { });
+            };
+            ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(type =>
+                document.addEventListener(type, report, { capture: true, passive: true }));
+            return { start: ref => { reporter = ref; lastSent = 0; } };
+        })();
+    </script>
+</body>
+
+</html>
