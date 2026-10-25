@@ -1,0 +1,1291 @@
+@attribute [Route(RoutingPath.DepartmentPlanning)]
+@implements IDisposable
+
+@inject IDepartmentPlanningService PlanningService
+@inject IDepartmentService DepartmentService
+@inject IArtService ArtService
+@inject IPiService PiService
+@inject IUserPermissionService Permissions
+@inject IWindowsAuthService WindowsAuth
+@inject GlobalFilterState GlobalFilter
+@inject IUserTimeZoneService UserTime
+@inject IBrowserDownloadService DownloadService
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject IConfiguration Configuration
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+@using System.Globalization
+@using System.Text.Json
+@using Estimation.Components.DepartmentPlanning.Views
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Estimation.Core.Shared.Services
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+@using Estimation.Excel
+@using Microsoft.AspNetCore.WebUtilities
+@using Serilog
+
+<PageTitle>@PlanningDisplayNames.DepartmentPlanning</PageTitle>
+
+<AccessGuard PageKey="@PageKey">
+    <div class="container-fluid mt-3 mb-5">
+        <MudPaper Class="p-3 rounded-lg" Elevation="2">
+            <div class="d-flex align-center gap-2 flex-wrap mb-2">
+                <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.DepartmentPlanning</MudText>
+                <MudSelect T="int"
+                           Value="DepartmentValue"
+                           ValueChanged="OnDepartmentChangedAsync"
+                           Label="Department"
+                           Variant="Variant.Outlined"
+                           Dense
+                           Disabled="@(_loading || _loadingData)"
+                           AnchorOrigin="Origin.BottomCenter"
+                           Style="width:260px">
+                    <MudSelectItem T="int" Value="0">All departments</MudSelectItem>
+                    @foreach (var department in _departments)
+                    {
+                        <MudSelectItem T="int" Value="@department.Id">@department.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSelect T="int?"
+                           Value="_piId"
+                           ValueChanged="OnPiChangedAsync"
+                           Label="Planning Increment"
+                           Variant="Variant.Outlined"
+                           Dense
+                           Disabled="@(_loading || _loadingData)"
+                           AnchorOrigin="Origin.BottomCenter"
+                           Style="width:180px">
+                    @foreach (var pi in _pis)
+                    {
+                        <MudSelectItem T="int?" Value="@pi.Id">@pi.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                @if (SelectedPi?.IsLocked == true)
+                {
+                    <MudTooltip Text="This PI is locked: its plans no longer change.">
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Lock">Locked</MudChip>
+                    </MudTooltip>
+                }
+                @if (DepartmentArts.Count > 1)
+                {
+                    <MudSelect T="int"
+                               MultiSelection="true"
+                               SelectedValues="_artFilter"
+                               SelectedValuesChanged="OnArtFilterChanged"
+                               MultiSelectionTextFunc="ArtSelectionText"
+                               Label="ARTs"
+                               Variant="Variant.Outlined"
+                               Dense
+                               Disabled="@(_loading || _loadingData)"
+                               AnchorOrigin="Origin.BottomCenter"
+                               Style="width:230px">
+                        @foreach (var art in DepartmentArts)
+                        {
+                            <MudSelectItem T="int" Value="@art.Id">@art.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+                }
+                <MudSpacer />
+                @if (PlanningViewCatalog.All.Count > 1)
+                {
+                    <MudToggleGroup T="string" Value="_viewKey" ValueChanged="OnViewChangedAsync"
+                                    SelectionMode="SelectionMode.SingleSelection"
+                                    Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                        @foreach (var option in PlanningViewCatalog.All)
+                        {
+                            <MudToggleItem Value="@option.Key" Text="@option.Title" UnselectedIcon="@option.Icon" SelectedIcon="@option.Icon" />
+                        }
+                    </MudToggleGroup>
+                }
+                <MudTooltip Text="Export the whole grid, fully expanded, to Excel.">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Download"
+                               Disabled="@(_data is null || _loadingData || _exporting)"
+                               OnClick="ExportAsync">
+                        Export
+                    </MudButton>
+                </MudTooltip>
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" title="Reload the data" aria-label="Reload the data"
+                               Disabled="@(_loading || _loadingData || _piId is null)" OnClick="RefreshAsync" />
+                <MudIconButton Icon="@Icons.Material.Filled.HelpOutline" Color="Color.Primary" title="How to read this view" aria-label="How to read this view"
+                               OnClick="ShowHelpAsync" />
+            </div>
+
+            @if (_loading)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" />
+            }
+            else if (_arts.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info">No ART is available to you on this page.</MudAlert>
+            }
+            else if (_piId is null)
+            {
+                <MudText Class="mud-text-secondary">Select a planning increment.</MudText>
+            }
+            else
+            {
+                @if (_loadingData)
+                {
+                    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+                }
+                @if (_error is not null)
+                {
+                    <MudAlert Severity="Severity.Error" Class="mb-2">@_error</MudAlert>
+                }
+                @if (_data is not null)
+                {
+                    @if (!_data.DependenciesLoaded || !_data.HygieneLoaded)
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-2">
+                            @(!_data.DependenciesLoaded && !_data.HygieneLoaded
+                                ? "Dependencies and data quality could not be loaded; those columns show 0."
+                                : !_data.DependenciesLoaded
+                                    ? "Dependencies could not be loaded; that column shows 0."
+                                    : "Data quality results could not be loaded; that column shows 0.")
+                        </MudAlert>
+                    }
+
+                    <div class="dp-kpis">
+                        @KpiTile("Capacity", $"{PlanningFormat.Sp(_tree.TotalCapacitySp)} SP", $"{_tree.Teams.Count} teams · {PlanningFormat.Days(_tree.TotalCapacityDays)} working days", null, false, "What the teams in scope can deliver in this PI, after holidays and coefficients.")
+                        @KpiTile("Demand", $"{PlanningFormat.Sp(_tree.Total.DemandSp)} SP", $"{_tree.Total.Features} business epics", null, false, "Story points asked of the teams in scope for this PI.")
+                        @KpiTile("Planned", $"{PlanningFormat.Sp(_tree.Total.PlannedSp)} SP", $"{PlanningFormat.Percent(TotalShare)} of capacity", null, TotalShare > 1, "Story points above every line: the teams plan to deliver them.")
+                        @KpiTile("Not planned", $"{PlanningFormat.Sp(_tree.Total.UnplannedSp)} SP", $"{_shownFeatures.Count(f => f.UnplannedSp > 0)} business epics below a line", () => ToggleFilter(QuickFilter.Unplanned), _options.OnlyUnplanned, "Story points below a team or ART line. Click to show only those business epics.")
+                        @KpiTile("Progress", PlanningFormat.Percent(_tree.Total.Progress), $"{_tree.Total.Done} of {_tree.Total.Features} done", () => ToggleFilter(QuickFilter.HideDone), _options.HideDone, "Share of the business epics that are done. Click to hide the done ones.")
+                        @KpiTile("At risk", _shownFeatures.Count(DepartmentPlanningTree.IsAtRisk).ToString(CultureInfo.InvariantCulture), $"{_tree.Total.DependenciesAtRisk} dependencies at risk · {_tree.Total.Blocked} blocked", () => ToggleFilter(QuickFilter.AtRisk), _options.OnlyAtRisk, "Business epics with a RAG of red, a blocked status or a dependency at risk. Click to show only those.")
+                        @KpiTile("Data quality", _tree.Total.HygieneFailingFeatures.ToString(CultureInfo.InvariantCulture), "business epics failing a hygiene rule", () => ToggleFilter(QuickFilter.Hygiene), _options.OnlyHygieneIssues, "Business epics that fail at least one hygiene rule of their ART. Click to show only those.")
+                    </div>
+
+                    <div class="d-flex align-center gap-2 flex-wrap mb-2">
+                        <MudTextField T="string"
+                                      Value="_search"
+                                      ValueChanged="OnSearchChanged"
+                                      Placeholder="Search objectives, epics, outcomes, business epics"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense"
+                                      Clearable="true"
+                                      Immediate="true"
+                                      DebounceInterval="300"
+                                      Style="width:320px" />
+                        @if (CurrentView.Lens is null)
+                        {
+                            <MudToggleGroup T="PlanningLens" Value="_options.Lens" ValueChanged="OnLensChangedAsync"
+                                            SelectionMode="SelectionMode.SingleSelection"
+                                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                                <MudToggleItem Value="PlanningLens.Objectives">Objectives</MudToggleItem>
+                                <MudToggleItem Value="PlanningLens.Drawdown">Capacity drawdown</MudToggleItem>
+                            </MudToggleGroup>
+                        }
+                        @if (IsGridView)
+                        {
+                            <div class="d-flex align-center gap-1">
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">Open to</MudText>
+                                <MudToggleGroup T="int" Value="_expandLevel" ValueChanged="SetExpandLevelAsync"
+                                                SelectionMode="SelectionMode.SingleSelection"
+                                                Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                                    @foreach (var (level, label) in LevelButtons)
+                                    {
+                                        <MudToggleItem Value="@level">@label</MudToggleItem>
+                                    }
+                                </MudToggleGroup>
+                            </div>
+                        }
+                        @if (CurrentView.CanZoom)
+                        {
+                            <div class="dp-zoom">
+                                <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small" title="Zoom out" aria-label="Zoom out" Disabled="@(Zoom <= MinZoom)" OnClick="@(() => ZoomByAsync(-10))" />
+                                <span class="dp-zoom-value" title="@($"{CurrentView.Title} zoom")">@Zoom%</span>
+                                <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small" title="Zoom in" aria-label="Zoom in" Disabled="@(Zoom >= MaxZoom)" OnClick="@(() => ZoomByAsync(10))" />
+                            </div>
+                        }
+                        @if (IsGridView)
+                        {
+                            <MudMenu Label="Columns" StartIcon="@Icons.Material.Filled.ViewColumn" Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                     AnchorOrigin="Origin.BottomLeft" TransformOrigin="Origin.TopLeft" Dense="true">
+                                <div class="pa-3 d-flex flex-column" style="min-width:260px">
+                                    @foreach (var column in PlanningColumns.For(_options.Lens))
+                                    {
+                                        <MudSwitch T="bool" Value="_columns.Contains(column.Key)" ValueChanged="@(v => SetColumnAsync(column.Key, v))"
+                                                   Label="@column.Header" Color="Color.Primary" Size="Size.Small" />
+                                    }
+                                    <MudDivider Class="my-1" />
+                                    <MudSwitch T="bool" Value="_teamColumns" ValueChanged="SetTeamColumnsAsync" Label="One column per team" Color="Color.Primary" Size="Size.Small" />
+                                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" Class="mt-1 align-self-start" OnClick="ResetColumnsAsync">Reset columns</MudButton>
+                                </div>
+                            </MudMenu>
+                        }
+                        <MudSpacer />
+                        <MudTooltip Text="Also list strategic objectives, portfolio epics and business outcomes that have no business epics on these teams in this PI.">
+                            <MudSwitch T="bool" Value="_options.IncludeEmptyNodes" ValueChanged="SetIncludeEmptyAsync" Label="Show empty" Color="Color.Primary" Size="Size.Small" />
+                        </MudTooltip>
+                        <div class="d-flex align-center gap-1 flex-wrap">
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">RAG</MudText>
+                            @foreach (var rag in RagChoices)
+                            {
+                                var active = _ragFilter.Contains(rag);
+                                <MudChip T="string" Size="Size.Small"
+                                         Variant="@(active ? Variant.Filled : Variant.Outlined)"
+                                         Color="@RagChipColor(rag)"
+                                         OnClick="@(() => ToggleRagAsync(rag))">@rag</MudChip>
+                            }
+                        </div>
+                        @if (_options.ActiveFilterCount > 0 || _artFilter.Count > 0)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.FilterAltOff" OnClick="ClearFiltersAsync">Clear filters</MudButton>
+                        }
+                    </div>
+
+                    <div class="dp-main @(_selected is null ? "" : "has-panel")">
+                        @if (IsGridView)
+                        {
+                            <PlanningGrid @ref="_grid"
+                                          Tree="_tree"
+                                          Expanded="_expanded"
+                                          SelectedId="@_selectedId"
+                                          Columns="_columns"
+                                          TeamColumns="_teamColumns"
+                                          Dense="true"
+                                          Zoom="Zoom"
+                                          SortBy="_options.SortBy"
+                                          SortDescending="_options.SortDescending"
+                                          JiraTaskUrl="@_jiraTaskUrl"
+                                          EmptyText="@EmptyText"
+                                          OnToggle="Toggle"
+                                          OnSelect="SelectAsync"
+                                          OnActivate="Activate"
+                                          OnSort="OnSortAsync" />
+                        }
+                        else
+                        {
+                            <div class="dp-view" @key="CurrentView.Key" style="@ViewZoomStyle">
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-1">@CurrentView.Description</MudText>
+                                <DynamicComponent Type="CurrentView.ComponentType!" Parameters="ViewParameters" />
+                            </div>
+                        }
+                        @if (_selected is not null)
+                        {
+                            <PlanningDetailsPanel Row="_selected"
+                                                  Tree="_tree"
+                                                  Details="_details"
+                                                  DetailsLoading="_detailsLoading"
+                                                  JiraTaskUrl="@_jiraTaskUrl"
+                                                  PiId="_piId"
+                                                  PiName="@_data.PiName"
+                                                  PageAccess="UserPageAccess"
+                                                  OnClose="CloseDetails" />
+                        }
+                    </div>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                        Business epics planned on the teams of @ScopeName for @_data.PiName, as on the team capacity boards. Loaded @UserTime.Format(_data.LoadedUtc, "HH:mm").
+                    </MudText>
+                }
+            }
+        </MudPaper>
+    </div>
+</AccessGuard>
+
+<style>
+    .dp-kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    .dp-tile {
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 8px;
+        padding: 8px 12px;
+        background: var(--mud-palette-surface);
+        min-width: 0;
+    }
+
+    .dp-tile.clickable {
+        cursor: pointer;
+        transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+
+    .dp-tile.clickable:hover {
+        box-shadow: var(--mud-elevation-2);
+    }
+
+    .dp-tile.active {
+        border-color: var(--mud-palette-primary);
+        background: color-mix(in srgb, var(--mud-palette-primary) 10%, var(--mud-palette-surface));
+    }
+
+    .dp-tile.alert .dp-tile-value {
+        color: var(--mud-palette-error);
+    }
+
+    .dp-tile-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .dp-tile-value {
+        font-size: 1.35rem;
+        font-weight: 700;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .dp-tile-sub {
+        font-size: 0.75rem;
+        color: var(--mud-palette-text-secondary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .dp-zoom {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 6px;
+        padding: 0 4px;
+    }
+
+    .dp-zoom-value {
+        min-width: 44px;
+        text-align: center;
+        font-size: 0.8rem;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .dp-main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+    }
+
+    .dp-main.has-panel {
+        grid-template-columns: minmax(0, 1fr) 400px;
+    }
+
+    .dp-view {
+        min-width: 0;
+        min-height: 260px;
+    }
+
+    .dp-panel {
+        border: 1px solid var(--mud-palette-lines-default);
+        max-height: calc(100vh - 330px);
+        overflow: auto;
+        position: sticky;
+        top: 72px;
+    }
+
+    .dp-facts {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+    }
+
+    .dp-facts th,
+    .dp-facts td {
+        padding: 3px 6px;
+        border-bottom: 1px solid var(--mud-palette-lines-default);
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .dp-facts th {
+        font-weight: 600;
+        color: var(--mud-palette-text-secondary);
+        white-space: nowrap;
+        width: 40%;
+    }
+
+    .dp-facts th.num,
+    .dp-facts td.num {
+        text-align: right;
+        width: auto;
+    }
+
+    .dp-facts .dp-warn {
+        color: var(--mud-palette-warning-darken);
+        font-weight: 600;
+    }
+
+    .dp-facts .dp-over {
+        color: var(--mud-palette-error);
+        font-weight: 700;
+    }
+
+    .dp-description {
+        font-size: 0.85rem;
+        max-height: 260px;
+        overflow: auto;
+        padding: 6px 8px;
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 6px;
+    }
+
+    @@media (max-width: 1200px) {
+        .dp-main.has-panel {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .dp-panel {
+            position: static;
+            max-height: none;
+        }
+    }
+</style>
+
+@code {
+    private const string PageKey = "DepartmentPlanning";
+    private const string DepartmentStorageKey = "departmentPlanning.departmentId";
+    private const string PiStorageKey = "departmentPlanning.piId";
+    private const string LensStorageKey = "departmentPlanning.lens";
+    private const string ZoomStorageKey = "departmentPlanning.zoom";
+    private const string ColumnsStorageKey = "departmentPlanning.columns";
+    private const string TeamColumnsStorageKey = "departmentPlanning.teamColumns";
+    private const string LevelStorageKey = "departmentPlanning.level";
+    private const string ViewStorageKey = "departmentPlanning.view";
+    private const int MinZoom = 60;
+    private const int MaxZoom = 160;
+    private const string AllDepartments = "all";
+
+    private static readonly string[] RagChoices = [RagStatuses.Red, RagStatuses.Amber, RagStatuses.Green, PlanningOptions.NoRag];
+
+    private enum QuickFilter
+    {
+        HideDone,
+        Unplanned,
+        AtRisk,
+        Hygiene,
+    }
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private UserPermissionSet _permissions = UserPermissionSet.Empty;
+    private List<Art> _arts = [];
+    private List<Department> _departments = [];
+    private List<Pi> _pis = [];
+    private int? _departmentId;
+    private int? _piId;
+    private HashSet<int> _artFilter = [];
+    private bool _initialized;
+    private bool _restored;
+    private bool _loading = true;
+    private bool _loadingData;
+    private bool _exporting;
+    private bool _disposed;
+    private int _loadVersion;
+    private string? _error;
+    private string? _jiraTaskUrl;
+
+    private DepartmentPlanningData? _data;
+    private PlanningTree _tree = PlanningTree.Empty;
+    private PlanningOptions _options = new();
+    private List<PlanningFeature> _shownFeatures = [];
+    private string? _search;
+    private readonly HashSet<string> _ragFilter = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _expanded = new(StringComparer.Ordinal);
+    private int _expandLevel = 1;
+    private string? _selectedId;
+    private PlanningRow? _selected;
+    private PlanningItemDetails? _details;
+    private bool _detailsLoading;
+    private readonly Dictionary<(PlanningLevel Level, int Id), PlanningItemDetails?> _detailsCache = new();
+    private readonly Dictionary<string, int> _zooms = new(StringComparer.OrdinalIgnoreCase);
+    private bool _teamColumns;
+    private HashSet<string> _columns = PlanningColumns.Defaults();
+    private PlanningGrid? _grid;
+    private string _viewKey = PlanningViewCatalog.Grid;
+
+    private PlanningViewOption CurrentView => PlanningViewCatalog.Find(_viewKey);
+
+    private bool IsGridView => CurrentView.IsGrid;
+
+    private int Zoom => _zooms.GetValueOrDefault(_viewKey, 100);
+
+    private string ViewZoomStyle => CurrentView.CanZoom
+        ? $"--dp-view-zoom:{(Zoom / 100d).ToString("0.00", CultureInfo.InvariantCulture)}"
+        : string.Empty;
+
+    private static string ZoomKeyOf(string viewKey) =>
+        string.Equals(viewKey, PlanningViewCatalog.Grid, StringComparison.OrdinalIgnoreCase) ? ZoomStorageKey : $"{ZoomStorageKey}.{viewKey}";
+
+    private Dictionary<string, object?> ViewParameters => new()
+    {
+        [nameof(PlanningViewBase.Tree)] = _tree,
+        [nameof(PlanningViewBase.Data)] = _data,
+        [nameof(PlanningViewBase.Options)] = _options,
+        [nameof(PlanningViewBase.SelectedId)] = _selectedId,
+        [nameof(PlanningViewBase.OnSelect)] = EventCallback.Factory.Create<string>(this, SelectAsync),
+        [nameof(PlanningViewBase.JiraTaskUrl)] = _jiraTaskUrl,
+        [nameof(PlanningViewBase.PiName)] = _data?.PiName,
+    };
+
+    private int DepartmentValue => _departmentId ?? 0;
+
+    private Pi? SelectedPi => _piId is { } piId ? _pis.FirstOrDefault(p => p.Id == piId) : null;
+
+    private List<Art> DepartmentArts => _departmentId is { } departmentId
+        ? _arts.Where(a => a.DepartmentId == departmentId).ToList()
+        : _arts;
+
+    private List<int> ScopeArtIds => DepartmentArts.Select(a => a.Id).ToList();
+
+    private string ScopeName => _departmentId is { } departmentId
+        ? _departments.FirstOrDefault(d => d.Id == departmentId)?.Name ?? "the department"
+        : "all departments";
+
+    private double? TotalShare => _tree.TotalCapacitySp > 0 ? (double)(_tree.Total.PlannedSp / _tree.TotalCapacitySp) : null;
+
+    private IEnumerable<(int Level, string Label)> LevelButtons => _options.Lens == PlanningLens.Drawdown
+        ? [(0, "ARTs"), (1, "Ranking"), (2, "Outcomes"), (3, "Business epics")]
+        : [(0, "Objectives"), (1, "Epics"), (2, "Outcomes"), (3, "Business epics")];
+
+    private string EmptyText => _tree.FeaturesInScope == 0
+        ? $"No business epics are planned on the teams of {ScopeName} for {_data?.PiName}."
+        : "No rows match the search and filters.";
+
+    private RenderFragment KpiTile(string label, string value, string sub, Func<Task>? onClick, bool active, string tooltip) =>
+        @<div class="dp-tile @(onClick is null ? "" : "clickable") @(active ? "active" : "") @(label == "Planned" && TotalShare > 1 ? "alert" : "")"
+              title="@tooltip"
+              role="@(onClick is null ? null : "button")"
+              @onclick="@(onClick is null ? EventCallback.Empty : EventCallback.Factory.Create(this, onClick))">
+            <div class="dp-tile-label">@label</div>
+            <div class="dp-tile-value">@value</div>
+            <div class="dp-tile-sub">@sub</div>
+        </div>;
+
+    private static Color RagChipColor(string rag) => rag switch
+    {
+        RagStatuses.Red => Color.Error,
+        RagStatuses.Amber => Color.Warning,
+        RagStatuses.Green => Color.Success,
+        _ => Color.Default,
+    };
+
+    private string ArtSelectionText(IReadOnlyList<string> selected) =>
+        selected.Count == 0 || selected.Count == DepartmentArts.Count ? "All ARTs" : $"{selected.Count} of {DepartmentArts.Count} ARTs";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _jiraTaskUrl = Configuration["JiraTaskUrl"];
+
+        var userName = await WindowsAuth.GetUserName();
+        _permissions = userName is null
+            ? UserPermissionSet.Empty
+            : await Permissions.GetPermissionSetAsync(userName);
+
+        _arts = (await ArtService.GetAllLightAsync())
+            .Where(a => _permissions.CanView(PageKey, TrainScope.ForTrains([a.Id])))
+            .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var artDepartmentIds = _arts.Select(a => a.DepartmentId).OfType<int>().ToHashSet();
+        _departments = (await DepartmentService.GetAllAsync())
+            .Where(d => artDepartmentIds.Contains(d.Id))
+            .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _pis = (await PiService.GetAllLightAsync())
+            .OrderByDescending(p => p.StartDate ?? DateTime.MinValue)
+            .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _initialized = true;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_initialized || _restored)
+        {
+            return;
+        }
+
+        _restored = true;
+        await RestorePreferencesAsync();
+        await RestoreScopeAsync();
+        _loading = false;
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+    }
+
+    private async Task RestorePreferencesAsync()
+    {
+        foreach (var option in PlanningViewCatalog.All.Where(o => o.CanZoom))
+        {
+            if (int.TryParse(await ReadStorageAsync(ZoomKeyOf(option.Key)), out var zoom))
+            {
+                _zooms[option.Key] = Math.Clamp(zoom, MinZoom, MaxZoom);
+            }
+        }
+
+        _teamColumns = await ReadStorageAsync(TeamColumnsStorageKey) == "1";
+
+        if (int.TryParse(await ReadStorageAsync(LevelStorageKey), out var level))
+        {
+            _expandLevel = Math.Clamp(level, 0, 3);
+        }
+
+        var columns = await ReadStorageAsync(ColumnsStorageKey);
+        if (!string.IsNullOrEmpty(columns))
+        {
+            try
+            {
+                var keys = JsonSerializer.Deserialize<string[]>(columns);
+                if (keys is not null)
+                {
+                    _columns = keys.Where(k => PlanningColumns.All.Any(c => c.Key == k)).ToHashSet(StringComparer.Ordinal);
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+
+        var query = QueryHelpers.ParseQuery(Navigation.ToAbsoluteUri(Navigation.Uri).Query);
+        var lensText = query.TryGetValue("lens", out var lensValue) ? lensValue.ToString() : await ReadStorageAsync(LensStorageKey);
+        if (string.Equals(lensText, "drawdown", StringComparison.OrdinalIgnoreCase))
+        {
+            _options = _options with { Lens = PlanningLens.Drawdown };
+        }
+
+        var viewText = query.TryGetValue("view", out var viewValue) ? viewValue.ToString() : await ReadStorageAsync(ViewStorageKey);
+        _viewKey = PlanningViewCatalog.Find(viewText).Key;
+        if (CurrentView.Lens is { } forcedLens)
+        {
+            _options = _options with { Lens = forcedLens };
+        }
+
+        if (query.TryGetValue("level", out var levelValue) && int.TryParse(levelValue, out var queryLevel))
+        {
+            _expandLevel = Math.Clamp(queryLevel, 0, 3);
+        }
+    }
+
+    private async Task RestoreScopeAsync()
+    {
+        var query = QueryHelpers.ParseQuery(Navigation.ToAbsoluteUri(Navigation.Uri).Query);
+
+        int? globalDepartment = null;
+        int? globalPi = null;
+        try
+        {
+            await GlobalFilter.EnsureLoadedAsync();
+            var values = GlobalFilter.Values;
+            globalDepartment = values.DepartmentId;
+            globalPi = values.PiIds.Count == 1 ? values.PiIds[0] : null;
+        }
+        catch
+        {
+        }
+
+        var storedDepartment = await ReadStorageAsync(DepartmentStorageKey);
+        if (query.TryGetValue("dept", out var deptValue))
+        {
+            _departmentId = int.TryParse(deptValue, out var deptId) && _departments.Any(d => d.Id == deptId) ? deptId : null;
+        }
+        else if (storedDepartment is not null)
+        {
+            _departmentId = int.TryParse(storedDepartment, out var deptId) && _departments.Any(d => d.Id == deptId) ? deptId : null;
+        }
+        else if (globalDepartment is { } globalDeptId && _departments.Any(d => d.Id == globalDeptId))
+        {
+            _departmentId = globalDeptId;
+        }
+
+        var requestedPi = query.TryGetValue("pi", out var piValue) && int.TryParse(piValue, out var piId) ? piId : (int?)null;
+        var storedPi = int.TryParse(await ReadStorageAsync(PiStorageKey), out var stored) ? stored : (int?)null;
+        _piId = FirstSelectable(_pis.Select(p => p.Id), requestedPi, storedPi, globalPi) ?? (await CurrentPiAsync())?.Id ?? _pis.FirstOrDefault()?.Id;
+
+        if (query.TryGetValue("arts", out var artsValue))
+        {
+            var ids = artsValue.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => int.TryParse(s, out var id) ? id : (int?)null)
+                .OfType<int>()
+                .Where(id => DepartmentArts.Any(a => a.Id == id))
+                .ToHashSet();
+            if (ids.Count > 0 && ids.Count < DepartmentArts.Count)
+            {
+                _artFilter = ids;
+            }
+        }
+    }
+
+    private async Task<Pi?> CurrentPiAsync()
+    {
+        await UserTime.EnsureResolvedAsync();
+        var today = UserTime.ToLocal(DateTime.UtcNow).Date;
+        return _pis.FirstOrDefault(p => p.StartDate is { } start && start.Date <= today && (p.EndDate is null || p.EndDate.Value.Date >= today))
+            ?? _pis.FirstOrDefault(p => p.StartDate is { } start && start.Date <= today);
+    }
+
+    private static int? FirstSelectable(IEnumerable<int> selectable, params int?[] candidates)
+    {
+        var allowed = selectable.ToHashSet();
+        return candidates.FirstOrDefault(c => c is { } id && allowed.Contains(id));
+    }
+
+    private async Task LoadAsync()
+    {
+        var version = ++_loadVersion;
+        var scopeArtIds = ScopeArtIds;
+        if (_piId is not { } piId || scopeArtIds.Count == 0)
+        {
+            _data = null;
+            _tree = PlanningTree.Empty;
+            _shownFeatures = [];
+            return;
+        }
+
+        _loadingData = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            var data = await PlanningService.GetAsync(new DepartmentPlanningScope(_departmentId, scopeArtIds, piId));
+            if (version != _loadVersion || _disposed)
+            {
+                return;
+            }
+
+            _data = data;
+            if (data is null)
+            {
+                _error = "The planning increment could not be loaded.";
+            }
+
+            Rebuild();
+            ApplyExpandLevel();
+        }
+        catch (Exception ex)
+        {
+            if (version != _loadVersion || _disposed)
+            {
+                return;
+            }
+
+            Log.Error(ex, "Failed to load department planning for PI {PiId}", piId);
+            _error = "The planning data could not be loaded.";
+            _data = null;
+            _tree = PlanningTree.Empty;
+            _shownFeatures = [];
+        }
+        finally
+        {
+            if (version == _loadVersion)
+            {
+                _loadingData = false;
+            }
+        }
+
+        await WriteUrlAsync();
+    }
+
+    private void Rebuild()
+    {
+        _options = _options with
+        {
+            Search = _search,
+            RagStatuses = _ragFilter.Count == 0 ? null : _ragFilter,
+            ArtIds = _artFilter.Count == 0 ? null : _artFilter,
+        };
+        _tree = _data is null ? PlanningTree.Empty : DepartmentPlanningTree.Build(_data, _options);
+        _shownFeatures = _tree.FlattenAll()
+            .Where(r => r.Feature is not null)
+            .Select(r => r.Feature!)
+            .DistinctBy(f => f.Id)
+            .ToList();
+
+        if (_selectedId is not null)
+        {
+            _selected = _tree.Find(_selectedId);
+            if (_selected is null)
+            {
+                _selectedId = null;
+            }
+        }
+    }
+
+    private void ApplyExpandLevel()
+    {
+        _expanded = _tree.FlattenAll()
+            .Where(r => r.Kind == PlanningRowKind.Node && r.HasChildren && r.Depth < _expandLevel)
+            .Select(r => r.Id)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private async Task RefreshAsync()
+    {
+        _detailsCache.Clear();
+        await LoadAsync();
+    }
+
+    private async Task OnDepartmentChangedAsync(int value)
+    {
+        var departmentId = value == 0 ? (int?)null : value;
+        if (departmentId == _departmentId)
+        {
+            return;
+        }
+
+        _departmentId = departmentId;
+        _artFilter = [];
+        CloseDetails();
+        await WriteStorageAsync(DepartmentStorageKey, departmentId?.ToString() ?? AllDepartments);
+        await LoadAsync();
+    }
+
+    private async Task OnPiChangedAsync(int? piId)
+    {
+        if (piId == _piId)
+        {
+            return;
+        }
+
+        _piId = piId;
+        CloseDetails();
+        await WriteStorageAsync(PiStorageKey, piId?.ToString());
+        await LoadAsync();
+    }
+
+    private async Task OnArtFilterChanged(IEnumerable<int> values)
+    {
+        var selected = values.ToHashSet();
+        _artFilter = selected.Count == 0 || selected.Count == DepartmentArts.Count ? [] : selected;
+        Rebuild();
+        ApplyExpandLevel();
+        await WriteUrlAsync();
+    }
+
+    private async Task OnLensChangedAsync(PlanningLens lens)
+    {
+        if (lens == _options.Lens)
+        {
+            return;
+        }
+
+        _options = _options with { Lens = lens };
+        CloseDetails();
+        Rebuild();
+        ApplyExpandLevel();
+        await WriteStorageAsync(LensStorageKey, lens == PlanningLens.Drawdown ? "drawdown" : "objectives");
+        await WriteUrlAsync();
+    }
+
+    private async Task OnViewChangedAsync(string key)
+    {
+        var option = PlanningViewCatalog.Find(key);
+        if (option.Key == _viewKey)
+        {
+            return;
+        }
+
+        _viewKey = option.Key;
+        if (option.Lens is { } forcedLens && forcedLens != _options.Lens)
+        {
+            _options = _options with { Lens = forcedLens };
+            CloseDetails();
+            Rebuild();
+            ApplyExpandLevel();
+        }
+
+        await WriteStorageAsync(ViewStorageKey, option.IsGrid ? null : option.Key);
+        await WriteUrlAsync();
+    }
+
+    private void OnSearchChanged(string? value)
+    {
+        _search = value;
+        Rebuild();
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            _expanded = _tree.FlattenAll()
+                .Where(r => r.Kind == PlanningRowKind.Node && r.HasChildren && r.Depth < 3)
+                .Select(r => r.Id)
+                .ToHashSet(StringComparer.Ordinal);
+        }
+        else
+        {
+            ApplyExpandLevel();
+        }
+    }
+
+    private async Task SetExpandLevelAsync(int level)
+    {
+        _expandLevel = Math.Clamp(level, 0, 3);
+        ApplyExpandLevel();
+        await WriteStorageAsync(LevelStorageKey, _expandLevel.ToString());
+        await WriteUrlAsync();
+    }
+
+    private Task ToggleFilter(QuickFilter filter)
+    {
+        _options = filter switch
+        {
+            QuickFilter.HideDone => _options with { HideDone = !_options.HideDone },
+            QuickFilter.Unplanned => _options with { OnlyUnplanned = !_options.OnlyUnplanned },
+            QuickFilter.AtRisk => _options with { OnlyAtRisk = !_options.OnlyAtRisk },
+            _ => _options with { OnlyHygieneIssues = !_options.OnlyHygieneIssues },
+        };
+        Rebuild();
+        return Task.CompletedTask;
+    }
+
+    private Task ToggleRagAsync(string rag)
+    {
+        if (!_ragFilter.Remove(rag))
+        {
+            _ragFilter.Add(rag);
+        }
+
+        Rebuild();
+        return Task.CompletedTask;
+    }
+
+    private Task SetIncludeEmptyAsync(bool value)
+    {
+        _options = _options with { IncludeEmptyNodes = value };
+        Rebuild();
+        ApplyExpandLevel();
+        return Task.CompletedTask;
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        _search = null;
+        _ragFilter.Clear();
+        _artFilter = [];
+        _options = _options with { HideDone = false, OnlyUnplanned = false, OnlyAtRisk = false, OnlyHygieneIssues = false };
+        Rebuild();
+        ApplyExpandLevel();
+        await WriteUrlAsync();
+    }
+
+    private async Task OnSortAsync((PlanningSort Sort, bool Descending) sort)
+    {
+        _options = _options with { SortBy = sort.Sort, SortDescending = sort.Descending };
+        Rebuild();
+        if (_selectedId is not null && _grid is not null)
+        {
+            await _grid.ScrollToAsync(_selectedId);
+        }
+    }
+
+    private async Task ZoomByAsync(int delta)
+    {
+        var zoom = Math.Clamp(Zoom + delta, MinZoom, MaxZoom);
+        _zooms[_viewKey] = zoom;
+        await WriteStorageAsync(ZoomKeyOf(_viewKey), zoom.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private async Task SetColumnAsync(string key, bool visible)
+    {
+        if (visible)
+        {
+            _columns.Add(key);
+        }
+        else
+        {
+            _columns.Remove(key);
+        }
+
+        await WriteStorageAsync(ColumnsStorageKey, JsonSerializer.Serialize(_columns.ToArray()));
+    }
+
+    private async Task SetTeamColumnsAsync(bool value)
+    {
+        _teamColumns = value;
+        await WriteStorageAsync(TeamColumnsStorageKey, value ? "1" : "0");
+    }
+
+    private async Task ResetColumnsAsync()
+    {
+        _columns = PlanningColumns.Defaults();
+        _teamColumns = false;
+        await WriteStorageAsync(ColumnsStorageKey, null);
+        await WriteStorageAsync(TeamColumnsStorageKey, null);
+    }
+
+    private void Toggle(string id)
+    {
+        if (!_expanded.Remove(id))
+        {
+            _expanded.Add(id);
+        }
+    }
+
+    private void Activate(string id)
+    {
+        var row = _tree.Find(id);
+        if (row is { HasChildren: true })
+        {
+            Toggle(id);
+        }
+    }
+
+    private async Task SelectAsync(string id)
+    {
+        if (_selectedId == id)
+        {
+            return;
+        }
+
+        _selectedId = id;
+        _selected = _tree.Find(id);
+        _details = null;
+        await LoadDetailsAsync();
+    }
+
+    private void CloseDetails()
+    {
+        _selectedId = null;
+        _selected = null;
+        _details = null;
+        _detailsLoading = false;
+    }
+
+    private async Task LoadDetailsAsync()
+    {
+        var row = _selected;
+        if (row is null || row.Level == PlanningLevel.Art || row.EntityId is not { } entityId)
+        {
+            return;
+        }
+
+        var key = (row.Level, entityId);
+        if (_detailsCache.TryGetValue(key, out var cached))
+        {
+            _details = cached;
+            return;
+        }
+
+        _detailsLoading = true;
+        try
+        {
+            var details = await PlanningService.GetDetailsAsync(row.Level, entityId);
+            _detailsCache[key] = details;
+            if (_selected?.Id == row.Id)
+            {
+                _details = details;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load details for {Level} {Id}", row.Level, entityId);
+        }
+        finally
+        {
+            _detailsLoading = false;
+        }
+    }
+
+    private async Task ShowHelpAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true };
+        await DialogService.ShowAsync<DepartmentPlanningHelpDialog>(string.Empty, options);
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_data is null || _exporting)
+        {
+            return;
+        }
+
+        _exporting = true;
+        try
+        {
+            var rows = new List<DepartmentPlanningExportRow>();
+            foreach (var root in _tree.Roots)
+            {
+                CollectExportRows(root, null, null, null, rows);
+            }
+
+            var filters = new List<string>();
+            if (!string.IsNullOrWhiteSpace(_search)) filters.Add($"search \"{_search.Trim()}\"");
+            if (_options.HideDone) filters.Add("done hidden");
+            if (_options.OnlyUnplanned) filters.Add("not planned only");
+            if (_options.OnlyAtRisk) filters.Add("at risk only");
+            if (_options.OnlyHygieneIssues) filters.Add("data quality issues only");
+            if (_ragFilter.Count > 0) filters.Add($"RAG {string.Join("/", _ragFilter)}");
+            if (_artFilter.Count > 0) filters.Add($"ARTs {string.Join(", ", DepartmentArts.Where(a => _artFilter.Contains(a.Id)).Select(a => a.Name))}");
+            if (_options.IncludeEmptyNodes) filters.Add("empty items shown");
+
+            var info = new DepartmentPlanningExportInfo(
+                ScopeName,
+                _data.PiName,
+                PlanningFormat.LensName(_options.Lens),
+                filters.Count == 0 ? "none" : string.Join("; ", filters),
+                (double)_tree.TotalCapacitySp,
+                DateTime.UtcNow);
+            var bytes = DepartmentPlanningExportService.Generate(info, rows);
+            var fileName = $"Department planning - {ScopeName} - {_data.PiName} - {DateTime.UtcNow:yyyy-MM-dd}.xlsx";
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Department planning export failed");
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private void CollectExportRows(PlanningRow row, string? objective, string? epic, string? outcome, List<DepartmentPlanningExportRow> rows)
+    {
+        if (row.Kind == PlanningRowKind.LineMarker)
+        {
+            return;
+        }
+
+        var name = string.IsNullOrEmpty(row.JiraId) ? row.Title : $"{row.JiraId} {row.Title}";
+        switch (row.Level)
+        {
+            case PlanningLevel.StrategicObjective:
+                objective = name;
+                break;
+            case PlanningLevel.PortfolioEpic:
+                epic = name;
+                break;
+            case PlanningLevel.BusinessOutcome:
+                outcome = name;
+                break;
+        }
+
+        var ranks = row.Ranks.Count == 0
+            ? null
+            : string.Join(", ", row.Ranks.Select(r => _options.Lens == PlanningLens.Drawdown ? r.Rank.ToString() : $"{r.ArtAbbreviation} {r.Rank}"));
+        string? line = row.Level == PlanningLevel.Art
+            ? null
+            : row.IsBelowArtLine
+                ? "Below"
+                : row.Metrics.DemandSp == 0
+                    ? null
+                    : row.Metrics.UnplannedSp == 0
+                        ? "Above"
+                        : row.Metrics.PlannedSp == 0
+                            ? "Below"
+                            : "Partly";
+        var arts = string.Join(", ", _tree.Arts.Where(a => row.Level == PlanningLevel.Art ? a.Id == row.ArtId : row.TeamCells.Keys.Any(t => a.TeamIds.Contains(t))).Select(a => a.Name));
+
+        rows.Add(new DepartmentPlanningExportRow(
+            PlanningFormat.LevelName(row.Level),
+            objective,
+            epic,
+            outcome,
+            row.Level == PlanningLevel.BusinessEpic ? name : null,
+            row.JiraId,
+            row.Title,
+            row.Status,
+            RagStatuses.Normalize(row.RagStatus) ?? (row.Level == PlanningLevel.BusinessEpic ? null : row.Metrics.WorstRag),
+            ranks,
+            line,
+            arts,
+            row.Metrics.Teams,
+            row.Metrics.Features,
+            row.Metrics.Done,
+            row.Metrics.Progress * 100,
+            (double)row.Metrics.DemandSp,
+            (double)row.Metrics.PlannedSp,
+            (double)row.Metrics.UnplannedSp,
+            row.CapacitySp is { } capacity ? (double)capacity : null,
+            row.ShareOfCapacity is { } share ? share * 100 : null,
+            row.Metrics.Dependencies,
+            row.Metrics.DependenciesAtRisk,
+            row.Level == PlanningLevel.BusinessEpic ? row.Feature?.HygieneFailures ?? 0 : row.Metrics.HygieneFailingFeatures,
+            row.Level == PlanningLevel.BusinessEpic ? row.TargetEnd : row.Metrics.TargetEnd ?? row.TargetEnd));
+
+        foreach (var child in row.Children)
+        {
+            CollectExportRows(child, objective, epic, outcome, rows);
+        }
+    }
+
+    private async Task WriteUrlAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var parameters = new Dictionary<string, object?>
+        {
+            ["dept"] = _departmentId?.ToString() ?? AllDepartments,
+            ["pi"] = _piId,
+            ["lens"] = _options.Lens == PlanningLens.Drawdown ? "drawdown" : null,
+            ["view"] = IsGridView ? null : _viewKey,
+            ["level"] = _expandLevel == 1 ? null : _expandLevel,
+            ["arts"] = _artFilter.Count == 0 ? null : string.Join(",", _artFilter.OrderBy(id => id)),
+        };
+        var uri = Navigation.GetUriWithQueryParameters(parameters);
+        if (uri == Navigation.Uri)
+        {
+            return;
+        }
+
+        try
+        {
+            await JS.InvokeVoidAsync("eval", $"history.replaceState(null,'',{JsonSerializer.Serialize(uri)})");
+        }
+        catch (JSException)
+        {
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    private async Task<string?> ReadStorageAsync(string key)
+    {
+        try
+        {
+            return await JS.InvokeAsync<string?>("localStorage.getItem", key);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task WriteStorageAsync(string key, string? value)
+    {
+        try
+        {
+            if (value is null)
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", key);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", key, value);
+            }
+        }
+        catch
+        {
+        }
+    }
+}

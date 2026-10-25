@@ -1,0 +1,599 @@
+@namespace Estimation.Components.DepartmentPlanning
+@inject IJSRuntime JS
+
+@using System.Globalization
+@using System.Text.Json
+@using Estimation.Core.Capacity.Services
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.JiraIntegration.Models
+@using Estimation.Core.Train.Models
+
+<div class="dp-wrap @(Dense ? "dense" : "")" style="--dp-zoom:@ZoomValue" tabindex="0" @onkeydown="OnKeyDownAsync" @ref="_root">
+    <table class="dp-grid">
+        <thead>
+            <tr>
+                <th class="dp-title-head">
+                    <span>@TitleHeader</span>
+                    <span class="dp-legend">
+                        @foreach (var level in Levels)
+                        {
+                            <span class="dp-tag lvl-@((int)level)">@PlanningFormat.LevelTag(level)</span>
+                        }
+                    </span>
+                </th>
+                @foreach (var column in VisibleColumns)
+                {
+                    <th class="@(column.Numeric ? "num" : "") @(column.Sort is not null ? "sortable" : "") @(IsSorted(column) ? "sorted" : "")"
+                        title="@column.Tooltip"
+                        @onclick="() => SortByAsync(column)">
+                        <span>@column.Header</span>
+                        @if (IsSorted(column))
+                        {
+                            <span class="dp-sort">@(SortDescending ? "▼" : "▲")</span>
+                        }
+                    </th>
+                }
+                @if (TeamColumns)
+                {
+                    @foreach (var team in Tree.Teams)
+                    {
+                        <th class="num dp-team" title="@TeamTooltip(team)">
+                            <span class="dp-team-name">@team.Name</span>
+                            <span class="dp-team-cap">@PlanningFormat.Sp(team.CapacitySp) SP</span>
+                        </th>
+                    }
+                }
+            </tr>
+        </thead>
+        <tbody>
+            @if (Visible.Count == 0)
+            {
+                <tr class="dp-empty">
+                    <td colspan="@ColumnCount">@EmptyText</td>
+                </tr>
+            }
+            @foreach (var row in Visible)
+            {
+                @if (row.Kind == PlanningRowKind.LineMarker)
+                {
+                    <tr class="dp-line" @key="row.Id">
+                        <td colspan="@ColumnCount">
+                            <span class="dp-line-text">@row.Title: items below take no capacity on this ART's team boards</span>
+                        </td>
+                    </tr>
+                    continue;
+                }
+
+                var expanded = Expanded.Contains(row.Id);
+                <tr @key="row.Id"
+                    id="@ElementId(row.Id)"
+                    class="dp-row lvl-@((int)row.Level) @(row.Id == SelectedId ? "selected" : "") @(row.IsBelowArtLine ? "below" : "") @(row.CapacityRunsOutHere ? "runs-out" : "") @(row.Feature?.IsDone == true ? "done" : "")"
+                    @onclick="() => OnSelect.InvokeAsync(row.Id)"
+                    @ondblclick="() => OnActivate.InvokeAsync(row.Id)">
+                    <td class="dp-title" style="--depth:@row.Depth">
+                        <div class="dp-title-inner">
+                            @if (row.HasChildren)
+                            {
+                                <button type="button" class="dp-chevron @(expanded ? "open" : "")"
+                                        aria-label="@(expanded ? "Collapse" : "Expand")"
+                                        @onclick="() => OnToggle.InvokeAsync(row.Id)"
+                                        @onclick:stopPropagation="true"
+                                        @ondblclick:stopPropagation="true"></button>
+                            }
+                            else
+                            {
+                                <span class="dp-chevron-space"></span>
+                            }
+                            <span class="dp-tag lvl-@((int)row.Level)" title="@PlanningFormat.LevelName(row.Level)">@PlanningFormat.LevelTag(row.Level)</span>
+                            @if (!string.IsNullOrEmpty(row.JiraId))
+                            {
+                                <span class="dp-key">@row.JiraId</span>
+                            }
+                            <span class="dp-name @(row.IsBucket ? "bucket" : "")" title="@row.Title">@row.Title</span>
+                            @if (row.CapacityRunsOutHere)
+                            {
+                                <span class="dp-flag runs-out" title="The ART's capacity is used up at this item: the cumulative planned story points exceed the capacity.">capacity runs out here</span>
+                            }
+                            @if (row.IsBelowArtLine)
+                            {
+                                <span class="dp-flag below" title="Below the ART line: the ART reserves no capacity for it in this PI.">below the line</span>
+                            }
+                            @if (row.AlsoUnder.Count > 0)
+                            {
+                                <span class="dp-flag also" title="@($"Also contributes to {string.Join(", ", row.AlsoUnder)}. Its business epics are counted once in the totals.")">also @string.Join(", ", row.AlsoUnder)</span>
+                            }
+                            @if (row.Level == PlanningLevel.Art && Tree.Arts.FirstOrDefault(a => a.Id == row.ArtId) is { } art)
+                            {
+                                <span class="dp-flag info" title="@ArtModeTooltip(art)">@ArtModeLabel(art)</span>
+                            }
+                        </div>
+                    </td>
+                    @foreach (var column in VisibleColumns)
+                    {
+                        <td class="@(column.Numeric ? "num" : "") col-@column.Key">@Cell(column, row)</td>
+                    }
+                    @if (TeamColumns)
+                    {
+                        @foreach (var team in Tree.Teams)
+                        {
+                            <td class="num dp-team-cell @(row.TeamCells.TryGetValue(team.Id, out var cell) && cell.OverCapacity ? "over" : "")">@TeamCell(row, team)</td>
+                        }
+                    }
+                </tr>
+            }
+        </tbody>
+        <tfoot>
+            <tr class="dp-total">
+                <td class="dp-title">
+                    <div class="dp-title-inner">
+                        <span class="dp-chevron-space"></span>
+                        <span class="dp-name">Total</span>
+                        <span class="dp-flag info" title="Each business epic is counted once, even when it appears under several strategic objectives or ARTs.">@Tree.FeaturesShown of @Tree.FeaturesInScope business epics shown</span>
+                    </div>
+                </td>
+                @foreach (var column in VisibleColumns)
+                {
+                    <td class="@(column.Numeric ? "num" : "") col-@column.Key">@TotalCell(column)</td>
+                }
+                @if (TeamColumns)
+                {
+                    @foreach (var team in Tree.Teams)
+                    {
+                        <td class="num dp-team-cell">@TeamTotal(team)</td>
+                    }
+                }
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public PlanningTree Tree { get; set; } = PlanningTree.Empty;
+    [Parameter] public IReadOnlySet<string> Expanded { get; set; } = new HashSet<string>();
+    [Parameter] public string? SelectedId { get; set; }
+    [Parameter] public IReadOnlySet<string> Columns { get; set; } = new HashSet<string>();
+    [Parameter] public bool TeamColumns { get; set; }
+    [Parameter] public bool Dense { get; set; }
+    [Parameter] public int Zoom { get; set; } = 100;
+    [Parameter] public PlanningSort SortBy { get; set; }
+    [Parameter] public bool SortDescending { get; set; }
+    [Parameter] public string? JiraTaskUrl { get; set; }
+    [Parameter] public string EmptyText { get; set; } = "Nothing to show.";
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback<string> OnActivate { get; set; }
+    [Parameter] public EventCallback<(PlanningSort Sort, bool Descending)> OnSort { get; set; }
+
+    private ElementReference _root;
+    private string? _pendingSelection;
+    private List<PlanningRow> _visible = [];
+    private IReadOnlyList<PlanningColumn> _visibleColumns = [];
+    private Dictionary<int, decimal> _plannedByTeam = new();
+
+    private string ZoomValue => (Zoom / 100.0).ToString("0.00", CultureInfo.InvariantCulture);
+
+    private IReadOnlyList<PlanningColumn> VisibleColumns => _visibleColumns;
+
+    private int ColumnCount => 1 + VisibleColumns.Count + (TeamColumns ? Tree.Teams.Count : 0);
+
+    private List<PlanningRow> Visible => _visible;
+
+    protected override void OnParametersSet()
+    {
+        if (_pendingSelection == SelectedId)
+        {
+            _pendingSelection = null;
+        }
+
+        _visible = Tree.Flatten(r => Expanded.Contains(r.Id)).ToList();
+        _visibleColumns = PlanningColumns.For(Tree.Lens).Where(c => Columns.Contains(c.Key)).ToList();
+        _plannedByTeam = TeamColumns
+            ? Tree.FlattenAll()
+                .Where(r => r.Feature is not null)
+                .DistinctBy(r => r.Feature!.Id)
+                .SelectMany(r => r.TeamCells)
+                .GroupBy(kv => kv.Key)
+                .ToDictionary(g => g.Key, g => g.Sum(kv => kv.Value.PlannedSp))
+            : new Dictionary<int, decimal>();
+    }
+
+    private string TitleHeader => Tree.Lens == PlanningLens.Drawdown
+        ? "ART › ranked portfolio epics / business outcomes › business epics"
+        : "Strategic objective › portfolio epic › business outcome › business epic";
+
+    private IEnumerable<PlanningLevel> Levels => Tree.Lens == PlanningLens.Drawdown
+        ? [PlanningLevel.Art, PlanningLevel.PortfolioEpic, PlanningLevel.BusinessOutcome, PlanningLevel.BusinessEpic]
+        : [PlanningLevel.StrategicObjective, PlanningLevel.PortfolioEpic, PlanningLevel.BusinessOutcome, PlanningLevel.BusinessEpic];
+
+    public static string ElementId(string rowId) => "dp-" + rowId;
+
+    private bool IsSorted(PlanningColumn column) => column.Sort is { } sort && sort == SortBy;
+
+    private async Task SortByAsync(PlanningColumn column)
+    {
+        if (column.Sort is not { } sort)
+        {
+            return;
+        }
+
+        var descending = IsSorted(column) ? !SortDescending : column.DefaultDescending;
+        await OnSort.InvokeAsync((sort, descending));
+    }
+
+    private static string TeamTooltip(PlanningTeam team) =>
+        $"{team.Name}: capacity {PlanningFormat.Sp(team.CapacitySp)} SP ({PlanningFormat.Days(team.CapacityDays)} days × {team.StoryPointsPerDay:0.##} SP per day), {team.MemberCount} members, window: {team.WindowMode}";
+
+    private static string ArtModeLabel(PlanningArt art) => art.Level is null
+        ? "no ranking set"
+        : art.OrderMode switch
+        {
+            ArtOrderMode.PiOrder => "own PI order",
+            ArtOrderMode.General or ArtOrderMode.FollowsGeneral => "general order",
+            _ => "not ranked yet",
+        };
+
+    private static string ArtModeTooltip(PlanningArt art) => art.Level is null
+        ? "This ART has no prioritization level on its ART page, so its items are listed by Jira key with no line."
+        : art.OrderMode switch
+        {
+            ArtOrderMode.PiOrder => $"Ranked by {ArtPrioritizations.Label(art.Level.Value).ToLowerInvariant()} with an order saved for this PI on the ART Prioritization page.",
+            ArtOrderMode.General or ArtOrderMode.FollowsGeneral => $"Ranked by {ArtPrioritizations.Label(art.Level.Value).ToLowerInvariant()}; this PI follows the ART's general order.",
+            _ => $"Ranked by {ArtPrioritizations.Label(art.Level.Value).ToLowerInvariant()}, but no order was saved yet: items are in Jira key order and all above the line.",
+        };
+
+    private RenderFragment Cell(PlanningColumn column, PlanningRow row) => column.Key switch
+    {
+        PlanningColumns.Rank => RankCell(row),
+        PlanningColumns.Status => StatusCell(row),
+        PlanningColumns.Rag => RagCell(row),
+        PlanningColumns.Epics => EpicsCell(row),
+        PlanningColumns.Progress => ProgressCell(row.Metrics),
+        PlanningColumns.Demand => Number(row.Metrics.DemandSp, false),
+        PlanningColumns.Planned => Number(row.Metrics.PlannedSp, false),
+        PlanningColumns.Unplanned => Number(row.Metrics.UnplannedSp, row.Metrics.UnplannedSp > 0),
+        PlanningColumns.Cumulative => CumulativeCell(row),
+        PlanningColumns.Capacity => CapacityCell(row),
+        PlanningColumns.Share => ShareCell(row.ShareOfCapacity),
+        PlanningColumns.Dependencies => DependenciesCell(row.Metrics),
+        PlanningColumns.Hygiene => HygieneCell(row.Metrics),
+        PlanningColumns.Arts => ArtsCell(row),
+        PlanningColumns.Teams => Number(row.Metrics.Teams, false),
+        PlanningColumns.TargetEnd => Text(PlanningFormat.Date(row.Level == PlanningLevel.BusinessEpic ? row.TargetEnd : row.Metrics.TargetEnd ?? row.TargetEnd)),
+        PlanningColumns.Funding => Text(row.FundingStatus ?? ""),
+        _ => Text(""),
+    };
+
+    private RenderFragment TotalCell(PlanningColumn column) => column.Key switch
+    {
+        PlanningColumns.Epics => EpicsText(Tree.Total),
+        PlanningColumns.Progress => ProgressCell(Tree.Total),
+        PlanningColumns.Demand => Number(Tree.Total.DemandSp, false),
+        PlanningColumns.Planned => Number(Tree.Total.PlannedSp, false),
+        PlanningColumns.Unplanned => Number(Tree.Total.UnplannedSp, Tree.Total.UnplannedSp > 0),
+        PlanningColumns.Capacity => Text($"{PlanningFormat.Sp(Tree.TotalCapacitySp)}"),
+        PlanningColumns.Share => ShareCell(Tree.TotalCapacitySp > 0 ? (double)(Tree.Total.PlannedSp / Tree.TotalCapacitySp) : null),
+        PlanningColumns.Dependencies => DependenciesCell(Tree.Total),
+        PlanningColumns.Hygiene => HygieneCell(Tree.Total),
+        PlanningColumns.Teams => Number(Tree.Total.Teams, false),
+        PlanningColumns.Arts => Text(Tree.Total.Arts.ToString(CultureInfo.InvariantCulture)),
+        _ => Text(""),
+    };
+
+    private RenderFragment Text(string text) => @<span>@text</span>;
+
+    private RenderFragment Number(decimal value, bool warn) => @<span class="dp-num @(warn ? "warn" : "") @(value == 0 ? "zero" : "")">@PlanningFormat.Sp(value)</span>;
+
+    private RenderFragment Number(int value, bool warn) => @<span class="dp-num @(warn ? "warn" : "") @(value == 0 ? "zero" : "")">@value</span>;
+
+    private RenderFragment RankCell(PlanningRow row)
+    {
+        if (row.Ranks.Count == 0)
+        {
+            return @<span class="dp-num zero">@(row.Level is PlanningLevel.PortfolioEpic or PlanningLevel.BusinessOutcome ? "—" : "")</span>;
+        }
+
+        if (Tree.Lens == PlanningLens.Drawdown)
+        {
+            var rank = row.Ranks[0];
+            return @<span class="dp-rank @(rank.BelowLine ? "below" : "") @(rank.IsSaved ? "" : "unsaved")" title="@RankTooltip(rank)">#@rank.Rank</span>;
+        }
+
+        return @<span class="dp-ranks">
+            @foreach (var rank in row.Ranks)
+            {
+                <span class="dp-rank @(rank.BelowLine ? "below" : "") @(rank.IsSaved ? "" : "unsaved")" title="@RankTooltip(rank)">@rank.ArtAbbreviation @rank.Rank</span>
+            }
+        </span>;
+    }
+
+    private static string RankTooltip(PlanningRank rank) =>
+        $"{rank.ArtName}: rank {rank.Rank}{(rank.BelowLine ? ", below the ART line" : "")}{(rank.IsSaved ? "" : " (not saved in the ART order yet)")}";
+
+    private RenderFragment StatusCell(PlanningRow row)
+    {
+        if (string.IsNullOrWhiteSpace(row.Status))
+        {
+            return @<span class="dp-num zero"></span>;
+        }
+
+        var statusClass = PlanningStatus.Classify(row.Status);
+        return @<span class="dp-status st-@((int)statusClass)" title="@PlanningStatus.Label(statusClass)">@row.Status</span>;
+    }
+
+    private RenderFragment RagCell(PlanningRow row)
+    {
+        var own = RagStatuses.Normalize(row.RagStatus);
+        var worst = row.Level == PlanningLevel.BusinessEpic ? null : row.Metrics.WorstRag;
+        var showWorst = worst is not null && DepartmentPlanningTree.RagRank(worst) < DepartmentPlanningTree.RagRank(own);
+        return @<span class="dp-rag">
+            @if (own is not null)
+            {
+                <span class="dp-dot @PlanningFormat.RagClass(own)" title="@RagStatuses.Label(own)"></span><span class="dp-rag-text">@own</span>
+            }
+            else
+            {
+                <span class="dp-num zero">—</span>
+            }
+            @if (showWorst)
+            {
+                <span class="dp-dot small @PlanningFormat.RagClass(worst)" title="@($"Worst RAG among the business epics underneath: {worst}")"></span>
+            }
+        </span>;
+    }
+
+    private RenderFragment EpicsCell(PlanningRow row) => row.Level == PlanningLevel.BusinessEpic
+        ? @<span class="dp-num zero"></span>
+        : EpicsText(row.Metrics);
+
+    private RenderFragment EpicsText(PlanningMetrics metrics) =>
+        @<span class="dp-num">@metrics.Features<span class="dp-sub"> · @metrics.Done done</span></span>;
+
+    private RenderFragment ProgressCell(PlanningMetrics metrics)
+    {
+        if (metrics.Features == 0)
+        {
+            return @<span class="dp-num zero">—</span>;
+        }
+
+        var done = 100.0 * metrics.Done / metrics.Features;
+        var progress = 100.0 * metrics.InProgress / metrics.Features;
+        var blocked = 100.0 * metrics.Blocked / metrics.Features;
+        return @<span class="dp-progress" title="@($"{metrics.Done} done, {metrics.InProgress} in progress, {metrics.Blocked} blocked, {metrics.NotStarted} not started")">
+            <span class="dp-bar">
+                <span class="seg done" style="width:@Pct(done)"></span><span class="seg progress" style="width:@Pct(progress)"></span><span class="seg blocked" style="width:@Pct(blocked)"></span>
+            </span>
+            <span class="dp-num">@PlanningFormat.Percent(metrics.Progress)</span>
+        </span>;
+    }
+
+    private static string Pct(double value) => value.ToString("0.#", CultureInfo.InvariantCulture) + "%";
+
+    private RenderFragment CumulativeCell(PlanningRow row)
+    {
+        if (row.CumulativePlannedSp is not { } cumulative)
+        {
+            return @<span class="dp-num zero"></span>;
+        }
+
+        return @<span class="dp-num @(row.OverCapacity ? "over" : "")">@PlanningFormat.Sp(cumulative)</span>;
+    }
+
+    private RenderFragment CapacityCell(PlanningRow row)
+    {
+        if (row.CapacitySp is not { } capacity)
+        {
+            return @<span class="dp-num zero"></span>;
+        }
+
+        return @<span class="dp-num" title="@($"{PlanningFormat.Days(row.CapacityDays ?? 0)} working days of the ART's teams")">@PlanningFormat.Sp(capacity)</span>;
+    }
+
+    private RenderFragment ShareCell(double? share)
+    {
+        if (share is null)
+        {
+            return @<span class="dp-num zero">—</span>;
+        }
+
+        var width = Math.Min(100, share.Value * 100);
+        return @<span class="dp-share">
+            <span class="dp-bar thin"><span class="seg share @(share > 1 ? "over" : "")" style="width:@Pct(width)"></span></span>
+            <span class="dp-num @(share > 1 ? "over" : "")">@PlanningFormat.Percent(share)</span>
+        </span>;
+    }
+
+    private RenderFragment DependenciesCell(PlanningMetrics metrics)
+    {
+        if (metrics.Dependencies == 0)
+        {
+            return @<span class="dp-num zero">0</span>;
+        }
+
+        return @<span class="dp-num">@metrics.Dependencies
+            @if (metrics.DependenciesAtRisk > 0)
+            {
+                <span class="dp-badge risk" title="@($"{metrics.DependenciesAtRisk} at risk")">@metrics.DependenciesAtRisk at risk</span>
+            }
+        </span>;
+    }
+
+    private RenderFragment HygieneCell(PlanningMetrics metrics) => metrics.HygieneFailingFeatures == 0
+        ? @<span class="dp-num zero">0</span>
+        : @<span class="dp-num warn">@metrics.HygieneFailingFeatures</span>;
+
+    private RenderFragment ArtsCell(PlanningRow row)
+    {
+        var arts = Tree.Arts.Where(a => row.TeamCells.Keys.Any(teamId => a.TeamIds.Contains(teamId))).ToList();
+        return @<span class="dp-ranks">
+            @foreach (var art in arts)
+            {
+                <span class="dp-art" title="@art.Name">@art.Abbreviation</span>
+            }
+        </span>;
+    }
+
+    private RenderFragment TeamCell(PlanningRow row, PlanningTeam team)
+    {
+        if (!row.TeamCells.TryGetValue(team.Id, out var cell) || (cell.DemandSp == 0 && cell.CumulativeSp is null))
+        {
+            return @<span class="dp-num zero"></span>;
+        }
+
+        if (Tree.Lens == PlanningLens.Drawdown && cell.CumulativeSp is { } cumulative && row.Level != PlanningLevel.Art)
+        {
+            return @<span class="dp-num @(cell.OverCapacity ? "over" : "")" title="@($"{team.Name}: {PlanningFormat.Sp(cell.PlannedSp)} SP planned here, {PlanningFormat.Sp(cumulative)} SP cumulative of {PlanningFormat.Sp(team.CapacitySp)} SP capacity")">
+                @PlanningFormat.Sp(cell.PlannedSp)<span class="dp-sub"> / @PlanningFormat.Sp(cumulative)</span>
+            </span>;
+        }
+
+        return @<span class="dp-num" title="@($"{team.Name}: {PlanningFormat.Sp(cell.PlannedSp)} SP planned of {PlanningFormat.Sp(cell.DemandSp)} SP demand")">
+            @PlanningFormat.Sp(cell.PlannedSp)
+            @if (cell.DemandSp != cell.PlannedSp)
+            {
+                <span class="dp-sub"> / @PlanningFormat.Sp(cell.DemandSp)</span>
+            }
+        </span>;
+    }
+
+    private RenderFragment TeamTotal(PlanningTeam team)
+    {
+        var planned = _plannedByTeam.GetValueOrDefault(team.Id);
+        var over = planned > team.CapacitySp;
+        return @<span class="dp-num @(over ? "over" : "")" title="@($"{team.Name}: {PlanningFormat.Sp(planned)} SP planned of {PlanningFormat.Sp(team.CapacitySp)} SP capacity")">
+            @PlanningFormat.Sp(planned)<span class="dp-sub"> / @PlanningFormat.Sp(team.CapacitySp)</span>
+        </span>;
+    }
+
+    private async Task OnKeyDownAsync(KeyboardEventArgs e)
+    {
+        var visible = Visible;
+        if (visible.Count == 0)
+        {
+            return;
+        }
+
+        var selectedId = _pendingSelection ?? SelectedId;
+        var index = selectedId is null ? -1 : visible.FindIndex(r => r.Id == selectedId);
+        var current = index >= 0 ? visible[index] : null;
+
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                await MoveAsync(visible, NextNode(visible, index, 1));
+                break;
+            case "ArrowUp":
+                await MoveAsync(visible, NextNode(visible, index, -1));
+                break;
+            case "Home":
+                await MoveAsync(visible, NextNode(visible, -1, 1));
+                break;
+            case "End":
+                await MoveAsync(visible, NextNode(visible, visible.Count, -1));
+                break;
+            case "ArrowRight":
+                if (current is { HasChildren: true })
+                {
+                    if (!Expanded.Contains(current.Id))
+                    {
+                        await OnToggle.InvokeAsync(current.Id);
+                    }
+                    else
+                    {
+                        await MoveAsync(visible, NextNode(visible, index, 1));
+                    }
+                }
+                break;
+            case "ArrowLeft":
+                if (current is not null)
+                {
+                    if (current.HasChildren && Expanded.Contains(current.Id))
+                    {
+                        await OnToggle.InvokeAsync(current.Id);
+                    }
+                    else
+                    {
+                        var slash = current.Id.LastIndexOf('/');
+                        if (slash > 0)
+                        {
+                            var parentId = current.Id[..slash];
+                            await MoveAsync(visible, visible.FindIndex(r => r.Id == parentId));
+                        }
+                    }
+                }
+                break;
+            case "Enter":
+                if (current is not null)
+                {
+                    await OnActivate.InvokeAsync(current.Id);
+                }
+                break;
+            case "+":
+                if (current is { HasChildren: true } && !Expanded.Contains(current.Id))
+                {
+                    await OnToggle.InvokeAsync(current.Id);
+                }
+                break;
+            case "-":
+                if (current is { HasChildren: true } && Expanded.Contains(current.Id))
+                {
+                    await OnToggle.InvokeAsync(current.Id);
+                }
+                break;
+        }
+    }
+
+    private static int NextNode(List<PlanningRow> visible, int from, int step)
+    {
+        var index = from + step;
+        while (index >= 0 && index < visible.Count && visible[index].Kind != PlanningRowKind.Node)
+        {
+            index += step;
+        }
+
+        return index >= 0 && index < visible.Count ? index : -1;
+    }
+
+    private async Task MoveAsync(List<PlanningRow> visible, int index)
+    {
+        if (index < 0 || index >= visible.Count)
+        {
+            return;
+        }
+
+        _pendingSelection = visible[index].Id;
+        await OnSelect.InvokeAsync(visible[index].Id);
+        await ScrollToAsync(visible[index].Id);
+    }
+
+    public async Task ScrollToAsync(string rowId)
+    {
+        try
+        {
+            var id = JsonSerializer.Serialize(ElementId(rowId));
+            await JS.InvokeVoidAsync("eval", $"document.getElementById({id})?.scrollIntoView({{block:'nearest'}})");
+        }
+        catch (JSException)
+        {
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    public async Task FocusAsync()
+    {
+        try
+        {
+            await _root.FocusAsync();
+        }
+        catch (JSException)
+        {
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
+}

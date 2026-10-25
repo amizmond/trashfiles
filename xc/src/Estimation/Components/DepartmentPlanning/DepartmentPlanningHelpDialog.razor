@@ -1,0 +1,72 @@
+@namespace Estimation.Components.DepartmentPlanning
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">How to read Department Planning</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-1">One grid, four levels</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Strategic objectives hold portfolio epics, portfolio epics hold business outcomes, and business outcomes hold business epics,
+            the pieces of work the teams deliver. Every number on a higher row adds up the business epics underneath it.
+            Expand a row with the arrow, or use the level buttons to open the whole grid to one depth.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Demand, capacity and the line</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>Demand</b> is the work asked of the teams for the planning period, in story points.
+            <b>Capacity</b> is what the teams can deliver in that period, after holidays and part-time coefficients.
+            Each ART ranks its portfolio epics or business outcomes; the teams fill their capacity in that order.
+            Work above the line is <b>planned</b>, work below a team or ART line is <b>not planned</b>: it does not fit.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Two views</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>Objectives</b> starts from what the department wants to achieve and shows how much of the capacity each objective takes.
+            <b>Capacity drawdown</b> starts from each ART: its items in ranking order, the running total of planned story points,
+            the point where the capacity runs out, and the line. Team columns show the same drawdown per team.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Signals</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>RAG</b> is the delivery confidence reported in Jira; a small second dot shows the worst RAG underneath.
+            <b>Dependencies at risk</b> are links between business epics that are planned out of order or late.
+            <b>Data quality</b> counts business epics that fail an ART hygiene rule, for example missing acceptance criteria.
+            <b>Progress</b> is the share of business epics that are done.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Six ways to look at the same numbers</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The buttons at the top right switch the picture; the department, planning increment, filters, search and the
+            details panel stay the same. <b>Grid</b> gives every level with exact numbers. <b>Treemap</b> shows how much of
+            the planning increment each objective, epic and outcome takes, as area. <b>Waterline</b> fills one column per
+            ART in ranking order, so what pokes out above the capacity line does not fit. <b>Risk quadrant</b> places every
+            portfolio epic by size and risk, with the decision list in the top-right corner. <b>Timeline</b> lays epics and
+            outcomes on a calendar against the planning increment and today. <b>Flow</b> follows the planned story points
+            from the objectives into the ARTs that deliver them, with what is not planned flowing to a separate outlet. The zoom buttons scale the Grid, Treemap, Waterline, Risk quadrant and Flow, and each view remembers its own scale.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Working with the grid</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Click a row to open its details on the right, with links to the pages where the work is managed.
+            Click a column header to sort within each level. Use the zoom buttons for a denser or larger grid,
+            the search box to narrow the grid to matching items and their parents, and the tiles at the top as quick filters.
+            Keyboard: arrows move and expand, Enter opens the details, plus and minus expand and collapse.
+            Export writes the open grid to Excel with one column per level.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Which business epics are counted</MudText>
+        <MudText Typo="Typo.body2">
+            The same ones as on the team capacity boards: business epics planned on the department's teams for the chosen planning period,
+            including those matched by the period's labels and those added to a board by hand. A business epic shared by several teams or
+            strategic objectives is counted once in the totals.
+        </MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" OnClick="@(() => MudDialog.Close())">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+}

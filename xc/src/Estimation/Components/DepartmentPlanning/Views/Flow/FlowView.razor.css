@@ -1,0 +1,186 @@
+.fl-wrap {
+    color-scheme: var(--mud-native-html-color-scheme, light);
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 8px;
+    background: var(--mud-palette-surface);
+    color: var(--mud-palette-text-primary);
+    padding: 8px 12px 10px;
+    font-size: 0.8125rem;
+}
+
+.fl-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+}
+
+.fl-legend {
+    font-size: 0.75rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+.fl-empty {
+    padding: 32px 16px;
+    text-align: center;
+    color: var(--mud-palette-text-secondary);
+}
+
+.fl-canvas {
+    overflow-x: auto;
+    min-height: 240px;
+}
+
+.fl-svg {
+    display: block;
+    margin: 0 auto;
+    width: calc(min(100%, (100vh - 240px) * var(--fl-ratio, 1.6)) * var(--dp-view-zoom, 1) * 0.6);
+    min-width: calc(860px * var(--dp-view-zoom, 1) * 0.6);
+    height: auto;
+    font-family: inherit;
+}
+
+.fl-foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+.fl-link {
+    fill: none;
+    stroke-opacity: 0.5;
+    cursor: pointer;
+    transition: stroke-opacity 0.15s ease;
+}
+
+.fl-link.to-outlet {
+    stroke-opacity: 0.28;
+}
+
+.fl-link.lit {
+    stroke-opacity: 0.9;
+}
+
+.fl-link.to-outlet.lit {
+    stroke-opacity: 0.65;
+}
+
+.fl-link.dim {
+    stroke-opacity: 0.06;
+}
+
+.fl-node rect {
+    transition: opacity 0.15s ease;
+}
+
+.fl-node.dim {
+    opacity: 0.3;
+}
+
+.fl-node ::deep text {
+    pointer-events: none;
+    font-size: 12px;
+    fill: var(--mud-palette-text-primary);
+}
+
+.fl-node ::deep .fl-sub {
+    font-size: 10.5px;
+    fill: var(--mud-palette-text-secondary);
+}
+
+.fl-source.selectable {
+    cursor: pointer;
+    outline: none;
+}
+
+.fl-source.selectable:hover .fl-fill {
+    stroke: var(--mud-palette-text-primary);
+    stroke-width: 1px;
+}
+
+.fl-source.selected .fl-fill,
+.fl-source.selected:hover .fl-fill,
+.fl-source:focus-visible .fl-fill {
+    stroke: var(--mud-palette-primary);
+    stroke-width: 2.5px;
+}
+
+.fl-source.selected ::deep .fl-title {
+    font-weight: 700;
+    fill: var(--mud-palette-primary);
+}
+
+.fl-source.bucket ::deep .fl-title {
+    font-style: italic;
+    fill: var(--mud-palette-text-secondary);
+}
+
+.fl-source.bucket .fl-fill {
+    fill-opacity: 0.6;
+}
+
+.fl-art .fl-fill {
+    fill: var(--mud-palette-text-secondary);
+    fill-opacity: 0.75;
+}
+
+.fl-art .fl-cap {
+    fill: none;
+    stroke: var(--mud-palette-text-secondary);
+    stroke-width: 1.2px;
+    stroke-dasharray: 3 2;
+}
+
+.fl-art .fl-over {
+    fill: var(--mud-palette-error);
+}
+
+.fl-shared {
+    fill: var(--mud-palette-text-secondary);
+    fill-opacity: 0.18;
+    stroke: var(--mud-palette-text-secondary);
+    stroke-width: 1px;
+    stroke-dasharray: 2 2;
+}
+
+.fl-source.selectable ::deep text {
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.fl-art.over ::deep .fl-sub {
+    fill: var(--mud-palette-error);
+    font-weight: 600;
+}
+
+.fl-outlet .fl-fill {
+    fill: var(--mud-palette-text-disabled);
+}
+
+.fl-outlet ::deep .fl-title {
+    fill: var(--mud-palette-text-secondary);
+}
+
+.fl-link.c-none { stroke: var(--mud-palette-text-secondary); }
+.fl-link.c0 { stroke: #2a78d6; stroke: light-dark(#2a78d6, #3987e5); }
+.fl-link.c1 { stroke: #eb6834; stroke: light-dark(#eb6834, #d95926); }
+.fl-link.c2 { stroke: #1baf7a; stroke: light-dark(#1baf7a, #199e70); }
+.fl-link.c3 { stroke: #eda100; stroke: light-dark(#eda100, #c98500); }
+.fl-link.c4 { stroke: #e87ba4; stroke: light-dark(#e87ba4, #d55181); }
+.fl-link.c5 { stroke: #008300; stroke: light-dark(#008300, #008300); }
+.fl-link.c6 { stroke: #6250d6; stroke: light-dark(#6250d6, #9085e9); }
+.fl-link.c7 { stroke: #e34948; stroke: light-dark(#e34948, #e66767); }
+
+.fl-source.c-none .fl-fill { fill: var(--mud-palette-text-secondary); }
+.fl-source.c0 .fl-fill { fill: #2a78d6; fill: light-dark(#2a78d6, #3987e5); }
+.fl-source.c1 .fl-fill { fill: #eb6834; fill: light-dark(#eb6834, #d95926); }
+.fl-source.c2 .fl-fill { fill: #1baf7a; fill: light-dark(#1baf7a, #199e70); }
+.fl-source.c3 .fl-fill { fill: #eda100; fill: light-dark(#eda100, #c98500); }
+.fl-source.c4 .fl-fill { fill: #e87ba4; fill: light-dark(#e87ba4, #d55181); }
+.fl-source.c5 .fl-fill { fill: #008300; fill: light-dark(#008300, #008300); }
+.fl-source.c6 .fl-fill { fill: #6250d6; fill: light-dark(#6250d6, #9085e9); }
+.fl-source.c7 .fl-fill { fill: #e34948; fill: light-dark(#e34948, #e66767); }
