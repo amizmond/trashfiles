@@ -1,0 +1,1316 @@
+@attribute [Route(RoutingPath.HumanResources)]
+
+@inject IHumanResourceService HrService
+@inject ISkillService SkillService
+@inject ITeamService TeamService
+@inject IArtService ArtService
+@inject IDepartmentService DepartmentService
+@inject IStaticSettingsService StaticSettingsService
+@inject IHumanResourceUploadService HrUploadService
+@inject IBrowserDownloadService DownloadService
+@inject NavigationManager Navigation
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject IPermissionGuard PermissionGuard
+@inject GlobalFilterState GlobalFilter
+@inject HumanResourceUploadPreviewState UploadPreview
+@implements IDisposable
+
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.Extensions.Primitives
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Train.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+
+<AccessGuard PageKey="HumanResources">
+<PageTitle>Resources</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6">Resources</MudText>
+
+        <MudToolBar>
+            <MudSpacer />
+            <div style="position:relative; margin-right: 10px;">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="_isLoading"
+                           OnClick="() => _columnsPopoverOpen = !_columnsPopoverOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsPopoverOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight" Class="pa-4" Style="min-width:280px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Toggle Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsPopoverOpen = false" />
+                    </div>
+                    <MudButton Variant="Variant.Text" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@(_allColumnsSelected ? Icons.Material.Filled.Deselect : Icons.Material.Filled.SelectAll)"
+                               OnClick="ToggleAllColumns" Class="mb-1">
+                        @(_allColumnsSelected ? "Unselect All" : "Select All")
+                    </MudButton>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" @bind-Value="_showFullName" Label="Full Name" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showActive" Label="Active" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showTeam" Label="Team" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showTeamRole" Label="Team Role" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showArt" Label="ART" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showCountry" Label="Country" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showCity" Label="City" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" @bind-Value="_showCategory" Label="Category" Color="Color.Primary" Size="Size.Small" />
+                        @foreach (var skill in _allSkills)
+                        {
+                            <MudSwitch T="bool" Value="_visibleSkillIds.Contains(skill.Id)"
+                                       ValueChanged="@((bool v) => ToggleSkillColumn(skill.Id, v))"
+                                       Label="@skill.Name" Color="Color.Primary" Size="Size.Small" />
+                        }
+                        <MudSwitch T="bool" @bind-Value="_showActions" Label="Actions" Color="Color.Primary" Size="Size.Small" />
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudBadge Content="@ActiveFilterCount" Color="Color.Secondary" Overlap="true" Bordered="true"
+                      Visible="@(ActiveFilterCount > 0)" Style="margin-right: 10px">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.FilterList"
+                           Disabled="_isLoading"
+                           OnClick="() => _drawerOpen = !_drawerOpen">
+                    Filter
+                </MudButton>
+            </MudBadge>
+
+            @if (_canEdit)
+            {
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.PersonAdd"
+                           Style="margin-right: 10px"
+                           OnClick="@(() => Navigation.NavigateTo(RoutingPath.HumanResourcesNew))">
+                    New
+                </MudButton>
+
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Style="margin-right: 10px"
+                           Disabled="_isLoading || _exporting"
+                           OnClick="ExportFilteredAsync">
+                    Export Filtered
+                </MudButton>
+
+                <MudFileUpload T="IBrowserFile"
+                               Accept=".xlsx"
+                               MaximumFileCount="1"
+                               FilesChanged="OnUploadFileSelected">
+                    <CustomContent>
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Secondary"
+                                   StartIcon="@Icons.Material.Filled.UploadFile"
+                                   Disabled="_isLoading || _exporting"
+                                   OnClick="@context.OpenFilePickerAsync">
+                            Upload
+                        </MudButton>
+                    </CustomContent>
+                </MudFileUpload>
+            }
+        </MudToolBar>
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                    Variant="DrawerVariant.Temporary" Width="400px"
+                    Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <div class="d-flex align-baseline gap-2">
+                        <MudText Typo="Typo.h6">Filters</MudText>
+                        @if (_scopeCount is { } scopeCount)
+                        {
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@_matchCount of @scopeCount</MudText>
+                        }
+                    </div>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            <div class="d-flex flex-column gap-3 pa-4">
+                @if (!_isLoading)
+                {
+                <MudTextField @bind-Value="_searchTerm" Label="Search" Placeholder="Name or employee number"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search" Clearable Immediate
+                              DebounceInterval="400" Variant="Variant.Outlined"
+                              OnDebounceIntervalElapsed="OnSearchChanged" />
+
+                <div class="d-flex flex-column gap-1">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Status</MudText>
+                    <MudToggleGroup T="string" Value="@(_filterActiveStatus ?? AnyStatus)" ValueChanged="OnFilterActiveStatusChanged"
+                                    SelectionMode="SelectionMode.SingleSelection"
+                                    Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                        <MudToggleItem Value="@AnyStatus">All</MudToggleItem>
+                        <MudToggleItem Value="@ActiveStatus">Active</MudToggleItem>
+                        <MudToggleItem Value="@InactiveStatus">Inactive</MudToggleItem>
+                    </MudToggleGroup>
+                </div>
+
+                <fieldset class="rounded-lg pa-3 d-flex flex-column gap-3"
+                          style="border:1px solid var(--mud-palette-lines-default); margin:0">
+                    <legend class="px-2" title="Department, ART, Team and Team role must all match the same team">
+                        <MudText Typo="Typo.subtitle2" Class="mud-text-secondary">Team membership</MudText>
+                    </legend>
+
+                    <SearchableDropdown T="string"
+                                        ShowSearch="false"
+                                        Items="_availableDepartments"
+                                        Values="_filterDepartmentNames"
+                                        ValuesChanged="OnFilterDepartmentNamesChanged"
+                                        MultiSelect="true"
+                                        Label="Department" />
+
+                    <SearchableDropdown T="string"
+                                        Items="_artChoices"
+                                        Values="_filterArtNames"
+                                        ValuesChanged="OnFilterArtNamesChanged"
+                                        MultiSelect="true"
+                                        Label="ART" />
+
+                    <div class="d-flex align-end gap-2">
+                        <SearchableDropdown T="string"
+                                            Items="_teamChoices"
+                                            Values="_filterTeamNames"
+                                            ValuesChanged="OnFilterTeamNamesChanged"
+                                            MultiSelect="true"
+                                            Label="Team"
+                                            Style="flex:1" />
+                        <MudTooltip Text="Negate: find resources without a team or exclude selected">
+                            <MudCheckBox T="bool"
+                                         Value="_filterTeamNot"
+                                         ValueChanged="OnFilterTeamNotChanged"
+                                         Label="Not"
+                                         Dense
+                                         Color="Color.Secondary" />
+                        </MudTooltip>
+                    </div>
+
+                    <SearchableDropdown T="string"
+                                        ShowSearch="false"
+                                        Items="_availableTeamRoles"
+                                        Values="_filterTeamRoleNames"
+                                        ValuesChanged="OnFilterTeamRoleNamesChanged"
+                                        MultiSelect="true"
+                                        Label="Team Role" />
+                </fieldset>
+
+                @foreach (var filter in ValueFilters)
+                {
+                    <div @key="filter.Key" class="d-flex align-end gap-2">
+                        <SearchableDropdown T="string"
+                                            ShowSearch="filter.ShowSearch"
+                                            Items="filter.Choices"
+                                            Values="filter.Selected"
+                                            ValuesChanged="@((IReadOnlyCollection<string> v) => OnValueFilterChanged(filter, v))"
+                                            MultiSelect="true"
+                                            Label="@filter.Label"
+                                            Style="flex:1" />
+                        <MudTooltip Text="@($"Negate: find resources without {filter.NoValueText} or exclude selected")">
+                            <MudCheckBox T="bool"
+                                         Value="filter.Not"
+                                         ValueChanged="@((bool v) => OnValueFilterNotChanged(filter, v))"
+                                         Label="Not"
+                                         Dense
+                                         Color="Color.Secondary" />
+                        </MudTooltip>
+                    </div>
+                }
+
+                <div class="d-flex align-end gap-2">
+                    <SearchableDropdown T="string"
+                                        Items="_availableSkillNames"
+                                        Values="_filterSkillNames"
+                                        ValuesChanged="OnFilterSkillNamesChanged"
+                                        MultiSelect="true"
+                                        Label="Skill"
+                                        Style="flex:1" />
+                    <MudTooltip Text="All: only resources who have every selected skill">
+                        <MudCheckBox T="bool"
+                                     Value="_filterSkillAll"
+                                     ValueChanged="OnFilterSkillAllChanged"
+                                     Label="All"
+                                     Dense
+                                     Color="Color.Secondary" />
+                    </MudTooltip>
+                </div>
+
+                <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                           StartIcon="@Icons.Material.Filled.ClearAll"
+                           FullWidth OnClick="ClearFilters" Class="mt-2">
+                    Clear Filters
+                </MudButton>
+                }
+            </div>
+        </MudDrawer>
+
+        <MudDivider />
+
+        @if (_isLoading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-4" />
+        }
+        else
+        {
+        <MudTable @ref="_table"
+                  T="HumanResourceListItem"
+                  ServerData="ServerReload"
+                  @bind-RowsPerPage="_pageSize"
+                  @bind-CurrentPage="_page"
+                  Hover
+                  Striped
+                  Dense
+                  Bordered="true"
+                  LoadingProgressColor="Color.Primary"
+                  SortLabel="Sort By"
+                  Class="rounded-0"
+                  HorizontalScrollbar
+                  Elevation="0">
+
+            <HeaderContent>
+                <MudTh Class="sticky-left-header" Style="min-width:250px" hidden="@(!_showFullName)">
+                    <MudTableSortLabel T="HumanResourceListItem" SortLabel="fullname">
+                        Full Name
+                    </MudTableSortLabel>
+                </MudTh>
+                <MudTh Style="text-align:center" hidden="@(!_showActive)">Active</MudTh>
+                <MudTh Style="text-align:center; min-width:150px" hidden="@(!_showTeam)">Team</MudTh>
+                <MudTh Style="text-align:center; min-width:130px" hidden="@(!_showTeamRole)">Team Role</MudTh>
+                <MudTh Style="text-align:center; min-width:150px" hidden="@(!_showArt)">ART</MudTh>
+                <MudTh Style="text-align:center; min-width:130px" hidden="@(!_showCountry)">Country</MudTh>
+                <MudTh Style="text-align:center; min-width:130px" hidden="@(!_showCity)">City</MudTh>
+                <MudTh Style="text-align:center; min-width:130px" hidden="@(!_showCategory)">Category</MudTh>
+
+                @foreach (var skill in _allSkills)
+                {
+                    <MudTh Style="text-align:center; min-width:130px" hidden="@(!_visibleSkillIds.Contains(skill.Id))">
+                        <MudTooltip Text="@skill.Description" Placement="Placement.Top">
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                @skill.Name
+                            </MudText>
+                        </MudTooltip>
+                    </MudTh>
+                }
+
+                @if (_canEdit)
+                {
+                    <MudTh Class="sticky-right-header" Style="text-align:right" hidden="@(!_showActions)">Actions</MudTh>
+                }
+            </HeaderContent>
+
+            <RowTemplate>
+                <MudTd DataLabel="Full Name" Class="sticky-left" hidden="@(!_showFullName)">
+                    <div class="d-flex align-center gap-2">
+                        <MudAvatar Color="Color.Primary" Size="Size.Small">
+                            @context.FullName.First()
+                        </MudAvatar>
+                        <div>
+                            <MudText Typo="Typo.body2" Class="font-weight-bold">
+                                @context.FullName
+                            </MudText>
+                            @if (!string.IsNullOrEmpty(context.EmployeeNumber))
+                            {
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    #@context.EmployeeNumber · @context.EmployeeName
+                                </MudText>
+                            }
+                            else
+                            {
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                                    @context.EmployeeName
+                                </MudText>
+                            }
+                        </div>
+                    </div>
+                </MudTd>
+                <MudTd DataLabel="Active" Style="text-align:center" hidden="@(!_showActive)">
+                    @if (context.IsActive)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled">Active</MudChip>
+                    }
+                    else
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">Inactive</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Team" Style="text-align:center" hidden="@(!_showTeam)">
+                    @foreach (var t in context.Teams)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Class="mr-1"
+                                 Href="@($"{RoutingPath.Teams}/{t.TeamId}")">
+                            @t.TeamName
+                        </MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Team Role" Style="text-align:center" hidden="@(!_showTeamRole)">
+                    @foreach (var roleName in context.Teams
+                        .Select(t => t.TeamRoleName)
+                        .Where(n => !string.IsNullOrEmpty(n))
+                        .Distinct()
+                        .OrderBy(n => n))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined" Class="mr-1">@roleName</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="ART" Style="text-align:center" hidden="@(!_showArt)">
+                    @foreach (var artName in context.Teams.SelectMany(t => t.ArtNames).Distinct().OrderBy(n => n))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Filled" Class="mr-1">@artName</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Country" Style="text-align:center" hidden="@(!_showCountry)">
+                    @if (!string.IsNullOrEmpty(context.CountryName))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@context.CountryName</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="City" Style="text-align:center" hidden="@(!_showCity)">
+                    @if (!string.IsNullOrEmpty(context.CityName))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@context.CityName</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Category" Style="text-align:center" hidden="@(!_showCategory)">
+                    @if (!string.IsNullOrEmpty(context.EmployeeCategoryName))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined">@context.EmployeeCategoryName</MudChip>
+                    }
+                </MudTd>
+
+                @foreach (var skill in _allSkills)
+                {
+                    context.SkillMap.TryGetValue(skill.Id, out var assignment);
+                    <MudTd DataLabel="@skill.Name" Style="text-align:center" hidden="@(!_visibleSkillIds.Contains(skill.Id))">
+                        @if (assignment is not null)
+                        {
+                            @if (!string.IsNullOrEmpty(assignment.SkillLevelName))
+                            {
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="Color.Primary"
+                                         Variant="Variant.Filled"
+                                         title="@assignment.SkillLevelDescription">
+                                    @assignment.SkillLevelName
+                                </MudChip>
+                            }
+                            else
+                            {
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Color="Color.Default"
+                                         Variant="Variant.Outlined"
+                                         title="Skill assigned, no level set">
+                                    Assigned
+                                </MudChip>
+                            }
+                        }
+                    </MudTd>
+                }
+
+                @if (_canEdit)
+                {
+                    <MudTd Class="sticky-right" Style="text-align:right; min-width:150px" id="actionButtons" hidden="@(!_showActions)">
+                        <MudFab Class="m-2" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => NavigateToEdit(context.Id))" />
+                        <MudFab Class="m-2" StartIcon="@Icons.Material.Filled.DeleteForever" IconColor="Color.Secondary" Size="Size.Small" OnClick="() => ConfirmDeleteAsync(context)" />
+                    </MudTd>
+                }
+            </RowTemplate>
+
+            <NoRecordsContent>
+                @if (ActiveFilterCount > 0)
+                {
+                    <div class="d-flex flex-column align-center gap-2 pa-6">
+                        <MudText Class="mud-text-secondary">No resources match the current filters.</MudText>
+                        <MudButton Variant="Variant.Outlined" Color="Color.Secondary" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.ClearAll" OnClick="ClearFilters">
+                            Clear Filters
+                        </MudButton>
+                    </div>
+                }
+                else
+                {
+                    <MudText Class="pa-6 mud-text-secondary">
+                        @(_canEdit ? "No resources found. Create one to get started." : "No resources found.")
+                    </MudText>
+                }
+            </NoRecordsContent>
+
+            <PagerContent>
+                <MudTablePager PageSizeOptions="PageSizeOptions" />
+            </PagerContent>
+
+        </MudTable>
+        }
+
+    </MudPaper>
+</div>
+
+
+</AccessGuard>
+
+@code {
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private const string AnyStatus = "All";
+    private const string ActiveStatus = "Active";
+    private const string InactiveStatus = "Inactive";
+
+    private static readonly int[] PageSizeOptions = { 10, 25, 50, 100 };
+
+    private static readonly string[] BaseFilterQueryKeys =
+        ["gf", "search", "skill", "active", "team", "teamNot", "role", "art", "dept"];
+
+    private sealed class ValueFilter(string key, string label, string noValueText, bool showSearch = true)
+    {
+        public string Key { get; } = key;
+        public string NotKey => Key + "Not";
+        public string Label { get; } = label;
+        public string NoValueText { get; } = noValueText;
+        public bool ShowSearch { get; } = showSearch;
+        public List<string> Options { get; set; } = new();
+        public List<string> Choices { get; set; } = new();
+        public IReadOnlyCollection<string> Selected { get; set; } = [];
+        public bool Not { get; set; }
+        public bool IsActive => Selected.Count > 0 || Not;
+        public List<string>? SelectedOrNull => Selected.Count > 0 ? Selected.ToList() : null;
+
+        public void Reset()
+        {
+            Selected = [];
+            Not = false;
+        }
+    }
+
+    private readonly ValueFilter _employeeCategory = new("empCat", "Employee Category", "an employee category", showSearch: false);
+    private readonly ValueFilter _employeeType = new("empType", "Employee Type", "an employee type");
+    private readonly ValueFilter _employeeRole = new("empRole", "Employee Role", "an employee role");
+    private readonly ValueFilter _employeeVendor = new("empVendor", "Employee Vendor", "an employee vendor");
+    private readonly ValueFilter _corporateGrade = new("grade", "Corporate Grade", "a corporate grade");
+    private readonly ValueFilter _country = new("country", "Country", "a country");
+    private readonly ValueFilter _city = new("city", "City", "a city");
+
+    private ValueFilter[] ValueFilters =>
+        [_employeeCategory, _employeeType, _employeeRole, _employeeVendor, _corporateGrade, _country, _city];
+
+    private IEnumerable<string> FilterQueryKeys =>
+        BaseFilterQueryKeys.Concat(ValueFilters.SelectMany(f => new[] { f.Key, f.NotKey }));
+
+    private MudTable<HumanResourceListItem>? _table;
+    private List<Skill> _allSkills = new();
+    private bool _isLoading = true;
+    private bool _canEdit;
+    private bool _exporting;
+    private bool _drawerOpen;
+    private bool _columnsPopoverOpen;
+    private bool _suppressUrlUpdate = true;
+    private TableData<HumanResourceListItem> _lastData = new() { Items = [], TotalItems = 0 };
+    private bool _disposed;
+    private bool _globalFilterCleared;
+    private int _page;
+    private int _pageSize = 10;
+    private int _matchCount;
+    private int? _scopeCount;
+    private readonly List<string> _urlWrites = new();
+    private string? _readUri;
+
+    private bool _showFullName = true;
+    private bool _showActive = true;
+    private bool _showTeam = true;
+    private bool _showTeamRole = true;
+    private bool _showArt = true;
+    private bool _showCountry;
+    private bool _showCity;
+    private bool _showCategory;
+    private bool _showActions = true;
+    private HashSet<int> _visibleSkillIds = new();
+
+    private IReadOnlyCollection<int>? _allowedTrainIds;
+    private List<string> _allDepartments = new();
+    private List<string> _allArts = new();
+    private Dictionary<string, string> _artDepartments = new(StringComparer.OrdinalIgnoreCase);
+    private List<HrTeamOption> _teamOptions = new();
+    private List<string> _allTeamRoles = new();
+    private List<string> _allSkillNames = new();
+    private List<HrCityOption> _cityOptions = new();
+
+    private List<string> _availableDepartments = new();
+    private List<string> _artChoices = new();
+    private List<string> _teamChoices = new();
+    private List<string> _availableTeamRoles = new();
+    private List<string> _availableSkillNames = new();
+
+    private string? _searchTerm;
+    private string? _filterActiveStatus;
+    private IReadOnlyCollection<string> _filterSkillNames = [];
+    private bool _filterSkillAll;
+    private IReadOnlyCollection<string> _filterTeamNames = [];
+    private bool _filterTeamNot;
+    private IReadOnlyCollection<string> _filterTeamRoleNames = [];
+    private IReadOnlyCollection<string> _filterArtNames = [];
+    private IReadOnlyCollection<string> _filterDepartmentNames = [];
+
+    private int ActiveFilterCount =>
+        new[]
+        {
+            !string.IsNullOrWhiteSpace(_searchTerm),
+            _filterDepartmentNames.Count > 0,
+            _filterArtNames.Count > 0,
+            _filterTeamNames.Count > 0 || _filterTeamNot,
+            _filterTeamRoleNames.Count > 0,
+            !string.IsNullOrWhiteSpace(_filterActiveStatus),
+            _filterSkillNames.Count > 0,
+        }.Count(active => active)
+        + ValueFilters.Count(f => f.IsActive);
+
+    private bool _allColumnsSelected =>
+        _showFullName && _showActive && _showTeam && _showTeamRole && _showArt && _showCountry && _showCity && _showCategory && _showActions
+        && _visibleSkillIds.Count == _allSkills.Count;
+
+    private void ToggleAllColumns()
+    {
+        var target = !_allColumnsSelected;
+        _showFullName = target;
+        _showActive = target;
+        _showTeam = target;
+        _showTeamRole = target;
+        _showArt = target;
+        _showCountry = target;
+        _showCity = target;
+        _showCategory = target;
+        _showActions = target;
+        if (target)
+        {
+            _visibleSkillIds = new HashSet<int>(_allSkills.Select(s => s.Id));
+        }
+        else
+        {
+            _visibleSkillIds.Clear();
+        }
+    }
+
+    private void ToggleSkillColumn(int skillId, bool visible)
+    {
+        if (visible)
+        {
+            _visibleSkillIds.Add(skillId);
+        }
+        else
+        {
+            _visibleSkillIds.Remove(skillId);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _canEdit = UserPageAccess.TryGetValue("HumanResources", out var access) && access == AccessLevel.Edit;
+
+        if (!RendererInfo.IsInteractive)
+        {
+            return;
+        }
+
+        Navigation.LocationChanged += OnLocationChanged;
+
+        var permissions = await PermissionGuard.GetPermissionsAsync();
+        _allowedTrainIds = permissions.GetAllowedTrains("HumanResources", AccessLevel.ReadOnly);
+
+        _allSkills = await SkillService.GetAllAsync();
+        _visibleSkillIds = new HashSet<int>(_allSkills.Select(s => s.Id));
+        _allSkillNames = _allSkills.Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        var teamRoles = await StaticSettingsService.GetAllTeamRolesAsync();
+        _allTeamRoles = teamRoles.Select(r => r.Name).OrderBy(n => n).ToList();
+
+        var arts = await ArtService.GetAllAsync();
+        _allArts = arts
+            .Where(a => _allowedTrainIds is null || _allowedTrainIds.Contains(a.Id))
+            .Select(a => a.Name).OrderBy(n => n).ToList();
+
+        var departments = await DepartmentService.GetAllAsync();
+        _allDepartments = departments
+            .Where(d => _allowedTrainIds is null || d.CapitalProjects.Any(cp => _allowedTrainIds.Contains(cp.Id)))
+            .Select(d => d.Name).OrderBy(n => n).ToList();
+        _artDepartments = departments
+            .SelectMany(d => d.CapitalProjects.Select(cp => (Art: cp.Name, Department: d.Name)))
+            .DistinctBy(x => x.Art, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(x => x.Art, x => x.Department, StringComparer.OrdinalIgnoreCase);
+
+        var options = await HrService.GetFilterOptionsAsync(_allowedTrainIds);
+        _teamOptions = options.Teams;
+        _cityOptions = options.Cities;
+        _country.Options = SortedNames(_cityOptions.Select(c => c.CountryName));
+        _city.Options = SortedNames(_cityOptions.Select(c => c.Name));
+
+        _employeeCategory.Options = SortedNames((await StaticSettingsService.GetAllEmployeeCategoriesAsync()).Select(c => c.Name));
+        _employeeType.Options = SortedNames((await StaticSettingsService.GetAllEmployeeTypesAsync()).Select(t => t.Name));
+        _employeeRole.Options = SortedNames((await StaticSettingsService.GetAllEmployeeRolesAsync()).Select(r => r.Name));
+        _employeeVendor.Options = SortedNames((await StaticSettingsService.GetAllEmployeeVendorsAsync()).Select(v => v.Name));
+        _corporateGrade.Options = SortedNames((await StaticSettingsService.GetAllCorporateGradesAsync()).Select(g => g.Name));
+
+        await GlobalFilter.EnsureLoadedAsync();
+        if (!ReadUrlParams())
+        {
+            ApplyGlobalFilter();
+        }
+
+        MatchSelectedToOptions();
+
+        _isLoading = false;
+        _suppressUrlUpdate = false;
+
+        var current = Navigation.ToAbsoluteUri(Navigation.Uri);
+        if (current.AbsoluteUri != _readUri && IsListUri(current))
+        {
+            await ReloadFromUrlAsync();
+        }
+    }
+
+    private void ApplyGlobalFilter()
+    {
+        var values = GlobalFilter.Values;
+
+        _filterDepartmentNames = GlobalFilterApply.Names(values.DepartmentNames, _filterDepartmentNames, _allDepartments);
+        _filterArtNames = GlobalFilterApply.Names(values.ArtNames, _filterArtNames, _allArts);
+        _filterTeamNames = GlobalFilterApply.Names(values.TeamNames, _filterTeamNames, []);
+    }
+
+    private bool ReadUrlParams()
+    {
+        var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+        _readUri = uri.AbsoluteUri;
+        var q = QueryHelpers.ParseQuery(uri.Query);
+        var hasFilterParams = FilterQueryKeys.Any(k => q.TryGetValue(k, out var v) && !string.IsNullOrWhiteSpace(v));
+
+        if (q.TryGetValue("gf", out var gf) && gf == "0")
+        {
+            _globalFilterCleared = true;
+        }
+
+        if (q.TryGetValue("search", out var search) && !string.IsNullOrWhiteSpace(search))
+        {
+            _searchTerm = search.ToString();
+        }
+
+        if (q.TryGetValue("active", out var active))
+        {
+            _filterActiveStatus = new[] { ActiveStatus, InactiveStatus }
+                .FirstOrDefault(s => string.Equals(s, active.ToString().Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        _filterSkillNames = ReadList(q, "skill");
+        _filterSkillAll = ReadFlag(q, "skillAll");
+        _filterTeamNames = ReadList(q, "team");
+        _filterTeamNot = ReadFlag(q, "teamNot");
+        _filterTeamRoleNames = ReadList(q, "role");
+        _filterArtNames = ReadList(q, "art");
+        _filterDepartmentNames = ReadList(q, "dept");
+
+        foreach (var filter in ValueFilters)
+        {
+            filter.Selected = ReadList(q, filter.Key);
+            filter.Not = ReadFlag(q, filter.NotKey);
+        }
+
+        if (q.TryGetValue("page", out var page) && int.TryParse(page, out var pageParsed) && pageParsed > 0)
+        {
+            _page = pageParsed;
+        }
+
+        if (q.TryGetValue("pageSize", out var pageSize) && int.TryParse(pageSize, out var pageSizeParsed) && PageSizeOptions.Contains(pageSizeParsed))
+        {
+            _pageSize = pageSizeParsed;
+        }
+
+        return hasFilterParams;
+    }
+
+    private static string[] ReadList(Dictionary<string, StringValues> query, string key) =>
+        query.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value)
+            ? value.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : [];
+
+    private static bool ReadFlag(Dictionary<string, StringValues> query, string key) =>
+        query.TryGetValue(key, out var value) && bool.TryParse(value, out var parsed) && parsed;
+
+    private void MatchSelectedToOptions()
+    {
+        _filterDepartmentNames = MatchOptions(_filterDepartmentNames, _allDepartments);
+        _filterArtNames = MatchOptions(_filterArtNames, _allArts);
+        _filterTeamNames = MatchOptions(_filterTeamNames, _teamOptions.Select(t => t.Name));
+        _filterTeamRoleNames = MatchOptions(_filterTeamRoleNames, _allTeamRoles);
+        _filterSkillNames = MatchOptions(_filterSkillNames, _allSkillNames);
+
+        foreach (var filter in ValueFilters)
+        {
+            filter.Selected = MatchOptions(filter.Selected, filter.Options);
+        }
+
+        RebuildChoices();
+    }
+
+    private static List<string> SortedNames(IEnumerable<string> names) =>
+        names.Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList();
+
+    private static string[] MatchOptions(IEnumerable<string> values, IEnumerable<string> options) =>
+        values
+            .Select(v => options.FirstOrDefault(o => string.Equals(o, v, StringComparison.OrdinalIgnoreCase)) ?? v)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private void RebuildChoices()
+    {
+        var departments = new HashSet<string>(_filterDepartmentNames, StringComparer.OrdinalIgnoreCase);
+        var arts = new HashSet<string>(_filterArtNames, StringComparer.OrdinalIgnoreCase);
+        var countries = new HashSet<string>(_country.Selected, StringComparer.OrdinalIgnoreCase);
+
+        bool InSelectedDepartments(string art) =>
+            departments.Count == 0 || (_artDepartments.TryGetValue(art, out var department) && departments.Contains(department));
+
+        _availableDepartments = FilterChoices.WithSelected(_allDepartments, _filterDepartmentNames);
+        _artChoices = FilterChoices.WithSelected(_allArts.Where(InSelectedDepartments), _filterArtNames);
+        _teamChoices = FilterChoices.WithSelected(
+            _teamOptions
+                .Where(t => (arts.Count == 0 || t.ArtNames.Any(arts.Contains))
+                    && (departments.Count == 0 || t.ArtNames.Any(InSelectedDepartments)))
+                .Select(t => t.Name),
+            _filterTeamNames);
+        _availableTeamRoles = FilterChoices.WithSelected(_allTeamRoles, _filterTeamRoleNames);
+        _availableSkillNames = FilterChoices.WithSelected(_allSkillNames, _filterSkillNames);
+
+        foreach (var filter in ValueFilters)
+        {
+            filter.Choices = FilterChoices.WithSelected(filter.Options, filter.Selected);
+        }
+
+        _city.Choices = FilterChoices.WithSelected(
+            _cityOptions
+                .Where(c => countries.Count == 0 || countries.Contains(c.CountryName) != _country.Not)
+                .Select(c => c.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase),
+            _city.Selected);
+    }
+
+    private void UpdateUrl()
+    {
+        if (_suppressUrlUpdate || _disposed || !IsListUri(Navigation.ToAbsoluteUri(Navigation.Uri)))
+        {
+            return;
+        }
+
+        var query = new Dictionary<string, object?>
+        {
+            ["search"] = string.IsNullOrWhiteSpace(_searchTerm) ? null : _searchTerm,
+            ["skill"] = JoinOrNull(_filterSkillNames),
+            ["skillAll"] = _filterSkillAll && _filterSkillNames.Count > 0 ? "true" : null,
+            ["active"] = _filterActiveStatus,
+            ["team"] = JoinOrNull(_filterTeamNames),
+            ["teamNot"] = _filterTeamNot ? "true" : null,
+            ["role"] = JoinOrNull(_filterTeamRoleNames),
+            ["art"] = JoinOrNull(_filterArtNames),
+            ["dept"] = JoinOrNull(_filterDepartmentNames),
+            ["gf"] = _globalFilterCleared ? "0" : null,
+            ["page"] = _page > 0 ? _page.ToString() : null,
+            ["pageSize"] = _pageSize != 10 ? _pageSize.ToString() : null,
+        };
+
+        foreach (var filter in ValueFilters)
+        {
+            query[filter.Key] = JoinOrNull(filter.Selected);
+            query[filter.NotKey] = filter.Not ? "true" : null;
+        }
+
+        var uri = Navigation.ToAbsoluteUri(Navigation.GetUriWithQueryParameters(query)).AbsoluteUri;
+        if (uri == Navigation.ToAbsoluteUri(Navigation.Uri).AbsoluteUri)
+        {
+            return;
+        }
+
+        _urlWrites.Add(uri);
+        Navigation.NavigateTo(uri, replace: true);
+    }
+
+    private static string? JoinOrNull(IReadOnlyCollection<string> values) =>
+        values.Count > 0 ? string.Join(",", values) : null;
+
+    private bool IsListUri(Uri uri)
+    {
+        var path = Navigation.ToBaseRelativePath(uri.GetLeftPart(UriPartial.Path));
+        return string.Equals("/" + path.TrimEnd('/'), RoutingPath.HumanResources, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        if (_isLoading)
+        {
+            return;
+        }
+
+        var uri = Navigation.ToAbsoluteUri(e.Location);
+        var written = _urlWrites.IndexOf(uri.AbsoluteUri);
+        if (written >= 0)
+        {
+            _urlWrites.RemoveRange(0, written + 1);
+            return;
+        }
+
+        _urlWrites.Clear();
+        if (IsListUri(uri))
+        {
+            _ = InvokeAsync(ReloadFromUrlAsync);
+        }
+    }
+
+    private async Task ReloadFromUrlAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        ResetFilters();
+        _globalFilterCleared = false;
+        _page = 0;
+        _pageSize = 10;
+
+        if (!ReadUrlParams())
+        {
+            ApplyGlobalFilter();
+        }
+
+        MatchSelectedToOptions();
+        StateHasChanged();
+
+        if (_table is not null)
+        {
+            await _table.ReloadServerData();
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        Navigation.LocationChanged -= OnLocationChanged;
+    }
+
+    private void NavigateToEdit(int id)
+    {
+        var currentUri = new Uri(Navigation.Uri);
+        var returnUrl = currentUri.PathAndQuery;
+        var editUri = Navigation.GetUriWithQueryParameters(
+            $"{RoutingPath.HumanResources}/{id}",
+            new Dictionary<string, object?> { ["returnUrl"] = returnUrl });
+        Navigation.NavigateTo(editUri);
+    }
+
+    private async Task<TableData<HumanResourceListItem>> ServerReload(TableState state, CancellationToken ct)
+    {
+        var requestedPage = Math.Max(0, state.Page);
+        var requestedPageSize = state.PageSize > 0 ? state.PageSize : 10;
+
+        HrListPagedResult result;
+        try
+        {
+            result = await HrService.GetPagedListAsync(
+                requestedPage,
+                requestedPageSize,
+                state.SortLabel,
+                state.SortDirection != SortDirection.Descending,
+                BuildCurrentFilter(),
+                ct);
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            return _lastData;
+        }
+
+        _page = requestedPage;
+        _pageSize = requestedPageSize;
+        if (_matchCount != result.TotalCount || _scopeCount != result.ScopeCount)
+        {
+            _matchCount = result.TotalCount;
+            _scopeCount = result.ScopeCount;
+            StateHasChanged();
+        }
+
+        UpdateUrl();
+
+        _lastData = new TableData<HumanResourceListItem>
+        {
+            Items = result.Items,
+            TotalItems = result.TotalCount
+        };
+        return _lastData;
+    }
+
+    private Task OnSearchChanged(string? value)
+    {
+        _searchTerm = value;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterActiveStatusChanged(string? value)
+    {
+        _filterActiveStatus = value is ActiveStatus or InactiveStatus ? value : null;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterDepartmentNamesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterDepartmentNames = values;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterArtNamesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterArtNames = values;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterTeamNamesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterTeamNames = values;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterTeamNotChanged(bool value)
+    {
+        _filterTeamNot = value;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterTeamRoleNamesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterTeamRoleNames = values;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterSkillNamesChanged(IReadOnlyCollection<string> values)
+    {
+        _filterSkillNames = values;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnFilterSkillAllChanged(bool value)
+    {
+        _filterSkillAll = value;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnValueFilterChanged(ValueFilter filter, IReadOnlyCollection<string> values)
+    {
+        filter.Selected = values;
+        return ApplyFiltersAsync();
+    }
+
+    private Task OnValueFilterNotChanged(ValueFilter filter, bool value)
+    {
+        filter.Not = value;
+        return ApplyFiltersAsync();
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        RebuildChoices();
+        if (ActiveFilterCount == 0 && !GlobalFilter.Values.IsEmpty)
+        {
+            _globalFilterCleared = true;
+        }
+
+        await ReloadFirstPageAsync();
+    }
+
+    private async Task ReloadFirstPageAsync()
+    {
+        if (_table is null)
+        {
+            return;
+        }
+
+        if (_table.CurrentPage != 0)
+        {
+            _table.NavigateTo(0);
+            return;
+        }
+
+        await _table.ReloadServerData();
+    }
+
+    private void ResetFilters()
+    {
+        _searchTerm = null;
+        _filterActiveStatus = null;
+        _filterSkillNames = [];
+        _filterSkillAll = false;
+        _filterTeamNames = [];
+        _filterTeamNot = false;
+        _filterTeamRoleNames = [];
+        _filterArtNames = [];
+        _filterDepartmentNames = [];
+
+        foreach (var filter in ValueFilters)
+        {
+            filter.Reset();
+        }
+    }
+
+    private async Task ClearFilters()
+    {
+        ResetFilters();
+        _globalFilterCleared = true;
+        RebuildChoices();
+        await ReloadFirstPageAsync();
+    }
+
+    private async Task ConfirmDeleteAsync(HumanResourceListItem hr)
+    {
+        try
+        {
+            if (await MessageService.Confirm($"Permanently delete {hr.FullName}? This cannot be undone."))
+            {
+                await DeleteAsync(hr);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, ex.Message);
+            await MessageService.Exception(ex);
+        }
+    }
+
+    private async Task DeleteAsync(HumanResourceListItem hr)
+    {
+        try
+        {
+            await HrService.DeleteAsync(hr.Id);
+            if (_table is not null)
+            {
+                await _table.ReloadServerData();
+            }
+            Snackbar.Add($"{hr.FullName} deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private static readonly (HrUploadColumn Column, string Label)[] PickerColumns =
+    {
+        (HrUploadColumn.EmployeeNumber, "BRID"),
+        (HrUploadColumn.EmployeeName, "Employee Name"),
+        (HrUploadColumn.FullName, "Full Name"),
+        (HrUploadColumn.Active, "Active"),
+        (HrUploadColumn.Team, "Team"),
+        (HrUploadColumn.TeamRole, "Team Role"),
+        (HrUploadColumn.City, "City"),
+        (HrUploadColumn.Category, "Category"),
+        (HrUploadColumn.EmployeeType, "Employee Type"),
+        (HrUploadColumn.EmployeeRole, "Employee Role"),
+        (HrUploadColumn.EmployeeVendor, "Employee Vendor"),
+        (HrUploadColumn.CorporateGrade, "Corporate Grade"),
+        (HrUploadColumn.AnnualLeaveDays, "Annual Leave Days"),
+        (HrUploadColumn.Skills, "Skills"),
+    };
+
+    private static readonly HashSet<HrUploadColumn> MainColumns = new()
+    {
+        HrUploadColumn.EmployeeNumber,
+        HrUploadColumn.EmployeeName,
+        HrUploadColumn.FullName,
+    };
+
+    private static readonly HashSet<HrUploadColumn> ExportOffByDefault = new()
+    {
+        HrUploadColumn.Category,
+        HrUploadColumn.EmployeeType,
+        HrUploadColumn.EmployeeRole,
+        HrUploadColumn.EmployeeVendor,
+        HrUploadColumn.CorporateGrade,
+        HrUploadColumn.AnnualLeaveDays,
+        HrUploadColumn.Skills,
+    };
+
+    private HumanResourceFilter BuildCurrentFilter() => new()
+    {
+        Search = _searchTerm,
+        SkillNames = ListOrNull(_filterSkillNames),
+        AllSkills = _filterSkillAll,
+        IsActive = _filterActiveStatus switch
+        {
+            ActiveStatus => true,
+            InactiveStatus => false,
+            _ => null
+        },
+        TeamNames = ListOrNull(_filterTeamNames),
+        TeamNot = _filterTeamNot,
+        TeamRoleNames = ListOrNull(_filterTeamRoleNames),
+        ArtNames = ListOrNull(_filterArtNames),
+        DepartmentNames = ListOrNull(_filterDepartmentNames),
+        EmployeeCategoryNames = _employeeCategory.SelectedOrNull,
+        EmployeeCategoryNot = _employeeCategory.Not,
+        EmployeeTypeNames = _employeeType.SelectedOrNull,
+        EmployeeTypeNot = _employeeType.Not,
+        EmployeeRoleNames = _employeeRole.SelectedOrNull,
+        EmployeeRoleNot = _employeeRole.Not,
+        EmployeeVendorNames = _employeeVendor.SelectedOrNull,
+        EmployeeVendorNot = _employeeVendor.Not,
+        CorporateGradeNames = _corporateGrade.SelectedOrNull,
+        CorporateGradeNot = _corporateGrade.Not,
+        CountryNames = _country.SelectedOrNull,
+        CountryNot = _country.Not,
+        CityNames = _city.SelectedOrNull,
+        CityNot = _city.Not,
+        AllowedArtIds = _allowedTrainIds,
+    };
+
+    private static List<string>? ListOrNull(IReadOnlyCollection<string> values) =>
+        values.Count > 0 ? values.ToList() : null;
+
+    private async Task ExportFilteredAsync()
+    {
+        if (_matchCount == 0)
+        {
+            Snackbar.Add("No filtered resources to export.", Severity.Warning);
+            return;
+        }
+
+        var states = PickerColumns.Select(c => new HrColumnState
+        {
+            Column = c.Column,
+            Label = c.Label,
+            Selected = !ExportOffByDefault.Contains(c.Column),
+            Editable = true,
+            IsMain = MainColumns.Contains(c.Column)
+        }).ToList();
+
+        var selection = await ShowColumnPickerAsync(
+            "Choose columns to export",
+            "Exports the resources matching the current filters. Select the columns to include.",
+            "Export",
+            states);
+        if (selection is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _exporting = true;
+            StateHasChanged();
+
+            var bytes = await HrUploadService.ExportFilteredAsync(selection, BuildCurrentFilter());
+            await DownloadService.DownloadAsync(bytes, "Resources.xlsx");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export resources");
+            Snackbar.Add($"Export failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnUploadFileSelected(IBrowserFile file)
+    {
+        if (file == null)
+        {
+            return;
+        }
+
+        MemoryStream? stream = null;
+        try
+        {
+            stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 50 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+
+            var present = await HrUploadService.DetectColumnsAsync(stream);
+
+            if (!present.Contains(HrUploadColumn.FullName))
+            {
+                Snackbar.Add("The file must contain a 'Full Name' column to import.", Severity.Error);
+                return;
+            }
+
+            var states = PickerColumns.Select(c =>
+            {
+                var isPresent = present.Contains(c.Column);
+                var isMain = MainColumns.Contains(c.Column);
+                return new HrColumnState
+                {
+                    Column = c.Column,
+                    Label = c.Label,
+                    Selected = isPresent,
+                    Editable = isPresent && !isMain,
+                    IsMain = isMain && isPresent
+                };
+            }).ToList();
+
+            var selection = await ShowColumnPickerAsync(
+                "Choose columns to import",
+                "Columns not found in the uploaded file are disabled. Unchecked columns keep their existing values.",
+                "Continue",
+                states);
+            if (selection is null)
+            {
+                return;
+            }
+
+            _exporting = true;
+            StateHasChanged();
+
+            stream.Position = 0;
+            var rows = await HrUploadService.ParseFileAsync(stream, selection);
+            UploadPreview.PendingUpload = rows;
+            UploadPreview.ImportedColumns = selection;
+            Navigation.NavigateTo(RoutingPath.HumanResourcesUploadPreview);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to parse uploaded file");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+            if (stream is not null)
+            {
+                await stream.DisposeAsync();
+            }
+            StateHasChanged();
+        }
+    }
+
+    private async Task<HrUploadColumnSelection?> ShowColumnPickerAsync(
+        string title, string description, string confirmLabel, List<HrColumnState> states)
+    {
+        var parameters = new DialogParameters<ResourceColumnPickerDialog>
+        {
+            { x => x.Columns, states },
+            { x => x.Description, description },
+            { x => x.ConfirmLabel, confirmLabel },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.ExtraSmall, FullWidth = true };
+        var dialog = await DialogService.ShowAsync<ResourceColumnPickerDialog>(title, parameters, options);
+        var result = await dialog.Result;
+
+        if (result is null || result.Canceled || result.Data is not HrUploadColumnSelection selection)
+        {
+            return null;
+        }
+        return selection;
+    }
+}

@@ -1,0 +1,101 @@
+@namespace Estimation.Components.DepartmentPlanning
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">How to read Department Planning</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-1">One grid, four levels</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Strategic objectives hold portfolio epics, portfolio epics hold business outcomes, and business outcomes hold features,
+            the pieces of work the teams deliver. Every number on a higher row adds up the features underneath it.
+            Open or close a row with the arrow in front of its name, or double-click the row. <b>Open to</b> chooses the level the rows start at;
+            the levels above it become columns, so Open to F lists every feature with its objective, epic and outcome next to it.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Demand, capacity and the line</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>Demand</b> is the work asked of the teams for the planning period, in story points.
+            <b>Capacity</b> is what the teams can deliver in that period, after holidays and part-time coefficients, in story points at each team's story points per day;
+            switch on <b>Include IP sprint</b> to count the innovation and planning sprint as well, as on the PI Capacity page.
+            Each ART ranks its portfolio epics or business outcomes; the teams fill their capacity in that order.
+            Work above every line is <b>planned</b>. Work below a team line does not fit the team's capacity, and work below an ART line
+            gets no capacity from its ART: both are <b>not planned</b>.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Hierarchy or capacity drawdown</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The switch above the Objectives grid chooses how its rows are built.
+            <b>Hierarchy</b> starts from what the department wants to achieve and shows how much of the capacity each objective takes.
+            <b>Capacity drawdown</b> starts from each ART, with its capacity next to its name and on its line: its items in ranking order,
+            the <b>Drawdown</b> column with the running total of planned story points, the point where the capacity runs out, and the line.
+            Team columns show the same drawdown per team. Filters and the search hide rows but never change the drawdown:
+            it always counts every feature on the team boards, so a visible item keeps its real place against the capacity.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Signals</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            <b>RAG</b> is the delivery confidence reported in Jira; a small second dot shows the worst RAG underneath.
+            <b>Dependencies at risk</b> are links between features that are planned out of order or late.
+            <b>Features at Risk</b> are open features with a red RAG, a blocked status or a dependency at risk.
+            The <b>Features Hygiene issues</b> tile and the <b>Hygiene issues</b> column count features that fail an ART hygiene rule, for example missing acceptance criteria.
+            <b>Progress</b> is the share of features that are done; Rejected and Cancelled count as done, and a done feature is never at risk.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Six ways to look at the same numbers</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The buttons at the top right switch the picture; the department, planning increment, ARTs, filters and search stay the same.
+            <b>Objectives</b> is the grid with every level and exact numbers, and the only picture with the Hierarchy and Capacity drawdown
+            switch, Open to and Columns. <b>Timeline</b> lays epics and outcomes on a calendar against the planning increment
+            and today. Both have <b>Full screen</b> to fill the screen with them; Esc returns. <b>Treemap</b> shows how much of
+            the planning increment each objective, epic and outcome takes, as area. <b>Waterline</b> fills one column per
+            ART in ranking order, so what pokes out above the capacity line does not fit. <b>Risk quadrant</b> places every
+            portfolio epic, or business outcome, by size and risk, and lists the top-right quadrant, the short list for a decision,
+            beside the chart; click another quadrant's name to list that one. <b>Flow</b> follows the planned story points
+            from the objectives into the ARTs that deliver them, with what is not planned flowing to a separate outlet.
+            The Waterline always shows the capacity drawdown and the other pictures the hierarchy.
+            In the pictures a click on an item opens its details. In the Treemap a click first zooms into an item that holds smaller ones:
+            Ctrl+click or Shift+click opens its details, and Backspace or the path above the tiles zooms back out. In the Timeline a click
+            selects a row, a double-click folds it and the details button opens the details.
+            The zoom buttons scale the Objectives grid, Treemap, Waterline, Risk quadrant and Flow, and each view remembers its own scale.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Working with the grid</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Click a row to select it; the details button in the Actions column, or Enter, opens its details, with links to the pages where the work is managed.
+            Click a column header to sort, and again to reverse the order: rows are sorted among the rows under the same parent, and when
+            Open to starts below the top level the top rows are sorted as one list. Rank follows the ART rankings: an objective takes the best
+            rank of its epics, an epic whose ART ranks outcomes the best rank of its outcomes, and in the one list a row without a rank of its own
+            takes the rank of its outcome or epic. Rows without any ART rank come after the ranked ones, in team board order. In the capacity
+            drawdown Rank keeps each ART's ranking order, and opened to ART or PE/BO the ARTs and their ranked items keep their order whatever the column.
+            Use the zoom buttons for a denser or larger grid, <b>Full screen</b> to show only the grid (Esc returns) and <b>Columns</b> to choose the columns.
+            The search box narrows every picture to the items whose key or title matches (in the capacity drawdown also the ART names),
+            with their parents and everything under them. The Not planned, Progress, Features at Risk and Features Hygiene issues tiles
+            and the RAG chips work as quick filters, and <b>Show empty</b> also lists objectives, epics and outcomes
+            without features in this planning increment.
+            Keyboard: up and down arrows move, right opens a row, left closes it or goes to its parent, Enter opens the details, plus and minus
+            open and close, Shift with an arrow scrolls the grid or the Waterline; in the Waterline the arrows move between items and ARTs.
+            <b>One column per team</b> in Columns adds each team's planned story points, with the team's capacity in its header.
+            Export writes the rows the search and filters leave to Excel, fully expanded whatever the Open to level and columns, with one
+            column per level and a Total row that counts each feature once; from the other pictures it writes the grid behind them.
+            In the capacity drawdown it also writes the ART, the drawdown, where capacity runs out and each ART line. With One column per team on, each team gets its own columns.
+            The address in the browser keeps the department, planning increment, ARTs, picture, Hierarchy or Capacity drawdown, Open to level and Include IP sprint,
+            so a copied link opens the same page; the search, filters and sorting are not in it.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold">Which features are counted</MudText>
+        <MudText Typo="Typo.body2">
+            The same ones as on the team capacity boards: features planned on the department's teams for the chosen planning period,
+            including those matched by the period's labels and those added to a board by hand. A feature shared by several teams or
+            strategic objectives is counted once in the totals.
+            The ARTs box, shown when the department has more than one ART, narrows the page, capacity included, to the teams of the chosen ARTs.
+        </MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" OnClick="@(() => MudDialog.Close())">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+}
