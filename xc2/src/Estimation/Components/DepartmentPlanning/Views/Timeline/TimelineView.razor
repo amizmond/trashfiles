@@ -1,0 +1,610 @@
+@namespace Estimation.Components.DepartmentPlanning.Views
+@inherits PlanningViewBase
+@inject IUserTimeZoneService UserTime
+
+@using System.Globalization
+@using System.Text
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.DepartmentPlanning.Views
+@using Estimation.Core.JiraIntegration.Models
+
+<div class="tl-root" style="--tl-lane:@Px(TimelineLayout.LaneHeight)">
+    <div class="tl-toolbar">
+        <div class="tl-control">
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">Show</MudText>
+            <MudToggleGroup T="PlanningLevel" Value="_level" ValueChanged="SetLevel"
+                            SelectionMode="SelectionMode.SingleSelection"
+                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="PlanningLevel.PortfolioEpic">Portfolio epics</MudToggleItem>
+                <MudToggleItem Value="PlanningLevel.BusinessOutcome">+ Business outcomes</MudToggleItem>
+                <MudToggleItem Value="PlanningLevel.BusinessEpic">+ Features</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <div class="tl-control">
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">Dates</MudText>
+            <MudToggleGroup T="TimelineRange" Value="_range" ValueChanged="SetRange"
+                            SelectionMode="SelectionMode.SingleSelection"
+                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="TimelineRange.Pi">PI</MudToggleItem>
+                <MudToggleItem Value="TimelineRange.PiPlusQuarter">PI ± a quarter</MudToggleItem>
+                <MudToggleItem Value="TimelineRange.All">All dates</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <MudSpacer />
+        <div class="tl-kpis">
+            @if (_layout.ItemCount > 0)
+            {
+                <MudTooltip Text="@DatedTooltip">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Event"
+                             Color="@(_layout.DatedCount * 2 < _layout.ItemCount ? Color.Warning : Color.Default)">
+                        @_layout.DatedCount of @_layout.ItemCount have dates
+                    </MudChip>
+                </MudTooltip>
+            }
+            @if (_layout.PastPiCount > 0)
+            {
+                <MudTooltip Text="Items whose target end, own or from the items underneath, lies after the end of the planning increment.">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error" Icon="@Icons.Material.Filled.ArrowForward">@_layout.PastPiCount run past the PI end</MudChip>
+                </MudTooltip>
+            }
+            @if (_layout.ConflictCount > 0)
+            {
+                <MudTooltip Text="Items whose features have a later target end (or, without one, a later target start) than the item's own target end. Both dates are shown; neither is hidden.">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning" Icon="@Icons.Material.Filled.WarningAmber">@_layout.ConflictCount with features running later</MudChip>
+                </MudTooltip>
+            }
+            @if (_layout.PiStart is null || _layout.PiEnd is null)
+            {
+                <MudTooltip Text="@PiMissingTooltip">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="Color.Warning" Icon="@Icons.Material.Filled.EventBusy">@PiMissingText</MudChip>
+                </MudTooltip>
+            }
+            @if (_layout.DaysToPiEnd is { } daysToPiEnd)
+            {
+                <MudTooltip Text="@PiEndTooltip">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Default" Icon="@Icons.Material.Filled.Flag">@PiEndsText(daysToPiEnd)</MudChip>
+                </MudTooltip>
+            }
+        </div>
+    </div>
+
+    @if (Tree.Roots.Count == 0)
+    {
+        <MudText Class="mud-text-secondary pa-4">@EmptyText</MudText>
+    }
+    else
+    {
+        <div class="tl-scroll" tabindex="-1" data-dp-focus>
+            @if (_layout.HasRange)
+            {
+                <div class="tl-header">
+                    <div class="tl-label-head" title="@HeaderTitle">@HeaderTitle</div>
+                    <svg class="tl-axis" width="100%" height="@N(AxisHeight)">
+                        @if (_layout.Pi is { } piHead && piHead.Width > 0)
+                        {
+                            <rect class="tl-pi" x="@Pct(piHead.X)" y="0" width="@Pct(piHead.Width)" height="100%" />
+                            <SvgText Class="tl-pi-label" X="@Pct(piHead.X + piHead.Width / 2)" Y="12" TextAnchor="middle" Text="@(PiName ?? "PI")" />
+                        }
+                        @foreach (var tick in _layout.Ticks)
+                        {
+                            <line class="tl-tick" x1="@Pct(tick.X)" x2="@Pct(tick.X)" y1="@(tick.IsMajor ? "17" : "23")" y2="@N(AxisHeight)" />
+                            @if (tick.IsMajor)
+                            {
+                                <SvgText Class="tl-tick-label" X="@Pct(tick.X)" Y="27" Dx="3" Text="@tick.Label" />
+                            }
+                        }
+                        @if (_layout.TodayX is { } todayHead)
+                        {
+                            <line class="tl-today" x1="@Pct(todayHead)" x2="@Pct(todayHead)" y1="0" y2="@N(AxisHeight)" />
+                            <SvgText Class="tl-today-label" X="@Pct(todayHead)" Y="12" Dx="4" Text="Today" />
+                        }
+                    </svg>
+                    <div class="tl-actions-head">Actions</div>
+                </div>
+                <div class="tl-body">
+                    <div class="tl-labels">
+                        @foreach (var lane in _layout.Lanes)
+                        {
+                            var row = lane.Row;
+                            <div @key="row.Id" class="tl-label @Classes(lane)" style="--depth:@row.Depth" title="@Tooltip(row.Id)"
+                                 @onclick="SelectHandler(row.Id)"
+                                 @ondblclick="_toggleLane.For(lane)">
+                                @if (lane.HasChildren)
+                                {
+                                    <button type="button" class="tl-chevron @(lane.IsCollapsed ? "" : "open")"
+                                            aria-label="@(lane.IsCollapsed ? "Expand" : "Collapse")"
+                                            @onclick="_toggleLane.For(lane)"
+                                            @onclick:stopPropagation="true"
+                                            @ondblclick:stopPropagation="true"></button>
+                                }
+                                else
+                                {
+                                    <span class="tl-chevron-space"></span>
+                                }
+                                <span class="tl-tag lvl-@((int)row.Level)" title="@PlanningFormat.LevelName(row.Level)">@PlanningFormat.LevelTag(row.Level)</span>
+                                @if (!string.IsNullOrEmpty(row.JiraId))
+                                {
+                                    <span class="tl-key">@row.JiraId</span>
+                                }
+                                <span class="tl-name @(row.IsBucket ? "bucket" : "")">@row.Title</span>
+                                @if (lane.IsGroup && lane.ItemCount > 0)
+                                {
+                                    <span class="tl-count">@lane.ItemCount @ChildrenName(row)</span>
+                                }
+                                @if (row.IsBelowArtLine)
+                                {
+                                    <span class="tl-flag below" title="Below the ART line: the ART reserves no capacity for it in this PI.">below the line</span>
+                                }
+                                @if (row.AlsoUnder.Count > 0)
+                                {
+                                    <span class="tl-flag also" title="@($"Also contributes to {string.Join(", ", row.AlsoUnder)}. Its features are counted once in the totals.")">also @string.Join(", ", row.AlsoUnder)</span>
+                                }
+                                <span class="tl-sp" title="Demand in story points">@PlanningFormat.Sp(row.Metrics.DemandSp) SP</span>
+                            </div>
+                        }
+                    </div>
+                    <svg class="tl-chart" width="100%" height="@N(_layout.Height)">
+                        @if (_layout.Pi is { } pi && pi.Width > 0)
+                        {
+                            <rect class="tl-pi" x="@Pct(pi.X)" y="0" width="@Pct(pi.Width)" height="100%" />
+                            <line class="tl-pi-edge" x1="@Pct(pi.X)" x2="@Pct(pi.X)" y1="0" y2="100%" />
+                            <line class="tl-pi-edge" x1="@Pct(pi.X + pi.Width)" x2="@Pct(pi.X + pi.Width)" y1="0" y2="100%" />
+                        }
+                        @foreach (var tick in _layout.Ticks)
+                        {
+                            <line class="tl-grid @(tick.IsMajor ? "major" : "")" x1="@Pct(tick.X)" x2="@Pct(tick.X)" y1="0" y2="100%" />
+                        }
+                        @foreach (var lane in _layout.Lanes)
+                        {
+                            var row = lane.Row;
+                            var mid = lane.Top + TimelineLayout.LaneHeight / 2;
+                            var barTop = mid - TimelineLayout.BarHeight / 2;
+                            <g @key="row.Id" class="tl-lane @Classes(lane)" @onclick="SelectHandler(row.Id)" @ondblclick="_toggleLane.For(lane)">
+                                <title>@Tooltip(row.Id)</title>
+                                <rect class="tl-lane-bg" x="0" y="@N(lane.Top)" width="100%" height="@N(TimelineLayout.LaneHeight)" />
+                                <line class="tl-sep" x1="0" x2="100%" y1="@N(lane.Top + TimelineLayout.LaneHeight - 0.5)" y2="@N(lane.Top + TimelineLayout.LaneHeight - 0.5)" />
+                                @if (lane.Bar is { } bar)
+                                {
+                                    @if (bar.OutsideRange)
+                                    {
+                                        <svg class="tl-glyph" x="@Pct(bar.X)" y="@N(mid)" width="1" height="1" overflow="visible">
+                                            <polygon class="tl-off @(bar.RunsPastPi && !lane.IsGroup ? "past" : "")" points="@(bar.ClippedLeft ? "9,-5 9,5 1,0" : "-9,-5 -9,5 -1,0")" />
+                                        </svg>
+                                    }
+                                    else if (bar.IsMilestone)
+                                    {
+                                        <svg class="tl-glyph" x="@Pct(bar.X)" y="@N(mid)" width="1" height="1" overflow="visible">
+                                            <polygon class="tl-milestone" points="0,-6 6,0 0,6 -6,0" />
+                                            @if (bar.RunsPastPi && !lane.IsGroup)
+                                            {
+                                                <polygon class="tl-cap" points="8,-6 15,0 8,6" />
+                                            }
+                                            @if (Rag(row) is { } milestoneRag)
+                                            {
+                                                <circle class="tl-dot @PlanningFormat.RagClass(milestoneRag)" cx="-12" cy="0" r="3.5" />
+                                            }
+                                        </svg>
+                                    }
+                                    else if (lane.IsGroup)
+                                    {
+                                        <line class="tl-envelope" x1="@Pct(bar.X)" x2="@Pct(bar.Right)" y1="@N(mid)" y2="@N(mid)" />
+                                    }
+                                    else
+                                    {
+                                        <rect class="tl-track" x="@Pct(bar.X)" y="@N(barTop)" width="@Pct(bar.Width)" height="@N(TimelineLayout.BarHeight)" rx="2" />
+                                        @if (bar.FillWidth > 0)
+                                        {
+                                            <rect class="tl-fill" x="@Pct(bar.X)" y="@N(barTop)" width="@Pct(bar.FillWidth)" height="@N(TimelineLayout.BarHeight)" rx="2" />
+                                        }
+                                        @if (bar.ClippedLeft)
+                                        {
+                                            <svg class="tl-glyph" x="@Pct(bar.X)" y="@N(barTop)" width="1" height="1" overflow="visible">
+                                                <polygon class="tl-cap range" points="0,0 -7,6 0,12" />
+                                            </svg>
+                                        }
+                                        @if (bar.RunsPastPi || bar.ClippedRight)
+                                        {
+                                            <svg class="tl-glyph" x="@Pct(bar.Right)" y="@N(barTop)" width="1" height="1" overflow="visible">
+                                                <polygon class="tl-cap @(bar.RunsPastPi ? "" : "range")" points="0,0 7,6 0,12" />
+                                            </svg>
+                                        }
+                                        @if (Rag(row) is { } rag)
+                                        {
+                                            <svg class="tl-glyph" x="@Pct(bar.X)" y="@N(mid)" width="1" height="1" overflow="visible">
+                                                <circle class="tl-dot @PlanningFormat.RagClass(rag)" cx="6" cy="0" r="3.5" />
+                                            </svg>
+                                        }
+                                    }
+                                    @if (bar.ExtensionX is { } extensionX && bar.ExtensionWidth is { } extensionWidth)
+                                    {
+                                        var shift = bar.OutsideRange && bar.ClippedLeft && extensionX + extensionWidth <= 0d ? 10 : 0;
+                                        <line class="tl-ext" x1="@Pct(extensionX)" x2="@Pct(extensionX + extensionWidth)" y1="@N(mid)" y2="@N(mid)" />
+                                        <svg class="tl-glyph" x="@Pct(extensionX + extensionWidth)" y="@N(mid)" width="1" height="1" overflow="visible">
+                                            <g transform="translate(@shift,0)">
+                                                <polygon class="tl-warn" points="9,-7 15,5 3,5" />
+                                                <rect class="tl-warn-mark" x="8.3" y="-3.5" width="1.4" height="4.5" />
+                                                <rect class="tl-warn-mark" x="8.3" y="2" width="1.4" height="1.5" />
+                                            </g>
+                                        </svg>
+                                    }
+                                }
+                            </g>
+                        }
+                        @if (_layout.TodayX is { } today)
+                        {
+                            <line class="tl-today" x1="@Pct(today)" x2="@Pct(today)" y1="0" y2="100%" />
+                        }
+                    </svg>
+                    <div class="tl-actions">
+                        @foreach (var lane in _layout.Lanes)
+                        {
+                            var row = lane.Row;
+                            <div @key="row.Id" class="tl-action-cell @Classes(lane)">
+                                <button type="button" class="tl-action" title="Details" aria-label="@($"Details of {row.Title}")"
+                                        @onclick="DetailsHandler(row.Id)">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" />
+                                </button>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                <MudText Class="mud-text-secondary pa-4">@NoRangeText</MudText>
+            }
+
+            <div class="tl-undated">
+                <div class="tl-undated-head">
+                    <span class="tl-undated-title">Undated</span>
+                    <span class="tl-badge @(_layout.Undated.Count > 0 ? "warn" : "")">@_layout.Undated.Count</span>
+                    <span class="tl-undated-sub">@UndatedSubtitle</span>
+                </div>
+                @foreach (var item in _layout.Undated)
+                {
+                    var row = item.Row;
+                    <div @key="row.Id" class="tl-undated-item @(IsSelected(row) ? "selected" : "") @(row.IsBelowArtLine ? "below" : "")" title="@Tooltip(row.Id)" @onclick="SelectHandler(row.Id)">
+                        <button type="button" class="tl-action" title="Details" aria-label="@($"Details of {row.Title}")"
+                                @onclick="DetailsHandler(row.Id)" @onclick:stopPropagation="true">
+                            <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" />
+                        </button>
+                        <span class="tl-tag lvl-@((int)row.Level)" title="@PlanningFormat.LevelName(row.Level)">@PlanningFormat.LevelTag(row.Level)</span>
+                        @if (!string.IsNullOrEmpty(row.JiraId))
+                        {
+                            <span class="tl-key">@row.JiraId</span>
+                        }
+                        <span class="tl-name @(row.IsBucket ? "bucket" : "")">@row.Title</span>
+                        @if (item.Descendants > 0)
+                        {
+                            <span class="tl-count">+@item.Descendants underneath</span>
+                        }
+                        @if (row.IsBelowArtLine)
+                        {
+                            <span class="tl-flag below" title="Below the ART line: the ART reserves no capacity for it in this PI.">below the line</span>
+                        }
+                        @if (!string.IsNullOrEmpty(item.GroupTitle))
+                        {
+                            <span class="tl-group-ref" title="@GroupName">@item.GroupTitle</span>
+                        }
+                        <span class="tl-sp" title="Demand in story points">@PlanningFormat.Sp(row.Metrics.DemandSp) SP</span>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="tl-legend">
+            <span class="tl-legend-item"><span class="tl-swatch bar"></span>target start to target end, filled to the share of features done</span>
+            <span class="tl-legend-item"><span class="tl-swatch derived"></span>dates taken from the items underneath</span>
+            <span class="tl-legend-item"><span class="tl-swatch below"></span>below an ART line</span>
+            <span class="tl-legend-item"><span class="tl-swatch milestone"></span>only one date known</span>
+            <span class="tl-legend-item"><span class="tl-swatch cap"></span>runs past the PI end</span>
+            <span class="tl-legend-item"><span class="tl-swatch warn"></span>features underneath run later than the item's own target end</span>
+            <span class="tl-legend-item"><span class="tl-swatch dot"></span>RAG</span>
+            <span class="tl-legend-item"><span class="tl-swatch today"></span>today</span>
+        </div>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block px-3 pb-2">
+            Target dates are the commitments recorded in Jira, not a forecast: the view has no velocity or sprint data and cannot predict slippage.
+            Items in the Undated bin cannot be placed on the calendar until they get a target date.
+        </MudText>
+    }
+</div>
+
+@code {
+    private const double AxisHeight = 30d;
+
+    private readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _tooltips = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _classes = new(StringComparer.Ordinal);
+    private TimelineLayout _layout = TimelineLayout.Empty;
+    private PlanningLevel _level = PlanningLevel.PortfolioEpic;
+    private TimelineRange _range = TimelineRange.Pi;
+    private DateTime _today;
+    private PlanningTree? _layoutTree;
+    private DepartmentPlanningData? _layoutData;
+    private readonly PlanningHandlerCache<TimelineLane, Action> _toggleLane;
+
+    public TimelineView()
+    {
+        _toggleLane = new(lane => () => ToggleLane(lane), ReferenceEqualityComparer.Instance);
+    }
+
+    private DateTime Today => UserTime.ToLocal(DateTime.UtcNow).Date;
+
+    private string EmptyText => Tree.FeaturesInScope == 0
+        ? $"No features are planned on the teams in scope for {PiName ?? "this planning increment"}."
+        : "No rows match the search and filters.";
+
+    private string GroupName => Tree.Lens == PlanningLens.Drawdown ? "ART" : "Strategic objective";
+
+    private string HeaderTitle
+    {
+        get
+        {
+            var title = Tree.Lens == PlanningLens.Drawdown ? "ART › ranked portfolio epics / business outcomes" : "Strategic objective › portfolio epic";
+            if (_level >= PlanningLevel.BusinessOutcome)
+            {
+                title += " › business outcome";
+            }
+
+            if (_level >= PlanningLevel.BusinessEpic)
+            {
+                title += " › feature";
+            }
+
+            return title;
+        }
+    }
+
+    private string DatedTooltip =>
+        $"{_layout.DatedCount} of {_layout.ItemCount} items shown have a target start or end. {_layout.OwnDatedCount} carry their own Jira dates; the others take the earliest start and latest end of the outcomes and features underneath. {_layout.Undated.Count} have no date at all and are listed under the chart.";
+
+    private string UndatedSubtitle => _layout.Undated.Count == 0
+        ? "Every item has a target start or end."
+        : "No target start or end, neither its own nor on the items underneath. Click an item to select it; its details button opens the details.";
+
+    private string PiMissingText => (_layout.PiStart, _layout.PiEnd) switch
+    {
+        (null, null) => "PI dates unknown",
+        (null, _) => "PI start date unknown",
+        _ => "PI end date unknown",
+    };
+
+    private string PiMissingTooltip => (_layout.PiStart, _layout.PiEnd) switch
+    {
+        (null, null) => "The planning increment has no start or end date, so the calendar follows the target dates of the items and nothing can be marked as running past the PI.",
+        (null, { } end) => $"The planning increment has an end date ({PlanningFormat.Date(end)}) but no start date, so no PI window is drawn and the calendar follows the target dates of the items. Items ending after {PlanningFormat.Date(end)} are still marked as running past the PI.",
+        _ => "The planning increment has a start date but no end date, so no PI window is drawn, the calendar follows the target dates of the items and nothing can be marked as running past the PI.",
+    };
+
+    private string PiEndTooltip => _layout.PiStart is { } start
+        ? $"{PiName}: {PlanningFormat.Date(start)} to {PlanningFormat.Date(_layout.PiEnd)}, counted from your local date."
+        : $"{PiName}: ends {PlanningFormat.Date(_layout.PiEnd)}, counted from your local date.";
+
+    private string NoRangeText => (_layout.PiStart, _layout.PiEnd) switch
+    {
+        (null, null) => "None of the items has a target start or end and the planning increment has no dates, so there is nothing to place on a calendar.",
+        (null, _) => "None of the items has a target start or end and the planning increment has no start date, so there is nothing to place on a calendar.",
+        _ => "None of the items has a target start or end and the planning increment has no end date, so there is nothing to place on a calendar.",
+    };
+
+    protected override void OnParametersSet()
+    {
+        var today = Today;
+        if (ReferenceEquals(Tree, _layoutTree) && ReferenceEquals(Data, _layoutData) && today == _today)
+        {
+            return;
+        }
+
+        _today = today;
+        Rebuild();
+        RequestRender();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || UserTime.IsResolved)
+        {
+            return;
+        }
+
+        await UserTime.EnsureResolvedAsync();
+        var today = Today;
+        if (today != _today)
+        {
+            _today = today;
+            Rebuild();
+            StateHasChanged();
+        }
+    }
+
+    private void Rebuild()
+    {
+        _layoutTree = Tree;
+        _layoutData = Data;
+        _layout = TimelineLayout.Build(Tree, new TimelineSettings(Data?.PiStart, Data?.PiEnd, _today, _level, _range, _collapsed));
+        _tooltips.Clear();
+        _classes.Clear();
+        _toggleLane.Clear();
+        foreach (var lane in _layout.Lanes)
+        {
+            _tooltips[lane.Row.Id] = BuildTooltip(lane.Row, lane.Bar, lane.IsGroup);
+            _classes[lane.Row.Id] = BuildClasses(lane);
+        }
+
+        foreach (var item in _layout.Undated)
+        {
+            _tooltips[item.Row.Id] = BuildTooltip(item.Row, null, false);
+        }
+    }
+
+    private void SetLevel(PlanningLevel level)
+    {
+        if (_level == level)
+        {
+            return;
+        }
+
+        _level = level;
+        Rebuild();
+    }
+
+    private void SetRange(TimelineRange range)
+    {
+        if (_range == range)
+        {
+            return;
+        }
+
+        _range = range;
+        Rebuild();
+    }
+
+    private void ToggleLane(TimelineLane lane)
+    {
+        if (!lane.HasChildren)
+        {
+            return;
+        }
+
+        if (!_collapsed.Remove(lane.Row.Id))
+        {
+            _collapsed.Add(lane.Row.Id);
+        }
+
+        Rebuild();
+    }
+
+    private string Tooltip(string rowId) => _tooltips.GetValueOrDefault(rowId) ?? string.Empty;
+
+    private string Classes(TimelineLane lane) =>
+        IsSelected(lane.Row) ? _classes.GetValueOrDefault(lane.Row.Id) + " selected" : _classes.GetValueOrDefault(lane.Row.Id) ?? string.Empty;
+
+    private static string BuildClasses(TimelineLane lane)
+    {
+        var row = lane.Row;
+        var classes = new List<string>(8) { $"lvl-{(int)row.Level}" };
+        if (lane.IsGroup)
+        {
+            classes.Add("group");
+        }
+
+        if (row.IsBelowArtLine)
+        {
+            classes.Add("below");
+        }
+
+        if (row.IsBucket)
+        {
+            classes.Add("bucket");
+        }
+
+        if (row.Feature?.IsDone == true)
+        {
+            classes.Add("done");
+        }
+
+        if (lane.Bar is { IsDerived: true })
+        {
+            classes.Add("derived");
+        }
+
+        return string.Join(' ', classes);
+    }
+
+    private string BuildTooltip(PlanningRow row, TimelineBar? bar, bool isGroup)
+    {
+        var text = new StringBuilder();
+        text.Append(string.IsNullOrEmpty(row.JiraId) ? row.Title : $"{row.JiraId} {row.Title}");
+        text.Append(" · ").Append(PlanningFormat.LevelName(row.Level));
+
+        if (bar is null)
+        {
+            text.AppendLine().Append("No target start or end");
+        }
+        else
+        {
+            text.AppendLine();
+            if (bar.IsMilestone)
+            {
+                text.Append(bar.Start is { } start
+                    ? $"Target start {PlanningFormat.Date(start)}, no target end"
+                    : $"Target end {PlanningFormat.Date(bar.End)}, no target start");
+            }
+            else
+            {
+                text.Append($"Target {PlanningFormat.Date(bar.Start)} to {PlanningFormat.Date(bar.End)} ({Days(bar.DurationDays ?? 0)})");
+            }
+
+            if (bar.IsDerived)
+            {
+                text.Append(isGroup ? ", spanning the items underneath" : ", taken from the items underneath");
+            }
+
+            if (bar.ChildrenEnd is { } childrenEnd)
+            {
+                text.AppendLine().Append($"Features underneath run until at least {PlanningFormat.Date(childrenEnd)}, later than the own target end");
+            }
+
+            if (!isGroup && bar.DaysPastPiEnd is { } daysPastPiEnd)
+            {
+                text.AppendLine().Append(daysPastPiEnd switch
+                {
+                    > 0 => $"Ends {Days(daysPastPiEnd)} after the PI end",
+                    0 => "Ends on the last day of the PI",
+                    _ => $"Ends {Days(-daysPastPiEnd)} before the PI end",
+                });
+            }
+
+            if (bar.OutsideRange)
+            {
+                text.AppendLine().Append(bar.ClippedLeft ? "Lies entirely before the dates shown" : "Lies entirely after the dates shown");
+            }
+        }
+
+        var metrics = row.Metrics;
+        text.AppendLine().Append($"Demand {PlanningFormat.Sp(metrics.DemandSp)} SP · planned {PlanningFormat.Sp(metrics.PlannedSp)} SP · not planned {PlanningFormat.Sp(metrics.UnplannedSp)} SP");
+        if (metrics.Features > 0)
+        {
+            text.AppendLine().Append($"Progress {PlanningFormat.Percent(metrics.Progress)} ({metrics.Done} of {metrics.Features} features done)");
+        }
+
+        var own = RagStatuses.Normalize(row.RagStatus);
+        var worst = row.Level == PlanningLevel.BusinessEpic ? null : metrics.WorstRag;
+        text.AppendLine().Append("RAG ").Append(own ?? "—");
+        if (worst is not null && DepartmentPlanningTree.RagRank(worst) < DepartmentPlanningTree.RagRank(own))
+        {
+            text.Append($" · worst underneath {worst}");
+        }
+
+        if (row.IsBelowArtLine)
+        {
+            text.AppendLine().Append("Below the ART line: no capacity is reserved for it in this PI");
+        }
+
+        return text.ToString();
+    }
+
+    private static string? Rag(PlanningRow row) =>
+        RagStatuses.Normalize(row.RagStatus) ?? (row.Level == PlanningLevel.BusinessEpic ? null : row.Metrics.WorstRag);
+
+    private static string ChildrenName(PlanningRow group)
+    {
+        var child = group.Children.FirstOrDefault(c => c.Kind == PlanningRowKind.Node);
+        return child is null ? "items" : PlanningFormat.LevelPlural(child.Level).ToLowerInvariant();
+    }
+
+    private static string PiEndsText(int days) => days switch
+    {
+        > 0 => $"PI ends in {Days(days)}",
+        0 => "PI ends today",
+        _ => $"PI ended {Days(-days)} ago",
+    };
+
+    private static string Days(int days) => days == 1 ? "1 day" : $"{days} days";
+
+    private static string Pct(double value) => value.ToString("0.###", CultureInfo.InvariantCulture) + "%";
+
+    private static string N(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static string Px(double value) => N(value) + "px";
+}

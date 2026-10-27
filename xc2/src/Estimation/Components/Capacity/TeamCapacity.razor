@@ -1,0 +1,40 @@
+@attribute [Route(RoutingPath.TeamCapacity)]
+
+@inject ISolutionTrainResolver TrainResolver
+@inject IPermissionGuard PermissionGuard
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="Teams">
+    @if (_trainAccessChecked)
+    {
+        <TeamCapacityView TeamId="Id" CanEditOverride="_trainCanEdit" InitialPiId="@(int.TryParse(PiId, out var piId) ? piId : null)" InitialIncludeIp="@(Ip == "1")" />
+    }
+</AccessGuard>
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    [SupplyParameterFromQuery(Name = "piId")] public string? PiId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "ip")] public string? Ip { get; set; }
+
+    private bool _trainAccessChecked;
+    private bool? _trainCanEdit;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _trainAccessChecked = false;
+        var trainScope = await TrainResolver.ResolveForTeamAsync(Id);
+        if (!await PermissionGuard.CanViewAsync("TeamPlanningCapacity", trainScope))
+        {
+            Snackbar.Add("You don't have access to this team's Solution Train.", Severity.Warning);
+            Navigation.NavigateTo(RoutingPath.Teams);
+            return;
+        }
+        _trainCanEdit = await PermissionGuard.CanEditTeamPlanningAsync("TeamPlanningCapacity", trainScope, Id);
+        _trainAccessChecked = true;
+    }
+}

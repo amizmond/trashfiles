@@ -1,0 +1,50 @@
+.dp-chevron {
+    border: 0;
+    background: transparent;
+    padding: 0;
+    cursor: pointer;
+    position: relative;
+    border-radius: 4px;
+}
+
+.dp-chevron:hover {
+    background: var(--mud-palette-action-default-hover);
+}
+
+.dp-chevron::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
+    border-left: calc(5px * var(--dp-zoom)) solid var(--mud-palette-text-secondary);
+    border-top: calc(4px * var(--dp-zoom)) solid transparent;
+    border-bottom: calc(4px * var(--dp-zoom)) solid transparent;
+    transform: translate(-40%, -50%);
+    transition: transform 0.12s ease;
+}
+
+.dp-chevron.open::before {
+    transform: translate(-50%, -40%) rotate(90deg);
+}
+
+.dp-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(26px * var(--dp-zoom));
+    height: calc(22px * var(--dp-zoom));
+    padding: 0;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--mud-palette-primary);
+    cursor: pointer;
+}
+
+.dp-action:hover,
+.dp-action:focus-visible {
+    background: color-mix(in srgb, var(--mud-palette-primary) 12%, var(--mud-palette-surface));
+    border-color: var(--mud-palette-primary);
+}

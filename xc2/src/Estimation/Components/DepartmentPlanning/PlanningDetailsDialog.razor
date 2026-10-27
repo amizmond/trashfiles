@@ -1,0 +1,62 @@
+@namespace Estimation.Components.DepartmentPlanning
+@inject IDepartmentPlanningService PlanningService
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.DepartmentPlanning.Services
+@using Serilog
+
+<MudDialog ContentClass="dp-details-dialog pa-0">
+    <DialogContent>
+        <PlanningDetailsPanel Row="Row"
+                              Tree="Tree"
+                              Details="_details"
+                              DetailsLoading="_loading"
+                              JiraTaskUrl="@JiraTaskUrl"
+                              PiId="PiId"
+                              IncludeIp="IncludeIp"
+                              PiName="@PiName"
+                              PageAccess="PageAccess"
+                              CanOpenDependencyMapArt="CanOpenDependencyMapArt"
+                              OnClose="Close" />
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter, EditorRequired] public PlanningRow Row { get; set; } = null!;
+    [Parameter, EditorRequired] public PlanningTree Tree { get; set; } = PlanningTree.Empty;
+    [Parameter] public string? JiraTaskUrl { get; set; }
+    [Parameter] public int? PiId { get; set; }
+    [Parameter] public bool IncludeIp { get; set; }
+    [Parameter] public string? PiName { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, AccessLevel> PageAccess { get; set; } = new Dictionary<string, AccessLevel>();
+    [Parameter] public Func<int, bool>? CanOpenDependencyMapArt { get; set; }
+
+    private PlanningItemDetails? _details;
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Row.Level == PlanningLevel.Art || Row.EntityId is not { } entityId)
+        {
+            return;
+        }
+
+        _loading = true;
+        try
+        {
+            _details = await PlanningService.GetDetailsAsync(Row.Level, entityId);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load details for {Level} {Id}", Row.Level, entityId);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void Close() => MudDialog.Close();
+}

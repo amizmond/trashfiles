@@ -1,0 +1,403 @@
+@namespace Estimation.Components.DepartmentPlanning
+@inject IJSRuntime JS
+
+@using System.Globalization
+@using System.Text.Json
+@using Estimation.Core.DepartmentPlanning.Services
+@using static Estimation.Components.DepartmentPlanning.PlanningGridRow
+
+<div class="dp-wrap @(Dense ? "dense" : "") @(FullHeight ? "full" : "")" style="--dp-zoom:@ZoomValue" tabindex="0" @onkeydown="OnKeyDownAsync" @ref="_root">
+    <table class="dp-grid">
+        <thead>
+            <tr>
+                <th class="dp-title-head">
+                    <span>@TitleHeader</span>
+                    <span class="dp-legend">
+                        @foreach (var level in Levels)
+                        {
+                            <span class="dp-tag lvl-@((int)level)">@PlanningFormat.LevelTag(level)</span>
+                        }
+                    </span>
+                </th>
+                @foreach (var level in Pivot.AncestorLevels)
+                {
+                    <th class="dp-parent-head" title="@($"{PlanningFormat.AncestorHeader(level)} the row belongs to")">
+                        <span class="dp-tag lvl-@((int)level)">@PlanningFormat.LevelTag(level)</span>
+                        <span>@PlanningFormat.AncestorHeader(level)</span>
+                    </th>
+                }
+                @foreach (var column in VisibleColumns)
+                {
+                    <th class="@(column.Numeric ? "num" : "") @(column.Sort is not null ? "sortable" : "") @(IsSorted(column) ? "sorted" : "")"
+                        title="@column.Tooltip"
+                        @onclick="SortHandler(column)">
+                        <span>@column.Header</span>
+                        @if (IsSorted(column))
+                        {
+                            <span class="dp-sort">@(SortDescending ? "▼" : "▲")</span>
+                        }
+                    </th>
+                }
+                @if (TeamColumns)
+                {
+                    @foreach (var team in Tree.Teams)
+                    {
+                        <th class="num dp-team" title="@TeamTooltip(team)">
+                            <span class="dp-team-name">@team.Name</span>
+                            <span class="dp-team-cap">@PlanningFormat.Sp(team.CapacitySp) SP</span>
+                        </th>
+                    }
+                }
+                <th class="dp-actions-head">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (Visible.Count == 0)
+            {
+                <tr class="dp-empty">
+                    <td colspan="@ColumnCount">@EmptyText</td>
+                </tr>
+            }
+            @foreach (var line in _lines)
+            {
+                <PlanningGridRow @key="line.Row.Id"
+                                 Grid="this"
+                                 Line="line"
+                                 Selected="@(line.Row.Id == SelectedId)"
+                                 Expanded="@Expanded.Contains(line.Row.Id)"
+                                 Columns="VisibleColumns"
+                                 AncestorLevels="Pivot.AncestorLevels"
+                                 TeamColumns="TeamColumns"
+                                 Tree="Tree" />
+            }
+        </tbody>
+        <tfoot>
+            <tr class="dp-total">
+                <td class="dp-title">
+                    <div class="dp-title-inner">
+                        <span class="dp-chevron-space"></span>
+                        <span class="dp-name">Total</span>
+                        <span class="dp-flag info" title="Each feature is counted once, even when it appears under several strategic objectives or ARTs.">@Tree.FeaturesShown of @Tree.FeaturesInScope features shown</span>
+                    </div>
+                </td>
+                @foreach (var level in Pivot.AncestorLevels)
+                {
+                    <td class="dp-parent"></td>
+                }
+                @foreach (var column in VisibleColumns)
+                {
+                    <td class="@(column.Numeric ? "num" : "") col-@column.Key">@TotalCell(column)</td>
+                }
+                @if (TeamColumns)
+                {
+                    @foreach (var team in Tree.Teams)
+                    {
+                        <td class="num dp-team-cell">@TeamTotal(team)</td>
+                    }
+                }
+                <td class="dp-actions"></td>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public PlanningTree Tree { get; set; } = PlanningTree.Empty;
+    [Parameter] public IReadOnlySet<string> Expanded { get; set; } = new HashSet<string>();
+    [Parameter] public string? SelectedId { get; set; }
+    [Parameter] public IReadOnlySet<string> Columns { get; set; } = new HashSet<string>();
+    [Parameter] public bool TeamColumns { get; set; }
+    [Parameter] public bool Dense { get; set; }
+    [Parameter] public int Zoom { get; set; } = 100;
+    [Parameter] public PlanningSort SortBy { get; set; }
+    [Parameter] public bool SortDescending { get; set; }
+    [Parameter] public string? JiraTaskUrl { get; set; }
+    [Parameter] public string EmptyText { get; set; } = "Nothing to show.";
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback<string> OnActivate { get; set; }
+    [Parameter] public EventCallback<(PlanningSort Sort, bool Descending)> OnSort { get; set; }
+    [Parameter] public EventCallback<string> OnShowDetails { get; set; }
+    [Parameter] public PlanningPivot Pivot { get; set; } = PlanningPivot.Empty;
+    [Parameter] public bool FullHeight { get; set; }
+
+    private ElementReference _root;
+    private string? _pendingSelection;
+    private List<PlanningRow> _visible = [];
+    private List<PlanningPivotLine> _lines = [];
+    private IReadOnlyList<PlanningColumn> _visibleColumns = [];
+    private PlanningGridSnapshot? _shown;
+    private bool _changed;
+    private readonly Dictionary<string, Func<Task>> _sortHandlers = new(StringComparer.Ordinal);
+
+    private string ZoomValue => (Zoom / 100.0).ToString("0.00", CultureInfo.InvariantCulture);
+
+    private IReadOnlyList<PlanningColumn> VisibleColumns => _visibleColumns;
+
+    private int ColumnCount => 1 + Pivot.AncestorLevels.Count + VisibleColumns.Count + (TeamColumns ? Tree.Teams.Count : 0) + 1;
+
+    private List<PlanningRow> Visible => _visible;
+
+    protected override void OnParametersSet()
+    {
+        if (_pendingSelection == SelectedId)
+        {
+            _pendingSelection = null;
+        }
+
+        var shown = new PlanningGridSnapshot(Tree, Pivot, Expanded, Columns, SelectedId, TeamColumns, Dense, Zoom, SortBy, SortDescending, FullHeight, EmptyText);
+        if (_shown is { } previous)
+        {
+            if (shown.DrawsSameAs(previous))
+            {
+                return;
+            }
+
+            _changed = true;
+        }
+
+        if (_shown is not { } before
+            || !ReferenceEquals(before.Tree, Tree)
+            || !ReferenceEquals(before.Pivot, Pivot)
+            || !ReferenceEquals(before.Expanded, Expanded))
+        {
+            _lines = Pivot.Flatten(r => Expanded.Contains(r.Id)).ToList();
+            _visible = _lines.Select(l => l.Row).ToList();
+        }
+
+        _visibleColumns = PlanningColumns.For(Tree.Lens).Where(c => Columns.Contains(c.Key)).ToList();
+        _shown = shown;
+    }
+
+    protected override bool ShouldRender()
+    {
+        if (!_changed)
+        {
+            return false;
+        }
+
+        _changed = false;
+        return true;
+    }
+
+    private static readonly string[] DrawdownTitles = ["ART", "ranked portfolio epics / business outcomes", "business outcomes", "features"];
+
+    private static readonly string[] ObjectiveTitles = ["Strategic objective", "portfolio epic", "business outcome", "feature"];
+
+    private string TitleHeader
+    {
+        get
+        {
+            var titles = (Tree.Lens == PlanningLens.Drawdown ? DrawdownTitles : ObjectiveTitles).Skip(Pivot.StartLevel).ToList();
+            if (titles.Count > 0)
+            {
+                titles[0] = char.ToUpperInvariant(titles[0][0]) + titles[0][1..];
+            }
+
+            return string.Join(" › ", titles);
+        }
+    }
+
+    private static readonly PlanningLevel[] DrawdownLevels =
+        [PlanningLevel.Art, PlanningLevel.PortfolioEpic, PlanningLevel.BusinessOutcome, PlanningLevel.BusinessEpic];
+
+    private static readonly PlanningLevel[] ObjectiveLevels =
+        [PlanningLevel.StrategicObjective, PlanningLevel.PortfolioEpic, PlanningLevel.BusinessOutcome, PlanningLevel.BusinessEpic];
+
+    private IEnumerable<PlanningLevel> Levels =>
+        (Tree.Lens == PlanningLens.Drawdown ? DrawdownLevels : ObjectiveLevels).Skip(Pivot.StartLevel);
+
+    public static string ElementId(string rowId) => "dp-" + rowId;
+
+    private bool IsSorted(PlanningColumn column) => column.Sort is { } sort && sort == SortBy;
+
+    private Func<Task> SortHandler(PlanningColumn column)
+    {
+        if (!_sortHandlers.TryGetValue(column.Key, out var handler))
+        {
+            handler = () => SortByAsync(column);
+            _sortHandlers[column.Key] = handler;
+        }
+
+        return handler;
+    }
+
+    private async Task SortByAsync(PlanningColumn column)
+    {
+        if (column.Sort is not { } sort)
+        {
+            return;
+        }
+
+        var descending = IsSorted(column) ? !SortDescending : column.DefaultDescending;
+        await OnSort.InvokeAsync((sort, descending));
+    }
+
+    private static string TeamTooltip(PlanningTeam team) =>
+        $"{team.Name}: capacity {PlanningFormat.Sp(team.CapacitySp)} SP ({PlanningFormat.Days(team.CapacityDays)} days × {team.StoryPointsPerDay:0.##} SP per day), {team.MemberCount} members, window: {team.WindowMode}";
+
+    private RenderFragment TotalCell(PlanningColumn column) => column.Key switch
+    {
+        PlanningColumns.Epics => EpicsText(Tree.Total),
+        PlanningColumns.Progress => ProgressCell(Tree.Total),
+        PlanningColumns.Demand => Number(Tree.Total.DemandSp, false),
+        PlanningColumns.Planned => Number(Tree.Total.PlannedSp, false),
+        PlanningColumns.Unplanned => Number(Tree.Total.UnplannedSp, Tree.Total.UnplannedSp > 0),
+        PlanningColumns.Share => ShareCell(Tree.TotalCapacitySp > 0 ? (double)(Tree.Total.PlannedSp / Tree.TotalCapacitySp) : null),
+        PlanningColumns.Dependencies => DependenciesCell(Tree.Total),
+        PlanningColumns.Hygiene => HygieneCell(Tree.Total),
+        PlanningColumns.Teams => Number(Tree.Total.Teams, false),
+        PlanningColumns.Arts => Text(Tree.Total.Arts.ToString(CultureInfo.InvariantCulture)),
+        _ => Text(""),
+    };
+
+    private RenderFragment TeamTotal(PlanningTeam team)
+    {
+        var planned = Tree.PlannedSpByTeam.GetValueOrDefault(team.Id);
+        if (Tree.FeaturesShown < Tree.FeaturesInScope)
+        {
+            return @<span class="dp-num" title="@($"{team.Name}: {PlanningFormat.Sp(planned)} SP planned on the features shown. Capacity is compared only while no feature is hidden.")">@PlanningFormat.Sp(planned)</span>;
+        }
+
+        var over = planned > team.CapacitySp;
+        return @<span class="dp-num @(over ? "over" : "")" title="@($"{team.Name}: {PlanningFormat.Sp(planned)} SP planned of {PlanningFormat.Sp(team.CapacitySp)} SP capacity")">
+            @PlanningFormat.Sp(planned)<span class="dp-sub"> / @PlanningFormat.Sp(team.CapacitySp)</span>
+        </span>;
+    }
+
+    private async Task OnKeyDownAsync(KeyboardEventArgs e)
+    {
+        var visible = Visible;
+        if (visible.Count == 0 || !PlanningGridKeys.Handles(e))
+        {
+            return;
+        }
+
+        var selectedId = _pendingSelection ?? SelectedId;
+        var index = PlanningGridKeys.PositionOf(visible.Select(r => r.Id).ToList(), selectedId);
+        var current = index >= 0 ? visible[index] : null;
+
+        switch (e.Key)
+        {
+            case "ArrowDown":
+                await MoveAsync(visible, NextNode(visible, index, 1));
+                break;
+            case "ArrowUp":
+                await MoveAsync(visible, NextNode(visible, index, -1));
+                break;
+            case "Home":
+                await MoveAsync(visible, NextNode(visible, -1, 1));
+                break;
+            case "End":
+                await MoveAsync(visible, NextNode(visible, visible.Count, -1));
+                break;
+            case "ArrowRight":
+                if (current is { HasChildren: true })
+                {
+                    if (!Expanded.Contains(current.Id))
+                    {
+                        await OnToggle.InvokeAsync(current.Id);
+                    }
+                    else
+                    {
+                        await MoveAsync(visible, NextNode(visible, index, 1));
+                    }
+                }
+                break;
+            case "ArrowLeft":
+                if (current is not null)
+                {
+                    if (current.HasChildren && Expanded.Contains(current.Id))
+                    {
+                        await OnToggle.InvokeAsync(current.Id);
+                    }
+                    else
+                    {
+                        var slash = current.Id.LastIndexOf('/');
+                        if (slash > 0)
+                        {
+                            var parentId = current.Id[..slash];
+                            await MoveAsync(visible, visible.FindIndex(r => r.Id == parentId));
+                        }
+                    }
+                }
+                break;
+            case "Enter":
+                if (current is { Kind: PlanningRowKind.Node })
+                {
+                    await OnShowDetails.InvokeAsync(current.Id);
+                }
+                break;
+            case "+":
+                if (current is { HasChildren: true } && !Expanded.Contains(current.Id))
+                {
+                    await OnToggle.InvokeAsync(current.Id);
+                }
+                break;
+            case "-":
+                if (current is { HasChildren: true } && Expanded.Contains(current.Id))
+                {
+                    await OnToggle.InvokeAsync(current.Id);
+                }
+                break;
+        }
+    }
+
+    private static int NextNode(List<PlanningRow> visible, int from, int step)
+    {
+        var index = from + step;
+        while (index >= 0 && index < visible.Count && visible[index].Kind != PlanningRowKind.Node)
+        {
+            index += step;
+        }
+
+        return index >= 0 && index < visible.Count ? index : -1;
+    }
+
+    private async Task MoveAsync(List<PlanningRow> visible, int index)
+    {
+        if (index < 0 || index >= visible.Count)
+        {
+            return;
+        }
+
+        _pendingSelection = visible[index].Id;
+        await OnSelect.InvokeAsync(visible[index].Id);
+        await ScrollToAsync(visible[index].Id);
+    }
+
+    public async Task ScrollToAsync(string rowId)
+    {
+        try
+        {
+            var id = JsonSerializer.Serialize(ElementId(rowId));
+            await JS.InvokeVoidAsync("eval", $"document.getElementById({id})?.scrollIntoView({{block:'nearest'}})");
+        }
+        catch (JSException)
+        {
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+
+    public async Task FocusAsync()
+    {
+        try
+        {
+            await _root.FocusAsync();
+        }
+        catch (JSException)
+        {
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+    }
+}

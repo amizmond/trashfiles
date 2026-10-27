@@ -1,0 +1,163 @@
+@namespace Estimation.Components.DepartmentPlanning.Views
+@inherits PlanningViewBase
+
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.DepartmentPlanning.Views
+
+<div class="tm-root @ModeClass">
+    <div class="tm-bar">
+        <div class="tm-group">
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">Area</MudText>
+            <MudToggleGroup T="TreemapArea" Value="EffectiveArea" ValueChanged="SetArea"
+                            SelectionMode="SelectionMode.SingleSelection"
+                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="TreemapArea.Demand">Demand</MudToggleItem>
+                <MudToggleItem Value="TreemapArea.Planned" Disabled="@(!HasCapacity)">Planned</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <div class="tm-group">
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">Colour</MudText>
+            <MudToggleGroup T="TreemapColour" Value="_colour" ValueChanged="SetColour"
+                            SelectionMode="SelectionMode.SingleSelection"
+                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="TreemapColour.Level">Level</MudToggleItem>
+                <MudToggleItem Value="TreemapColour.Progress">Progress</MudToggleItem>
+                <MudToggleItem Value="TreemapColour.Rag">RAG</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <div class="tm-group">
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">Show down to</MudText>
+            <MudToggleGroup T="int" Value="_depth" ValueChanged="SetDepth"
+                            SelectionMode="SelectionMode.SingleSelection"
+                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                @foreach (var (depth, label, enabled) in DepthChoices())
+                {
+                    <MudToggleItem Value="@depth" Disabled="@(!enabled)">@label</MudToggleItem>
+                }
+            </MudToggleGroup>
+        </div>
+        <MudSpacer />
+        @if (_layout.IsZoomed)
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ZoomOutMap" OnClick="@(() => ZoomAndFocus(null))">Whole department</MudButton>
+        }
+    </div>
+
+    <div class="tm-crumbs" role="navigation" aria-label="Zoom path">
+        <button type="button" class="tm-crumb @(_layout.IsZoomed ? "" : "current")" title="All strategic objectives" @onclick="@(() => ZoomAndFocus(null))">All objectives</button>
+        @foreach (var row in _layout.Path)
+        {
+            var current = row.Id == _zoomId;
+            <span class="tm-sep" aria-hidden="true">›</span>
+            <button type="button"
+                    class="tm-crumb lvl-@((int)row.Level) @(current ? "current" : "") @(row.Id == SelectedId ? "selected" : "")"
+                    title="@(current ? "Click to open the details of this item" : "Click to zoom back out to this item")"
+                    @onclick="_crumbClick.For(row.Id)">
+                <span class="tm-crumb-tag">@PlanningFormat.LevelTag(row.Level)</span>
+                <span class="tm-crumb-text">@CrumbText(row)</span>
+                @if (current)
+                {
+                    <span class="tm-crumb-sp">@PlanningFormat.Sp(TreemapLayout.ValueOf(row.Metrics, EffectiveArea)) SP @(EffectiveArea == TreemapArea.Planned && row.ShareOfCapacity is { } share ? $"· {PlanningFormat.Percent(share)} of capacity" : "")</span>
+                }
+            </button>
+        }
+        @if (_layout.IsZoomed)
+        {
+            <span class="tm-hint">Backspace zooms out · click an earlier step to go back</span>
+        }
+    </div>
+
+    @if (_tiles.Count == 0)
+    {
+        <div class="tm-empty">@EmptyText</div>
+    }
+    else
+    {
+        <div class="tm-canvas" tabindex="0" @ref="_canvas" @onkeydown="OnCanvasKeyAsync">
+            <svg class="tm-svg" viewBox="@ViewBox" preserveAspectRatio="xMidYMid meet" role="group" aria-label="Capacity allocation treemap">
+                @foreach (var tile in _tiles)
+                {
+                    var t = tile.Tile;
+                    var selected = tile.Row is not null && t.RowId == SelectedId;
+                    var holds = !selected && t.RowId == _holderTileId;
+                    <g @key="t.RowId"
+                       class="tm-tile @tile.Classes @tile.RagClass depth-@t.Depth @(selected ? "selected" : "") @(holds ? "holds" : "")"
+                       tabindex="0"
+                       role="button"
+                       @onclick="_tileClick.For(tile)"
+                       @onkeydown="_tileKey.For(tile)"
+                       @onkeydown:stopPropagation="true">
+                        <title>@tile.Tooltip</title>
+                        <rect class="tm-fill" x="@Num(t.X)" y="@Num(t.Y)" width="@Num(t.Width)" height="@Num(t.Height)" rx="3" />
+                        @if (t.HasChildrenDrawn)
+                        {
+                            <rect class="tm-head" x="@Num(t.X)" y="@Num(t.Y)" width="@Num(t.Width)" height="@Num(t.HeaderHeight)" rx="3" />
+                        }
+                        @if (t.HatchedHeight > 0.5d)
+                        {
+                            <rect class="tm-hatch-bg" x="@Num(t.X)" y="@Num(t.Y + t.Height - t.HatchedHeight)" width="@Num(t.Width)" height="@Num(t.HatchedHeight)" />
+                            <path class="tm-hatch" d="@TreemapLayout.HatchPath(t.HatchedRect)" />
+                            <line class="tm-hatch-top" x1="@Num(t.X)" y1="@Num(t.Y + t.Height - t.HatchedHeight)" x2="@Num(t.X + t.Width)" y2="@Num(t.Y + t.Height - t.HatchedHeight)" />
+                        }
+                        @if (_colour == TreemapColour.Progress && tile.Row is not null && !t.HasChildrenDrawn && t.Height >= 14d && t.Width >= 14d)
+                        {
+                            <rect class="tm-prog-track" x="@Num(t.X + 2d)" y="@Num(t.Y + t.Height - 6d)" width="@Num(t.Width - 4d)" height="4" rx="1" />
+                            <rect class="tm-prog" x="@Num(t.X + 2d)" y="@Num(t.Y + t.Height - 6d)" width="@ProgressWidth(tile)" height="4" rx="1" />
+                        }
+                        <rect class="tm-border" x="@Num(t.X)" y="@Num(t.Y)" width="@Num(t.Width)" height="@Num(t.Height)" rx="3" />
+                        @if (tile.Line1.Length > 0)
+                        {
+                            @if (t.HasChildrenDrawn)
+                            {
+                                @SvgText("tm-label head", t.X + 6d, t.Y + t.HeaderHeight / 2d, t.FontSize, tile.Line1)
+                            }
+                            else
+                            {
+                                @SvgText("tm-label", t.X + 6d, t.Y + 6d + t.FontSize * 0.9d, t.FontSize, tile.Line1)
+                                @if (tile.Line2.Length > 0)
+                                {
+                                    @SvgText("tm-label sub", t.X + 6d, t.Y + 6d + t.FontSize * 2.15d, t.FontSize * 0.9d, tile.Line2)
+                                }
+                            }
+                        }
+                        @if (tile.Badges.Length > 0 && !t.HasChildrenDrawn && t.Height >= t.FontSize * 4d)
+                        {
+                            @SvgText("tm-badge", t.X + 6d, t.Y + 6d + t.FontSize * 3.3d, t.FontSize * 0.8d, tile.Badges)
+                        }
+                        @if (tile.ShowRagDot)
+                        {
+                            <circle class="tm-dot" cx="@Num(t.X + t.Width - 9d)" cy="@Num(t.Y + (t.HasChildrenDrawn ? t.HeaderHeight / 2d : 9d))" r="4.5" />
+                        }
+                    </g>
+                }
+                @if (SelectedTile is { } sel)
+                {
+                    <rect class="tm-outline" x="@Num(sel.X + 1.5d)" y="@Num(sel.Y + 1.5d)" width="@Num(Math.Max(0d, sel.Width - 3d))" height="@Num(Math.Max(0d, sel.Height - 3d))" rx="3" />
+                }
+            </svg>
+        </div>
+    }
+
+    <div class="tm-legend">
+        @if (_colour == TreemapColour.Rag)
+        {
+            <span class="tm-swatch rag-red"></span><span>Red</span>
+            <span class="tm-swatch rag-amber"></span><span>Amber</span>
+            <span class="tm-swatch rag-green"></span><span>Green</span>
+            <span class="tm-swatch rag-none"></span><span>no RAG</span>
+        }
+        else if (_colour == TreemapColour.Progress)
+        {
+            <span class="tm-swatch progress"></span><span>green bar = share of features done</span>
+        }
+        else
+        {
+            <span class="tm-swatch lvl-1"></span><span>SO</span>
+            <span class="tm-swatch lvl-2"></span><span>PE</span>
+            <span class="tm-swatch lvl-3"></span><span>BO</span>
+            <span class="tm-swatch lvl-4"></span><span>F</span>
+        }
+        <span class="tm-swatch dashed"></span>below the ART line
+        <span class="tm-legend-text">@LegendText</span>
+    </div>
+</div>
