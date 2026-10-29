@@ -1,0 +1,317 @@
+@namespace Estimation.Components.DepartmentPlanning
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.JiraIntegration.Markup
+@using Estimation.Core.JiraIntegration.Models
+
+<MudPaper Elevation="0" Class="dp-panel pa-3 rounded-lg">
+    <div class="d-flex align-start gap-2">
+        <div class="flex-grow-1" style="min-width:0">
+            <div class="d-flex align-center gap-2 flex-wrap">
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="Color.Dark">@PlanningFormat.LevelName(Row.Level)</MudChip>
+                @if (!string.IsNullOrEmpty(Row.JiraId))
+                {
+                    @if (!string.IsNullOrEmpty(JiraTaskUrl))
+                    {
+                        <MudLink Href="@(JiraTaskUrl + Row.JiraId)" Target="_blank" Typo="Typo.body2">@Row.JiraId</MudLink>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">@Row.JiraId</MudText>
+                    }
+                }
+            </div>
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mt-1" Style="word-break:break-word">@Row.Title</MudText>
+        </div>
+        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" aria-label="Close details" OnClick="OnClose" />
+    </div>
+
+    <div class="d-flex align-center gap-1 flex-wrap mt-2">
+        @if (!string.IsNullOrWhiteSpace(Row.Status))
+        {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@PlanningFormat.StatusColor(PlanningStatus.Classify(Row.Status))">@Row.Status</MudChip>
+        }
+        @if (RagStatuses.Normalize(Row.RagStatus) is { } rag)
+        {
+            <MudTooltip Text="@RagStatuses.Label(rag)">
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="@RagColor(rag)">RAG @rag</MudChip>
+            </MudTooltip>
+        }
+        @if (!string.IsNullOrWhiteSpace(Row.FundingStatus))
+        {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning">@Row.FundingStatus</MudChip>
+        }
+        @if (Row.IsBelowArtLine)
+        {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="Color.Error">Below the ART line</MudChip>
+        }
+        @if (Row.CapacityRunsOutHere)
+        {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="Color.Error">Capacity runs out here</MudChip>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(Row.RagExplain))
+    {
+        <MudText Typo="Typo.body2" Class="mt-2"><b>RAG explanation:</b> @Row.RagExplain</MudText>
+    }
+
+    @if (Row.Ranks.Count > 0)
+    {
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-3">Ranking</MudText>
+        @foreach (var rank in Row.Ranks)
+        {
+            <div class="d-flex align-center gap-2 mt-1">
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled" Color="@(rank.BelowLine ? Color.Error : Color.Primary)">#@rank.Rank</MudChip>
+                <MudText Typo="Typo.body2">@rank.ArtName@(rank.BelowLine ? ", below the line" : "")@(rank.IsSaved ? "" : " (not saved yet)")</MudText>
+                @if (CanOpen("ArtPrioritization"))
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.LowPriority" Size="Size.Small" Color="Color.Primary"
+                                   title="@($"Open the ranking of {rank.ArtName}")"
+                                   Href="@($"{RoutingPath.ArtPrioritization}?artId={rank.ArtId}&piId={PiId}")" Target="_blank" />
+                }
+            </div>
+        }
+    }
+
+    <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-3">Key numbers</MudText>
+    <table class="dp-facts">
+        <tbody>
+            @if (Row.CapacitySp is { } capacity)
+            {
+                <tr><th>Capacity</th><td>@PlanningFormat.Sp(capacity) SP <span class="mud-text-secondary">(@PlanningFormat.Days(Row.CapacityDays ?? 0) days)</span></td></tr>
+            }
+            @if (Row.Level != PlanningLevel.BusinessEpic)
+            {
+                <tr><th>Features</th><td>@Row.Metrics.Features <span class="mud-text-secondary">(@Row.Metrics.Done done, @Row.Metrics.InProgress in progress, @Row.Metrics.Blocked blocked, @Row.Metrics.NotStarted not started)</span></td></tr>
+                <tr><th>Progress</th><td>@PlanningFormat.Percent(Row.Metrics.Progress)</td></tr>
+            }
+            @if (Row.Feature is { } storyPointsFeature)
+            {
+                <tr><th>Story points</th><td>@(storyPointsFeature.StoryPoints is { } featureSp ? $"{featureSp} SP" : "—")</td></tr>
+            }
+            <tr><th>Demand</th><td>@PlanningFormat.Sp(Row.Metrics.DemandSp) SP</td></tr>
+            <tr><th>Planned</th><td>@PlanningFormat.Sp(Row.Metrics.PlannedSp) SP</td></tr>
+            <tr><th>Not planned</th><td class="@(Row.Metrics.UnplannedSp > 0 ? "dp-warn" : "")">@PlanningFormat.Sp(Row.Metrics.UnplannedSp) SP</td></tr>
+            @if (Row.CumulativePlannedSp is { } cumulative)
+            {
+                <tr><th>Drawdown</th><td class="@(Row.OverCapacity ? "dp-over" : "")">@PlanningFormat.Sp(cumulative) SP</td></tr>
+            }
+            <tr><th>Share of capacity</th><td>@PlanningFormat.Percent(Row.ShareOfCapacity)</td></tr>
+            <tr><th>Dependencies</th><td>@Row.Metrics.Dependencies @(Row.Metrics.DependenciesAtRisk > 0 ? $"({Row.Metrics.DependenciesAtRisk} at risk)" : "")</td></tr>
+            <tr><th>@(Row.Level == PlanningLevel.BusinessEpic ? "Hygiene issues" : "Features Hygiene issues")</th><td>@(Row.Level == PlanningLevel.BusinessEpic ? $"{Row.Feature?.HygieneFailures ?? 0} failing rules" : $"{Row.Metrics.HygieneFailingFeatures} features failing a rule")</td></tr>
+            <tr><th>Teams</th><td>@Row.Metrics.Teams</td></tr>
+            @if (Row.Level != PlanningLevel.Art)
+            {
+                <tr><th>ARTs</th><td>@Row.Metrics.Arts</td></tr>
+            }
+            <tr><th>Target end</th><td>@PlanningFormat.Date(Row.ShownTargetEnd)</td></tr>
+            @if (Row.Feature is { } feature)
+            {
+                <tr><th>PI</th><td>@(feature.PiName ?? "—")</td></tr>
+            }
+        </tbody>
+    </table>
+
+    @if (Row.AlsoUnder.Count > 0)
+    {
+        <MudText Typo="Typo.body2" Class="mt-2 mud-text-secondary">Also contributes to @string.Join(", ", Row.AlsoUnder). Its features are counted once in the department totals.</MudText>
+    }
+
+    @if (TeamRows.Count > 0)
+    {
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-3">Teams</MudText>
+        <table class="dp-facts dp-teams">
+            <thead>
+                <tr><th>Team</th><th class="num">Planned</th><th class="num">Demand</th><th class="num">Capacity</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var (team, cell) in TeamRows)
+                {
+                    <tr>
+                        <td>
+                            @if (CanOpen("Teams"))
+                            {
+                                <MudLink Href="@TeamBoardUrl(team.Id, PiId, IncludeIp)" Target="_blank" Typo="Typo.body2">@team.Name</MudLink>
+                            }
+                            else
+                            {
+                                @team.Name
+                            }
+                        </td>
+                        <td class="num">@PlanningFormat.Sp(cell.PlannedSp)</td>
+                        <td class="num">@PlanningFormat.Sp(cell.DemandSp)</td>
+                        <td class="num">@PlanningFormat.Sp(team.CapacitySp)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    @if (Row.Feature is { } planningFeature && planningFeature.Teams.Count > 0)
+    {
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-3">On the team boards</MudText>
+        @foreach (var link in planningFeature.Teams)
+        {
+            var team = Tree.Teams.FirstOrDefault(t => t.Id == link.TeamId);
+            <div class="d-flex align-center gap-2 mt-1 flex-wrap">
+                <MudText Typo="Typo.body2" Class="font-weight-bold">@(team?.Name ?? $"Team {link.TeamId}")</MudText>
+                <MudText Typo="Typo.body2">@PlanningFormat.Sp(link.DemandSp) SP, position @link.BoardPosition</MudText>
+                @if (!link.IsIncluded)
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error">below the team line</MudChip>
+                }
+                else if (link.BelowArtLine.Count > 0)
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error">below the line of @string.Join(", ", link.BelowArtLine.Select(a => a.ArtName))</MudChip>
+                }
+                else
+                {
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Success">planned</MudChip>
+                }
+            </div>
+        }
+        @if (ShareNote(planningFeature) is { } shareNote)
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">@shareNote</MudText>
+        }
+    }
+
+    @if (Row.Level != PlanningLevel.Art && Row.EntityId is not null)
+    {
+        <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-3">Description</MudText>
+        @if (DetailsLoading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+        else if (Details is null || string.IsNullOrWhiteSpace(Details.Description))
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">No description in Jira.</MudText>
+        }
+        else
+        {
+            <div class="jira-wiki dp-description">@((MarkupString)JiraWikiRenderer.ToHtml(Details.Description))</div>
+        }
+        @if (Details is not null && !string.IsNullOrWhiteSpace(Details.Labels))
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-1">Labels: @Details.Labels</MudText>
+        }
+    }
+
+    <MudText Typo="Typo.subtitle2" Class="font-weight-bold mt-3">Open</MudText>
+    <div class="d-flex flex-wrap gap-1 mt-1">
+        @if (!string.IsNullOrEmpty(Row.JiraId) && !string.IsNullOrEmpty(JiraTaskUrl))
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.OpenInNew" Href="@(JiraTaskUrl + Row.JiraId)" Target="_blank">Jira</MudButton>
+        }
+        @if (ItemUrl is { } itemUrl)
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.OpenInNew" Href="@itemUrl" Target="_blank">@PlanningFormat.LevelName(Row.Level) page</MudButton>
+        }
+        @if (FeaturesUrl is { } featuresUrl && CanOpen("Features"))
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Extension" Href="@featuresUrl" Target="_blank">Features list</MudButton>
+        }
+        @if (Row.Level == PlanningLevel.Art && Row.ArtId is { } artId && CanOpen("ArtPrioritization"))
+        {
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.LowPriority" Href="@($"{RoutingPath.ArtPrioritization}?artId={artId}&piId={PiId}")" Target="_blank">ART ranking</MudButton>
+        }
+        @if (CanOpen("DependencyMap"))
+        {
+            @foreach (var link in MapLinks)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ViewTimeline" Href="@link.Url" Target="_blank" title="@link.Title">Dependency map (@link.ArtName)</MudButton>
+            }
+        }
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public PlanningRow Row { get; set; } = null!;
+    [Parameter, EditorRequired] public PlanningTree Tree { get; set; } = PlanningTree.Empty;
+    [Parameter] public PlanningItemDetails? Details { get; set; }
+    [Parameter] public bool DetailsLoading { get; set; }
+    [Parameter] public string? JiraTaskUrl { get; set; }
+    [Parameter] public int? PiId { get; set; }
+    [Parameter] public bool IncludeIp { get; set; }
+    [Parameter] public string? PiName { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, AccessLevel> PageAccess { get; set; } = new Dictionary<string, AccessLevel>();
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public Func<int, bool>? CanOpenDependencyMapArt { get; set; }
+
+    private bool CanOpen(string pageKey) => PageAccess.TryGetValue(pageKey, out var level) && level != AccessLevel.None;
+
+    private static Color RagColor(string rag) => rag switch
+    {
+        RagStatuses.Red => Color.Error,
+        RagStatuses.Amber => Color.Warning,
+        RagStatuses.Green => Color.Success,
+        _ => Color.Default,
+    };
+
+    private string? ShareNote(PlanningFeature feature)
+    {
+        var names = feature.Teams
+            .Where(t => !t.HasTeamEstimate && t.DemandSp != (feature.StoryPoints ?? 0))
+            .Select(t => Tree.Teams.FirstOrDefault(team => team.Id == t.TeamId)?.Name ?? $"Team {t.TeamId}")
+            .ToList();
+        if (names.Count == 0)
+        {
+            return null;
+        }
+
+        var sp = PlanningFormat.Sp(feature.StoryPoints ?? 0);
+        return names.Count == 1
+            ? $"{names[0]} has no story points of its own here, so it gets an equal part of what the feature's {sp} SP leave after the other teams' estimates."
+            : $"{string.Join(", ", names.SkipLast(1))} and {names[^1]} have no story points of their own here, so they get equal parts of what the feature's {sp} SP leave after the other teams' estimates.";
+    }
+
+    private List<(PlanningTeam Team, PlanningTeamCell Cell)> TeamRows =>
+        Tree.Teams
+            .Where(t => Row.TeamCells.ContainsKey(t.Id) && Row.TeamCells[t.Id].DemandSp > 0)
+            .Select(t => (t, Row.TeamCells[t.Id]))
+            .ToList();
+
+    public static string TeamBoardUrl(int teamId, int? piId, bool includeIp = false) =>
+        piId is { } id
+            ? $"{RoutingPath.Teams}/{teamId}/capacity?piId={id}{(includeIp ? "&ip=1" : "")}"
+            : $"{RoutingPath.Teams}/{teamId}/capacity";
+
+    private string? ItemUrl => Row.EntityId is not { } id
+        ? null
+        : Row.Level switch
+        {
+            PlanningLevel.StrategicObjective when CanOpen("StrategicObjectives") => $"{RoutingPath.StrategicObjectives}/{id}",
+            PlanningLevel.PortfolioEpic when CanOpen("PortfolioEpics") => $"{RoutingPath.PortfolioEpics}/{id}",
+            PlanningLevel.BusinessOutcome when CanOpen("BusinessOutcomes") => $"{RoutingPath.BusinessOutcomes}/{id}",
+            PlanningLevel.BusinessEpic when CanOpen("Features") => $"{RoutingPath.Features}/{id}",
+            PlanningLevel.Art when CanOpen("CapitalProjects") => $"{RoutingPath.CapitalProjects}/{id}",
+            _ => null,
+        };
+
+    private string? FeaturesUrl
+    {
+        get
+        {
+            if (Row.Level == PlanningLevel.BusinessEpic || string.IsNullOrEmpty(Row.JiraId) || string.IsNullOrEmpty(PiName))
+            {
+                return null;
+            }
+
+            var key = Row.Level switch
+            {
+                PlanningLevel.StrategicObjective => "program",
+                PlanningLevel.PortfolioEpic => "epic",
+                PlanningLevel.BusinessOutcome => "bo",
+                _ => null,
+            };
+
+            return key is null
+                ? null
+                : $"{RoutingPath.Features}?gf=0&pi={Uri.EscapeDataString(PiName)}&{key}={Uri.EscapeDataString(Row.JiraId)}";
+        }
+    }
+
+    private IReadOnlyList<PlanningMapLink> MapLinks => PlanningMapLinks.For(Row, PiName, CanOpenDependencyMapArt ?? (_ => true));
+}

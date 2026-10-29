@@ -1,0 +1,1340 @@
+@inject ITeamService TeamService
+@inject IHolidayService HolidayService
+@inject IHolidayTypeService HolidayTypeService
+@inject ISprintService SprintService
+@inject IPublicHolidayService PublicHolidayService
+@inject IPiService PiService
+@inject ICapacityCalendarService CapacityService
+@inject IIcsExportService IcsExportService
+@inject IBrowserDownloadService DownloadService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject ISelfServiceResolver SelfService
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Calendar.Models
+@using Estimation.Core.Calendar.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using System.Text
+@using Microsoft.JSInterop
+@using Serilog
+
+<PageTitle>Holiday Planner - @(_team?.Name ?? "Team")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+            <MudToggleGroup T="ViewMode" Value="_view" ValueChanged="OnViewChangedAsync"
+                            SelectionMode="SelectionMode.SingleSelection"
+                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="ViewMode.Month">Month</MudToggleItem>
+                <MudToggleItem Value="ViewMode.Year">Year</MudToggleItem>
+                <MudToggleItem Value="ViewMode.Gantt">Gantt</MudToggleItem>
+            </MudToggleGroup>
+            <div style="position:relative">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Visibility" Disabled="_loading"
+                           OnClick="@(() => _showPopoverOpen = !_showPopoverOpen)">
+                    Show
+                </MudButton>
+                <MudPopover Open="_showPopoverOpen" AnchorOrigin="Origin.BottomRight"
+                            TransformOrigin="Origin.TopRight" Class="pa-4"
+                            Style="min-width:300px; max-height:65vh; overflow:auto">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Show on calendar</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small"
+                                       OnClick="@(() => _showPopoverOpen = false)" />
+                    </div>
+                    <div class="d-flex flex-column gap-1">
+                        <MudSwitch T="bool" Value="_showPublicHolidays"
+                                   ValueChanged="@((bool v) => SetTogglePersist(nameof(_showPublicHolidays), () => _showPublicHolidays = v))"
+                                   Label="Public holidays" Color="Color.Primary" Size="Size.Small" />
+                        <MudSwitch T="bool" Value="_showSprints"
+                                   ValueChanged="@((bool v) => SetTogglePersist(nameof(_showSprints), () => _showSprints = v))"
+                                   Label="Sprints" Color="Color.Primary" Size="Size.Small" />
+                    </div>
+                    @if (_members.Any())
+                    {
+                        <MudDivider Class="my-2" />
+                        <div class="d-flex align-center justify-space-between mb-1">
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary">Team members</MudText>
+                            <div class="d-flex gap-1">
+                                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="ToggleAllMembersOn">All</MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="ToggleAllMembersOff">None</MudButton>
+                            </div>
+                        </div>
+                        <div class="d-flex flex-column gap-1">
+                            @foreach (var m in _members)
+                            {
+                                var hrId = m.HumanResourceId;
+                                var usage = _leaveUsage.FirstOrDefault(u => u.HumanResourceId == hrId);
+                                var balanceLabel = usage is null ? "" :
+                                    (usage.Entitlement.HasValue
+                                        ? $" ({usage.UsedDays:0.#}/{usage.Entitlement} d)"
+                                        : $" ({usage.UsedDays:0.#} d used)");
+                                <MudSwitch T="bool"
+                                           Value="GetMemberVisible(hrId)"
+                                           ValueChanged="@((bool v) => SetMemberVisible(hrId, v))"
+                                           Label="@($"{m.HumanResource.FullName}{balanceLabel}")"
+                                           Color="Color.Primary" Size="Size.Small" />
+                            }
+                        </div>
+                    }
+                </MudPopover>
+            </div>
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.CalendarMonth"
+                       OnClick="DownloadIcsAsync" Disabled="_loading">
+                iCal
+            </MudButton>
+            @HeaderActions
+            @if (_canEdit)
+            {
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Add"
+                           OnClick="@(() => OpenEditAsync(null, null))" Disabled="_loading">
+                    Add holiday
+                </MudButton>
+            }
+            else if (_directoryUnavailable)
+            {
+                <MudTooltip Text="Active Directory is not responding, so your account could not be matched to a team member and your own holidays cannot be added right now. Please try again in a minute.">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                             Icon="@Icons.Material.Filled.Info">
+                        Active Directory not responding
+                    </MudChip>
+                </MudTooltip>
+            }
+            else if (_selfIdentityUnresolved)
+            {
+                <MudTooltip Text="Your account could not be matched to a single team member record, so your own holidays cannot be added here. Ask an administrator to check your employee number.">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined"
+                             Icon="@Icons.Material.Filled.Info">
+                        Account not linked to a member
+                    </MudChip>
+                </MudTooltip>
+            }
+        </div>
+
+        <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+            <MudTooltip Text="Click to jump to month">
+                <MudButton Variant="Variant.Text" Size="Size.Large"
+                           OnClick="@(() => _datePickerOpen = !_datePickerOpen)"
+                           Class="font-weight-bold pa-1" Style="text-transform:none">
+                    @RangeTitle
+                </MudButton>
+            </MudTooltip>
+            <MudButtonGroup Variant="Variant.Outlined" Size="Size.Small">
+                <MudButton OnClick="@(() => Shift(-1))" StartIcon="@Icons.Material.Filled.ChevronLeft">Prev</MudButton>
+                <MudButton OnClick="GoToday">Today</MudButton>
+                <MudButton OnClick="@(() => Shift(1))" EndIcon="@Icons.Material.Filled.ChevronRight">Next</MudButton>
+            </MudButtonGroup>
+            <MudSpacer />
+            @if (_capacity is not null && _view != ViewMode.Year)
+            {
+                <MudTooltip Text="@($"Working days: {_capacity.WorkingDays} · Gross person-days: {_capacity.GrossPersonDays:0.#}\nPublic holidays: {_capacity.PublicHolidayDays:0.#} pd · Leave: {_capacity.LeaveDays:0.#} pd")">
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">
+                        Capacity: @_capacity.CapacityPercent.ToString("0.#")%
+                        (@_capacity.AvailablePersonDays.ToString("0.#") / @_capacity.GrossPersonDays.ToString("0.#") d)
+                    </MudChip>
+                </MudTooltip>
+            }
+        </div>
+
+        <MudPopover Open="_datePickerOpen" AnchorOrigin="Origin.BottomLeft"
+                    TransformOrigin="Origin.TopLeft" Class="pa-2">
+            <MudDatePicker PickerVariant="PickerVariant.Static" Date="_anchor"
+                           DateChanged="OnAnchorDatePicked"
+                           OpenTo="OpenTo.Month" FixDay="1" />
+        </MudPopover>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_view == ViewMode.Year)
+        {
+            @if (_pisInRange.Any())
+            {
+                <MudPaper Class="pa-2 mb-2 rounded-lg" Elevation="0" Style="border:1px solid var(--mud-palette-lines-default)">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary mb-1">Planning Increments (@_anchor.Year)</MudText>
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var pi in _pisInRange)
+                        {
+                            <MudTooltip Text="@PiCapacityTooltip(pi)">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Tertiary" Variant="Variant.Filled">
+                                    @pi.Name (@(pi.StartDate?.ToString("yyyy-MM-dd")) – @(pi.EndDate?.ToString("yyyy-MM-dd")))@PiCapacitySuffix(pi)
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                    </div>
+                </MudPaper>
+            }
+            <div class="hp-year-grid">
+                @for (var m = 1; m <= 12; m++)
+                {
+                    var month = m;
+                    var firstOfMonth = new DateTime(_anchor.Year, month, 1);
+                    <div class="hp-mini-month" @onclick="@(() => JumpToMonth(month))" role="button" title="Open this month">
+                        <div class="hp-mini-month-header">@firstOfMonth.ToString("MMMM")</div>
+                        <div class="hp-mini-grid">
+                            @foreach (var dow in new[] { "M", "T", "W", "T", "F", "S", "S" })
+                            {
+                                <div class="hp-mini-dow">@dow</div>
+                            }
+                            @foreach (var day in MiniMonthDays(firstOfMonth))
+                            {
+                                var inMonth = day.Month == month;
+                                var dayHolidays = inMonth
+                                    ? _holidays.Where(h => h.StartDate.Date <= day.Date && h.EndDate.Date >= day.Date
+                                        && GetMemberVisible(h.HumanResourceId)).ToList()
+                                    : new List<Holiday>();
+                                var isPh = inMonth && _showPublicHolidays
+                                    && _publicHolidayByDate.ContainsKey(day.Date);
+                                var bgStyle = "";
+                                if (dayHolidays.Count > 0)
+                                {
+                                    bgStyle = $"background-color: rgba(25,118,210,{Math.Min(0.85, 0.2 + dayHolidays.Count * 0.15).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)});color:#fff;";
+                                }
+                                else if (isPh)
+                                {
+                                    bgStyle = "background-color:#FFE082;color:#5D4037;";
+                                }
+                                var title = $"{day:yyyy-MM-dd}" +
+                                    (dayHolidays.Any() ? $"\n{dayHolidays.Count} on leave" : "") +
+                                    (isPh ? "\nPublic holiday" : "");
+                                <div class="hp-mini-cell @(inMonth ? "" : "hp-mini-other")"
+                                     style="@bgStyle"
+                                     title="@title">
+                                    @(inMonth ? day.Day.ToString() : "")
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else if (_view == ViewMode.Gantt)
+        {
+            var (gFrom, gTo) = MonthBounds();
+            var daysInMonth = (gTo - gFrom).Days + 1;
+            <div class="hp-gantt" style="@($"grid-template-columns: 200px repeat({daysInMonth}, minmax(28px, 1fr))")">
+                <div class="hp-gantt-cell hp-gantt-header hp-gantt-sticky">Member</div>
+                @for (var d = 0; d < daysInMonth; d++)
+                {
+                    var day = gFrom.AddDays(d);
+                    var isWeekend = day.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+                    var headerStyle = isWeekend ? "background-color:rgba(0,0,0,0.04);" : "";
+                    <div class="hp-gantt-cell hp-gantt-header" style="@headerStyle"
+                         title="@($"{day:yyyy-MM-dd} ({day.DayOfWeek})")">
+                        <div class="hp-gantt-dow">@day.ToString("ddd")[0]</div>
+                        <div class="hp-gantt-dnum">@day.Day</div>
+                    </div>
+                }
+                @foreach (var member in _members.Where(m => GetMemberVisible(m.HumanResourceId)))
+                {
+                    <div class="hp-gantt-cell hp-gantt-sticky hp-gantt-name">@member.HumanResource.FullName</div>
+                    @for (var d = 0; d < daysInMonth; d++)
+                    {
+                        var day = gFrom.AddDays(d);
+                        var isWeekend = day.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+                        var isPh = _showPublicHolidays && IsMemberPublicHoliday(member.HumanResourceId, day);
+                        var hOnDay = _holidays.FirstOrDefault(h =>
+                            h.HumanResourceId == member.HumanResourceId
+                            && h.StartDate.Date <= day.Date && h.EndDate.Date >= day.Date);
+                        var cellStyle = "";
+                        var content = "";
+                        var tooltip = $"{day:yyyy-MM-dd}";
+                        if (hOnDay is not null)
+                        {
+                            var c = hOnDay.HolidayType?.ColorHex ?? "#9E9E9E";
+                            cellStyle = $"background-color:{c}; color:#fff;";
+                            content = hOnDay.HalfDay == HalfDayPortion.None ? "" : hOnDay.HalfDay.ToString();
+                            tooltip = HolidayTooltip(hOnDay);
+                        }
+                        else if (isPh)
+                        {
+                            cellStyle = "background-color:#FFE082;color:#5D4037;";
+                            var phName = ResolveMemberPublicHoliday(member.HumanResourceId, day)?.Name;
+                            tooltip = string.IsNullOrEmpty(phName)
+                                ? $"{day:yyyy-MM-dd}\nPublic holiday"
+                                : $"{day:yyyy-MM-dd}\n{phName}";
+                        }
+                        else if (isWeekend)
+                        {
+                            cellStyle = "background-color:rgba(0,0,0,0.04);";
+                        }
+                        if (hOnDay is not null)
+                        {
+                            <div class="hp-gantt-cell @(CanEditRow(hOnDay) ? "hp-gantt-clickable" : "")" style="@cellStyle"
+                                 title="@tooltip" @onclick="@(() => OpenEditAsync(hOnDay, null))">@content</div>
+                        }
+                        else
+                        {
+                            <div class="hp-gantt-cell @(CanEditMember(member.HumanResourceId) ? "hp-gantt-clickable" : "")" style="@cellStyle"
+                                 title="@tooltip" @onclick="@(() => OpenEditAsync(null, day, member.HumanResourceId))">@content</div>
+                        }
+                    }
+                }
+            </div>
+        }
+        else
+        {
+            @if (_pisInRange.Any())
+            {
+                <MudPaper Class="pa-2 mb-2 rounded-lg" Elevation="0" Style="border:1px solid var(--mud-palette-lines-default)">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary mb-1">Planning Increments</MudText>
+                    <div class="d-flex flex-wrap gap-2">
+                        @foreach (var pi in _pisInRange)
+                        {
+                            <MudTooltip Text="@PiCapacityTooltip(pi)">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Tertiary" Variant="Variant.Filled">
+                                    @pi.Name (@(pi.StartDate?.ToString("yyyy-MM-dd")) – @(pi.EndDate?.ToString("yyyy-MM-dd")))@PiCapacitySuffix(pi)
+                                </MudChip>
+                            </MudTooltip>
+                        }
+                    </div>
+                </MudPaper>
+            }
+
+            <div class="hp-grid">
+                @foreach (var day in new[] { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" })
+                {
+                    <div class="hp-dow">@day</div>
+                }
+                @foreach (var day in GridDays())
+                {
+                    var inRange = day.Month == _anchor.Month;
+                    var isToday = day.Date == DateTime.Today;
+                    var isWeekend = day.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+                    var phRaw = _publicHolidayChipsByDate.TryGetValue(day.Date, out var phList) ? phList : null;
+                    var ph = _showPublicHolidays ? phRaw : null;
+                    var sprintsToday = _showSprints
+                        ? _sprints.Where(s => s.StartDate.Date <= day.Date && s.EndDate.Date >= day.Date).ToList()
+                        : new List<Sprint>();
+                    var holidaysToday = _holidays
+                        .Where(h => h.StartDate.Date <= day.Date && h.EndDate.Date >= day.Date)
+                        .Where(h => GetMemberVisible(h.HumanResourceId))
+                        .OrderBy(h => h.HumanResource?.FullName)
+                        .ToList();
+                    var activeMembers = _members.Count(m => m.HumanResource.IsActive);
+                    var conflictRatio = activeMembers > 0
+                        ? (double)holidaysToday.Select(h => h.HumanResourceId).Distinct().Count() / activeMembers
+                        : 0;
+                    var hasConflict = inRange && conflictRatio >= ConflictThreshold;
+
+                    var cellStyle = "";
+                    if (ph is not null && ph.Any())
+                    {
+                        cellStyle = "background-color:#FFF8E1;";
+                    }
+                    else if (isWeekend)
+                    {
+                        cellStyle = "background-color:rgba(0,0,0,0.02);";
+                    }
+
+                    <div class="hp-cell @(inRange ? "" : "hp-cell-other") @(isToday ? "hp-cell-today" : "")"
+                         style="@(cellStyle + (inRange && _canEdit ? "cursor:pointer;" : ""))"
+                         @onclick="@(() => OnCellClick(day))">
+                        <div class="hp-cell-head">
+                            <span class="hp-daynum">
+                                @day.Day
+                                @if (hasConflict)
+                                {
+                                    <MudTooltip Text="@($"{Math.Round(conflictRatio * 100)}% of team out")">
+                                        <span class="hp-conflict-dot"></span>
+                                    </MudTooltip>
+                                }
+                            </span>
+                            @if (ph is not null)
+                            {
+                                @foreach (var p in ph)
+                                {
+                                    <MudTooltip Text="@($"{p.Name} ({p.City?.Name ?? p.Country?.Name})")">
+                                        <MudChip T="string" Size="Size.Small" Style="background-color:#FFE082;color:#5D4037">PH</MudChip>
+                                    </MudTooltip>
+                                }
+                            }
+                        </div>
+                        @foreach (var s in sprintsToday)
+                        {
+                            var c = SprintColor(s);
+                            <MudTooltip Text="@($"{s.Name}{(s.Pi is null ? "" : $" · {s.Pi.Name}")}{(string.IsNullOrEmpty(s.Comment) ? "" : $"\n{s.Comment}")}")">
+                                <div class="hp-sprint" style="@($"background-color:{c}")">@s.Name</div>
+                            </MudTooltip>
+                        }
+                        @foreach (var h in holidaysToday)
+                        {
+                            var c = h.HolidayType?.ColorHex ?? "#9E9E9E";
+                            var half = h.HalfDay == HalfDayPortion.None ? "" : $" ({h.HalfDay})";
+                            var tooltip = HolidayTooltip(h);
+                            var notCounted = day.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday
+                                || IsMemberPublicHoliday(h.HumanResourceId, day);
+                            <MudTooltip Text="@tooltip">
+                                <div class="hp-holiday @(CanEditRow(h) ? "" : "hp-readonly") @(notCounted ? "hp-holiday-faded" : "")" style="@($"background-color:{c}")"
+                                     @onclick="@(() => OpenEditAsync(h, null))" @onclick:stopPropagation="true" role="button">
+                                    @h.HumanResource?.FullName@half
+                                </div>
+                            </MudTooltip>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@if (_editing is not null)
+{
+    <MudDialog @bind-Visible="_editDialogOpen" Options="@(new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true })">
+        <TitleContent>@(_editing.Id == 0 ? "New holiday" : "Edit holiday")</TitleContent>
+        <DialogContent>
+            @if (IsSelfService)
+            {
+                <MudTextField T="string" Value="@SelfMemberName" Label="Team member"
+                              Variant="Variant.Outlined" Class="mb-3" ReadOnly="true" Disabled="true" />
+            }
+            else
+            {
+                <MudSelect T="int" @bind-Value="_editing.HumanResourceId" Label="Team member *" Variant="Variant.Outlined" Class="mb-3">
+                    @foreach (var m in _members)
+                    {
+                        <MudSelectItem T="int" Value="@m.HumanResourceId">@m.HumanResource.FullName</MudSelectItem>
+                    }
+                </MudSelect>
+            }
+            <MudSelect T="int" @bind-Value="_editing.HolidayTypeId" Label="Type *" Variant="Variant.Outlined" Class="mb-3">
+                @foreach (var t in _holidayTypes)
+                {
+                    <MudSelectItem T="int" Value="@t.Id">@t.Name</MudSelectItem>
+                }
+            </MudSelect>
+            <div class="d-flex gap-2">
+                <MudDatePicker Label="Start *" Date="_editStart" DateChanged="OnEditStartChanged"
+                               Variant="Variant.Outlined" Class="mb-3" />
+                <MudDatePicker Label="End *" Date="_editEnd" DateChanged="OnEditEndChanged"
+                               Variant="Variant.Outlined" Class="mb-3" />
+            </div>
+            @if (_editStart.HasValue && _editEnd.HasValue && _editStart == _editEnd)
+            {
+                <MudSelect T="HalfDayPortion" @bind-Value="_editing.HalfDay" Label="Half-day"
+                           Variant="Variant.Outlined" Class="mb-3">
+                    <MudSelectItem T="HalfDayPortion" Value="HalfDayPortion.None">Full day</MudSelectItem>
+                    <MudSelectItem T="HalfDayPortion" Value="HalfDayPortion.AM">Morning (AM)</MudSelectItem>
+                    <MudSelectItem T="HalfDayPortion" Value="HalfDayPortion.PM">Afternoon (PM)</MudSelectItem>
+                </MudSelect>
+            }
+            <MudTextField @bind-Value="_editing.Comment" Label="Comment" Variant="Variant.Outlined" Lines="2" />
+            @if (_editStart.HasValue && _editEnd.HasValue && _editEnd >= _editStart)
+            {
+                var bd = BuildBreakdown(_editing.HumanResourceId, _editStart.Value, _editEnd.Value, _editing.HalfDay);
+                <MudAlert Severity="Severity.Info" Dense Class="mt-3">
+                    <MudText Typo="Typo.body2">
+                        Selected range: @_editStart.Value.ToString("yyyy-MM-dd") → @_editEnd.Value.ToString("yyyy-MM-dd")
+                        (@bd.TotalDays day(s))
+                    </MudText>
+                    <MudText Typo="Typo.body2">
+                        Vacation days counted: <strong>@bd.VacationDays.ToString("0.#")</strong>
+                    </MudText>
+                    @if (bd.WeekendDays > 0)
+                    {
+                        <MudText Typo="Typo.caption" Class="d-block">Weekends excluded: @bd.WeekendDays</MudText>
+                    }
+                    @if (bd.PublicHolidayDays > 0)
+                    {
+                        <MudText Typo="Typo.caption" Class="d-block">Public holidays excluded: @bd.PublicHolidayDays</MudText>
+                        @foreach (var n in bd.PublicHolidayNames)
+                        {
+                            <MudText Typo="Typo.caption" Class="d-block ml-3">• @n</MudText>
+                        }
+                    }
+                </MudAlert>
+            }
+            @if (!string.IsNullOrEmpty(_editError))
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-2">@_editError</MudAlert>
+            }
+        </DialogContent>
+        <DialogActions>
+            @if (_editing.Id != 0)
+            {
+                <MudButton Color="Color.Error" OnClick="DeleteEditingAsync">Delete</MudButton>
+            }
+            <MudSpacer />
+            <MudButton OnClick="@(() => _editDialogOpen = false)">Cancel</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveEditAsync">Save</MudButton>
+        </DialogActions>
+    </MudDialog>
+}
+
+<style>
+    .hp-grid {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 2px;
+        background-color: var(--mud-palette-lines-default);
+        border: 1px solid var(--mud-palette-lines-default);
+    }
+    .hp-dow {
+        background-color: var(--mud-palette-surface);
+        padding: 4px 8px;
+        font-weight: 600;
+        font-size: 0.8rem;
+        text-align: center;
+    }
+    .hp-cell {
+        background-color: var(--mud-palette-surface);
+        min-height: 96px;
+        padding: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        overflow: hidden;
+    }
+    .hp-cell-other { opacity: 0.5; }
+    .hp-cell-today { outline: 2px solid var(--mud-palette-primary); outline-offset: -2px; }
+    .hp-cell-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.75rem;
+        gap: 4px;
+    }
+    .hp-daynum { font-weight: 600; display:inline-flex; align-items:center; gap:4px; }
+    .hp-conflict-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background-color: var(--mud-palette-error);
+        display: inline-block;
+    }
+    .hp-sprint {
+        font-size: 0.7rem;
+        padding: 1px 4px;
+        border-radius: 3px;
+        color: #fff;
+        opacity: 0.85;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .hp-holiday {
+        font-size: 0.72rem;
+        padding: 2px 4px;
+        border-radius: 3px;
+        color: #fff;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .hp-holiday:hover { opacity: 0.85; }
+    .hp-holiday.hp-readonly { cursor: default; }
+    .hp-holiday-faded { opacity: 0.4; }
+    .hp-holiday-faded:hover { opacity: 0.55; }
+
+    .hp-year-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+    }
+    @@media (max-width: 1100px) { .hp-year-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @@media (max-width: 800px)  { .hp-year-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @@media (max-width: 500px)  { .hp-year-grid { grid-template-columns: 1fr; } }
+    .hp-mini-month {
+        border: 1px solid var(--mud-palette-lines-default);
+        border-radius: 6px;
+        padding: 6px;
+        cursor: pointer;
+        background-color: var(--mud-palette-surface);
+    }
+    .hp-mini-month:hover { background-color: rgba(0,0,0,0.03); }
+    .hp-mini-month-header {
+        font-weight: 600;
+        font-size: 0.85rem;
+        text-align: center;
+        margin-bottom: 4px;
+    }
+    .hp-mini-grid {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(0, 1fr));
+        gap: 1px;
+    }
+    .hp-mini-dow {
+        font-size: 0.65rem;
+        text-align: center;
+        color: var(--mud-palette-text-secondary);
+        font-weight: 600;
+    }
+    .hp-mini-cell {
+        font-size: 0.7rem;
+        text-align: center;
+        padding: 2px 0;
+        border-radius: 2px;
+        min-height: 18px;
+    }
+    .hp-mini-other { opacity: 0.25; }
+
+    .hp-gantt {
+        display: grid;
+        gap: 1px;
+        background-color: var(--mud-palette-lines-default);
+        border: 1px solid var(--mud-palette-lines-default);
+        overflow-x: auto;
+    }
+    .hp-gantt-cell {
+        background-color: var(--mud-palette-surface);
+        text-align: center;
+        font-size: 0.7rem;
+        padding: 2px 0;
+        min-height: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .hp-gantt-header {
+        font-weight: 600;
+        background-color: var(--mud-palette-background-gray);
+        flex-direction: column;
+        line-height: 1.1;
+    }
+    .hp-gantt-dow { font-size: 0.6rem; color: var(--mud-palette-text-secondary); }
+    .hp-gantt-dnum { font-size: 0.75rem; }
+    .hp-gantt-sticky { position: sticky; left: 0; z-index: 2; }
+    .hp-gantt-name { text-align: left; padding-left: 8px; justify-content: flex-start; font-weight: 500; }
+    .hp-gantt-clickable { cursor: pointer; }
+    .hp-gantt-clickable:hover { filter: brightness(0.95); }
+</style>
+
+@code {
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public string PageKey { get; set; } = "Teams";
+
+    [Parameter] public bool? CanEditOverride { get; set; }
+
+    [Parameter] public int? SelfServiceHrId { get; set; }
+
+    [Parameter] public RenderFragment? HeaderActions { get; set; }
+
+    private int? _memberSelfHrId;
+
+    private bool _selfIdentityUnresolved;
+
+    private bool _directoryUnavailable;
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private bool _canEdit;
+
+    private int? SelfHrId => SelfServiceHrId ?? _memberSelfHrId;
+
+    private bool IsSelfService => SelfHrId is not null;
+
+    private bool CanEditRow(Holiday h) =>
+        IsSelfService ? h.HumanResourceId == SelfHrId!.Value : _canEdit;
+
+    private bool CanEditMember(int humanResourceId) =>
+        IsSelfService ? humanResourceId == SelfHrId!.Value : _canEdit;
+
+    private string SelfMemberName =>
+        _members.FirstOrDefault(m => m.HumanResourceId == SelfHrId)?.HumanResource.FullName ?? "You";
+
+    private const double ConflictThreshold = 0.30;
+
+    public enum ViewMode { Month, Year, Gantt }
+
+    private Team? _team;
+    private List<HolidayType> _holidayTypes = new();
+    private List<TeamMember> _members = new();
+    private List<Holiday> _holidays = new();
+    private List<Sprint> _sprints = new();
+    private List<Pi> _pisInRange = new();
+    private Dictionary<DateTime, List<PublicHoliday>> _publicHolidayByDate = new();
+    private Dictionary<DateTime, List<PublicHoliday>> _publicHolidayChipsByDate = new();
+    private Dictionary<int, HashSet<DateTime>> _phByMember = new();
+    private TeamPeriodCapacity? _capacity;
+    private Dictionary<int, TeamPeriodCapacity> _piCapacities = new();
+    private List<MemberLeaveUsage> _leaveUsage = new();
+
+    private bool _loading = true;
+    private DateTime _anchor = DateTime.Today;
+    private ViewMode _view = ViewMode.Month;
+    private int _reloadGen;
+    private bool _prefsLoaded;
+    private int _lastLoadedId = -1;
+
+    private bool _showPopoverOpen;
+    private bool _datePickerOpen;
+    private bool _showPublicHolidays = true;
+    private bool _showSprints = true;
+    private readonly Dictionary<int, bool> _memberVisible = new();
+
+    private Dictionary<int, int> _sprintOrder = new();
+    private static readonly string[] SprintZebraColors = { "#75b3e5", "#fbae7a" };
+
+    private Holiday? _editing;
+    private bool _editDialogOpen;
+    private DateTime? _editStart;
+    private DateTime? _editEnd;
+    private string? _editError;
+
+    private List<Pi> _allPis = new();
+
+    private bool HasTeamEditRights =>
+        CanEditOverride ?? (UserPageAccess.TryGetValue(PageKey, out var access) && access == AccessLevel.Edit);
+
+    protected override void OnInitialized()
+    {
+        _canEdit = IsSelfService || HasTeamEditRights;
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_lastLoadedId == TeamId)
+        {
+            return;
+        }
+        _lastLoadedId = TeamId;
+        _loading = true;
+        _memberSelfHrId = null;
+        _selfIdentityUnresolved = false;
+        _directoryUnavailable = false;
+        _canEdit = SelfServiceHrId is not null || HasTeamEditRights;
+        _team = await TeamService.GetByIdAsync(TeamId);
+        if (_team is null)
+        {
+            Navigation.NavigateTo(RoutingPath.Teams);
+            return;
+        }
+        _members = _team.TeamMembers.OrderBy(m => m.HumanResource.FullName).ToList();
+        await ResolveMemberSelfServiceAsync();
+        _holidayTypes = await HolidayTypeService.GetAllAsync();
+        _allPis = await PiService.GetAllLightAsync();
+        await ReloadRangeAsync();
+        _loading = false;
+    }
+
+    private async Task ResolveMemberSelfServiceAsync()
+    {
+        if (_canEdit || SelfServiceHrId is not null)
+        {
+            return;
+        }
+        try
+        {
+            var resolution = await SelfService.ResolveAsync();
+            if (resolution.DirectoryUnavailable)
+            {
+                _directoryUnavailable = true;
+                return;
+            }
+            var context = resolution.Context;
+            if (context is null)
+            {
+                _selfIdentityUnresolved = true;
+                return;
+            }
+            if (!_members.Any(m => m.HumanResourceId == context.HumanResourceId))
+            {
+                return;
+            }
+            _memberSelfHrId = context.HumanResourceId;
+            _canEdit = true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to resolve the current team member for team {TeamId}", TeamId);
+            _selfIdentityUnresolved = true;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_prefsLoaded)
+        {
+            _prefsLoaded = true;
+            await LoadPrefsAsync();
+        }
+    }
+
+    private (DateTime From, DateTime To) MonthBounds()
+    {
+        var first = new DateTime(_anchor.Year, _anchor.Month, 1);
+        var last = first.AddMonths(1).AddDays(-1);
+        return (first, last);
+    }
+
+    private (DateTime From, DateTime To) MonthGridBounds()
+    {
+        var (first, _) = MonthBounds();
+        var gridStart = first.AddDays(-((int)(first.DayOfWeek == DayOfWeek.Sunday ? 6 : first.DayOfWeek - DayOfWeek.Monday)));
+        var gridEnd = gridStart.AddDays(41);
+        return (gridStart, gridEnd);
+    }
+
+    private (DateTime From, DateTime To) RangeBounds() => _view switch
+    {
+        ViewMode.Year => (new DateTime(_anchor.Year, 1, 1), new DateTime(_anchor.Year, 12, 31)),
+        ViewMode.Gantt => MonthBounds(),
+        _ => MonthGridBounds(),
+    };
+
+    private IEnumerable<DateTime> GridDays()
+    {
+        var (from, to) = MonthGridBounds();
+        var totalDays = (to - from).Days + 1;
+        for (var i = 0; i < totalDays; i++)
+        {
+            yield return from.AddDays(i);
+        }
+    }
+
+    private static IEnumerable<DateTime> MiniMonthDays(DateTime firstOfMonth)
+    {
+        var gridStart = firstOfMonth.AddDays(-((int)(firstOfMonth.DayOfWeek == DayOfWeek.Sunday ? 6 : firstOfMonth.DayOfWeek - DayOfWeek.Monday)));
+        for (var i = 0; i < 42; i++)
+        {
+            yield return gridStart.AddDays(i);
+        }
+    }
+
+    private string RangeTitle => _view == ViewMode.Year
+        ? _anchor.ToString("yyyy")
+        : _anchor.ToString("MMMM yyyy");
+
+    private async Task ReloadRangeAsync()
+    {
+        var gen = ++_reloadGen;
+        var (from, to) = RangeBounds();
+        var holidaysTask = HolidayService.GetForTeamAsync(TeamId, from, to);
+        var sprintsTask = SprintService.GetForTeamInRangeAsync(TeamId, from, to);
+        var memberScope = _members
+            .Select(m => (m.HumanResourceId, m.HumanResource.CityId))
+            .ToList();
+        var memberCityIds = _members
+            .Where(m => m.HumanResource.CityId.HasValue)
+            .Select(m => m.HumanResource.CityId!.Value)
+            .Distinct()
+            .ToList();
+        var memberCountryIds = _members
+            .Where(m => m.HumanResource.City != null)
+            .Select(m => m.HumanResource.City!.CountryId)
+            .Distinct()
+            .ToList();
+        var phTask = PublicHolidayService.GetForScopeInRangeAsync(memberCountryIds, memberCityIds, from, to);
+        var phByMemberTask = PublicHolidayService.GetEffectiveDatesByMemberAsync(memberScope, from, to);
+        var capacityTask = _view == ViewMode.Year
+            ? Task.FromResult<TeamPeriodCapacity?>(null)
+            : CapacityService.GetTeamMonthCapacityAsync(TeamId, _anchor.Year, _anchor.Month)
+                .ContinueWith(t => (TeamPeriodCapacity?)t.Result);
+        var leaveTask = CapacityService.GetTeamLeaveUsageAsync(TeamId, _anchor.Year);
+
+        await Task.WhenAll(holidaysTask, sprintsTask, phTask, phByMemberTask, capacityTask, leaveTask);
+
+        if (gen != _reloadGen)
+        {
+            return;
+        }
+
+        _holidays = holidaysTask.Result;
+        _sprints = sprintsTask.Result;
+        _publicHolidayByDate = phTask.Result
+            .GroupBy(p => p.Date.Date)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        _publicHolidayChipsByDate = PublicHolidayResolver.WithoutCityCopies(phTask.Result)
+            .GroupBy(p => p.Date.Date)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        _phByMember = phByMemberTask.Result;
+        _pisInRange = _allPis
+            .Where(p => p.StartDate.HasValue && p.EndDate.HasValue
+                && p.StartDate.Value.Date <= to && p.EndDate.Value.Date >= from)
+            .OrderBy(p => p.StartDate)
+            .ToList();
+        _capacity = capacityTask.Result;
+        _leaveUsage = leaveTask.Result;
+
+        _sprintOrder = _sprints
+            .OrderBy(s => s.StartDate)
+            .ThenBy(s => s.Id)
+            .Select((s, idx) => (s.Id, idx))
+            .ToDictionary(x => x.Id, x => x.idx);
+
+        await LoadPiCapacitiesAsync(gen);
+    }
+
+    private async Task LoadPiCapacitiesAsync(int gen)
+    {
+        var pis = _pisInRange
+            .Where(p => p.StartDate.HasValue && p.EndDate.HasValue)
+            .ToList();
+
+        var capacityTasks = pis
+            .Select(p => CapacityService.GetTeamRangeCapacityAsync(
+                TeamId, p.StartDate!.Value.Date, p.EndDate!.Value.Date))
+            .ToList();
+
+        var results = await Task.WhenAll(capacityTasks);
+
+        if (gen != _reloadGen)
+        {
+            return;
+        }
+
+        _piCapacities = pis
+            .Select((p, idx) => (p.Id, Capacity: results[idx]))
+            .ToDictionary(x => x.Id, x => x.Capacity);
+    }
+
+    private string PiCapacitySuffix(Pi pi) =>
+        _piCapacities.TryGetValue(pi.Id, out var c)
+            ? $" · {c.CapacityPercent:0.#}%"
+            : "";
+
+    private string PiCapacityTooltip(Pi pi)
+    {
+        if (!_piCapacities.TryGetValue(pi.Id, out var c))
+        {
+            return $"{pi.Name}: capacity unavailable";
+        }
+        return $"{pi.Name} capacity: {c.CapacityPercent:0.#}%"
+            + $"\nAvailable: {c.AvailablePersonDays:0.#} / {c.GrossPersonDays:0.#} person-days"
+            + $"\nWorking days: {c.WorkingDays} · Members: {c.MemberCount}"
+            + $"\nPublic holidays: {c.PublicHolidayDays:0.#} pd · Leave: {c.LeaveDays:0.#} pd";
+    }
+
+    private string SprintColor(Sprint s)
+    {
+        if (!string.IsNullOrEmpty(s.ColorHex))
+        {
+            return s.ColorHex;
+        }
+        var idx = _sprintOrder.TryGetValue(s.Id, out var i) ? i : 0;
+        return SprintZebraColors[idx % SprintZebraColors.Length];
+    }
+
+    private record HolidayBreakdown(
+        int TotalDays,
+        double VacationDays,
+        int WeekendDays,
+        int PublicHolidayDays,
+        List<string> PublicHolidayNames);
+
+    private (int? CityId, int? CountryId) MemberLocation(int hrId)
+    {
+        var hr = _members.FirstOrDefault(m => m.HumanResourceId == hrId)?.HumanResource;
+        return (hr?.CityId, hr?.City?.CountryId);
+    }
+
+    private bool IsMemberPublicHoliday(int hrId, DateTime day) =>
+        _phByMember.TryGetValue(hrId, out var set) && set.Contains(day.Date);
+
+    private PublicHoliday? ResolveMemberPublicHoliday(int hrId, DateTime day)
+    {
+        if (!_publicHolidayByDate.TryGetValue(day.Date, out var list))
+        {
+            return null;
+        }
+        var (cityId, countryId) = MemberLocation(hrId);
+        return (cityId.HasValue ? list.FirstOrDefault(p => p.CityId == cityId) : null)
+            ?? (countryId.HasValue ? list.FirstOrDefault(p => p.CountryId == countryId && p.CityId == null) : null)
+            ?? list.FirstOrDefault();
+    }
+
+    private HolidayBreakdown BuildBreakdown(int hrId, DateTime start, DateTime end, HalfDayPortion half)
+    {
+        int total = 0, weekend = 0, ph = 0;
+        double vacation = 0;
+        var phNames = new List<string>();
+
+        for (var d = start.Date; d <= end.Date; d = d.AddDays(1))
+        {
+            total++;
+            var isWeekend = d.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday;
+            var isPh = IsMemberPublicHoliday(hrId, d);
+            if (isWeekend)
+            {
+                weekend++;
+            }
+            else if (isPh)
+            {
+                ph++;
+                var match = ResolveMemberPublicHoliday(hrId, d);
+                if (match is not null)
+                {
+                    phNames.Add($"{d:yyyy-MM-dd} · {match.Name}");
+                }
+            }
+            else
+            {
+                vacation++;
+            }
+        }
+
+        if (vacation > 0 && half != HalfDayPortion.None && start.Date == end.Date)
+        {
+            vacation = 0.5;
+        }
+
+        return new HolidayBreakdown(total, vacation, weekend, ph, phNames);
+    }
+
+    private HolidayBreakdown BuildBreakdown(Holiday h) =>
+        BuildBreakdown(h.HumanResourceId, h.StartDate, h.EndDate, h.HalfDay);
+
+    private string HolidayTooltip(Holiday h)
+    {
+        var b = BuildBreakdown(h);
+        var sb = new StringBuilder();
+        sb.Append($"{h.HumanResource?.FullName} - {h.HolidayType?.Name}");
+        if (h.HalfDay != HalfDayPortion.None)
+        {
+            sb.Append($" ({h.HalfDay})");
+        }
+        sb.Append($"\n{h.StartDate:yyyy-MM-dd} → {h.EndDate:yyyy-MM-dd} ({b.TotalDays} day(s))");
+        sb.Append($"\nVacation days: {b.VacationDays:0.#}");
+        if (b.WeekendDays > 0)
+        {
+            sb.Append($"\nExcluded weekends: {b.WeekendDays}");
+        }
+        if (b.PublicHolidayDays > 0)
+        {
+            sb.Append($"\nExcluded public holidays: {b.PublicHolidayDays}");
+            foreach (var n in b.PublicHolidayNames)
+            {
+                sb.Append($"\n  • {n}");
+            }
+        }
+        if (!string.IsNullOrEmpty(h.Comment))
+        {
+            sb.Append($"\n{h.Comment}");
+        }
+        return sb.ToString();
+    }
+
+    private bool GetMemberVisible(int hrId) =>
+        !_memberVisible.TryGetValue(hrId, out var v) || v;
+
+    private async Task SetMemberVisible(int hrId, bool value)
+    {
+        _memberVisible[hrId] = value;
+        await SaveMemberPrefsAsync();
+    }
+
+    private async Task ToggleAllMembersOn()
+    {
+        foreach (var m in _members)
+        {
+            _memberVisible[m.HumanResourceId] = true;
+        }
+        await SaveMemberPrefsAsync();
+    }
+
+    private async Task ToggleAllMembersOff()
+    {
+        foreach (var m in _members)
+        {
+            _memberVisible[m.HumanResourceId] = false;
+        }
+        await SaveMemberPrefsAsync();
+    }
+
+    private async Task Shift(int direction)
+    {
+        _anchor = _view == ViewMode.Year ? _anchor.AddYears(direction) : _anchor.AddMonths(direction);
+        _loading = true;
+        await ReloadRangeAsync();
+        _loading = false;
+    }
+
+    private async Task GoToday()
+    {
+        _anchor = DateTime.Today;
+        _loading = true;
+        await ReloadRangeAsync();
+        _loading = false;
+    }
+
+    private async Task OnViewChangedAsync(ViewMode mode)
+    {
+        if (mode == _view)
+        {
+            return;
+        }
+        _view = mode;
+        _loading = true;
+        await ReloadRangeAsync();
+        _loading = false;
+        await SavePrefsAsync();
+    }
+
+    private async Task OnAnchorDatePicked(DateTime? date)
+    {
+        if (date is null)
+        {
+            return;
+        }
+        _datePickerOpen = false;
+        _anchor = new DateTime(date.Value.Year, date.Value.Month, 1);
+        _loading = true;
+        await ReloadRangeAsync();
+        _loading = false;
+    }
+
+    private async Task JumpToMonth(int month)
+    {
+        _anchor = new DateTime(_anchor.Year, month, 1);
+        _view = ViewMode.Month;
+        _loading = true;
+        await ReloadRangeAsync();
+        _loading = false;
+        await SavePrefsAsync();
+    }
+
+    private Task OnCellClick(DateTime day) => OpenEditAsync(null, day);
+
+    private Task OpenEditAsync(Holiday? source, DateTime? presetDate, int? presetHumanResourceId = null)
+    {
+        if (!_canEdit)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (IsSelfService)
+        {
+            if (source is not null && source.HumanResourceId != SelfHrId!.Value)
+            {
+                return Task.CompletedTask;
+            }
+            if (source is null && presetHumanResourceId is not null && presetHumanResourceId != SelfHrId!.Value)
+            {
+                return Task.CompletedTask;
+            }
+        }
+
+        _editError = null;
+        if (source is null)
+        {
+            var firstType = _holidayTypes.FirstOrDefault();
+            var start = presetDate ?? new DateTime(_anchor.Year, _anchor.Month, 1);
+            _editing = new Holiday
+            {
+                HumanResourceId = IsSelfService
+                    ? SelfHrId!.Value
+                    : (presetHumanResourceId ?? _members.FirstOrDefault()?.HumanResourceId ?? 0),
+                HolidayTypeId = firstType?.Id ?? 0,
+                StartDate = start,
+                EndDate = start,
+            };
+        }
+        else
+        {
+            _editing = new Holiday
+            {
+                Id = source.Id,
+                HumanResourceId = source.HumanResourceId,
+                HolidayTypeId = source.HolidayTypeId,
+                StartDate = source.StartDate,
+                EndDate = source.EndDate,
+                HalfDay = source.HalfDay,
+                Comment = source.Comment,
+            };
+        }
+        _editStart = _editing.StartDate;
+        _editEnd = _editing.EndDate;
+        _editDialogOpen = true;
+        return Task.CompletedTask;
+    }
+
+    private void OnEditStartChanged(DateTime? d)
+    {
+        _editStart = d;
+        if (_editStart.HasValue && (_editEnd is null || _editEnd < _editStart))
+        {
+            _editEnd = _editStart;
+        }
+        if (_editStart != _editEnd && _editing is not null)
+        {
+            _editing.HalfDay = HalfDayPortion.None;
+        }
+    }
+
+    private void OnEditEndChanged(DateTime? d)
+    {
+        _editEnd = d;
+        if (_editStart != _editEnd && _editing is not null)
+        {
+            _editing.HalfDay = HalfDayPortion.None;
+        }
+    }
+
+    private async Task SaveEditAsync()
+    {
+        if (_editing is null || !_canEdit)
+        {
+            return;
+        }
+        _editError = null;
+        try
+        {
+            if (_editStart is null || _editEnd is null)
+            {
+                _editError = "Start and end dates are required.";
+                return;
+            }
+            _editing.StartDate = _editStart.Value;
+            _editing.EndDate = _editEnd.Value;
+            if (_editing.Id == 0)
+            {
+                if (IsSelfService)
+                {
+                    await HolidayService.CreateOwnAsync(_editing, SelfHrId!.Value);
+                }
+                else
+                {
+                    await HolidayService.CreateAsync(_editing);
+                }
+                Snackbar.Add("Holiday created.", Severity.Success);
+            }
+            else
+            {
+                if (IsSelfService)
+                {
+                    await HolidayService.UpdateOwnAsync(_editing, SelfHrId!.Value);
+                }
+                else
+                {
+                    await HolidayService.UpdateAsync(_editing);
+                }
+                Snackbar.Add("Holiday updated.", Severity.Success);
+            }
+            _editDialogOpen = false;
+            await ReloadRangeAsync();
+        }
+        catch (Exception ex)
+        {
+            _editError = ex.Message;
+        }
+    }
+
+    private async Task DeleteEditingAsync()
+    {
+        if (_editing is null || _editing.Id == 0 || !_canEdit)
+        {
+            return;
+        }
+        if (!await MessageService.Confirm("Delete this holiday ?"))
+        {
+            return;
+        }
+        try
+        {
+            if (IsSelfService)
+            {
+                await HolidayService.DeleteOwnAsync(_editing.Id, SelfHrId!.Value);
+            }
+            else
+            {
+                await HolidayService.DeleteAsync(_editing.Id);
+            }
+            Snackbar.Add("Holiday deleted.", Severity.Success);
+            _editDialogOpen = false;
+            await ReloadRangeAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to delete holiday");
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task DownloadIcsAsync()
+    {
+        try
+        {
+            var bytes = await IcsExportService.BuildTeamCalendarAsync(TeamId);
+            await DownloadService.DownloadAsync(bytes, $"{_team?.Name ?? "team"}_calendar.ics", "text/calendar;charset=utf-8");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export iCal");
+            Snackbar.Add($"iCal export failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private string PrefKey(string subkey) => $"hp:{TeamId}:{subkey}";
+
+    private async Task LoadPrefsAsync()
+    {
+        try
+        {
+            var view = await JS.InvokeAsync<string?>("localStorage.getItem", PrefKey("view"));
+            if (Enum.TryParse<ViewMode>(view, out var v))
+            {
+                _view = v;
+            }
+            var sph = await JS.InvokeAsync<string?>("localStorage.getItem", PrefKey("showPublicHolidays"));
+            if (bool.TryParse(sph, out var b1))
+            {
+                _showPublicHolidays = b1;
+            }
+            var ssp = await JS.InvokeAsync<string?>("localStorage.getItem", PrefKey("showSprints"));
+            if (bool.TryParse(ssp, out var b2))
+            {
+                _showSprints = b2;
+            }
+            var hiddenCsv = await JS.InvokeAsync<string?>("localStorage.getItem", PrefKey("hiddenMembers"));
+            if (!string.IsNullOrEmpty(hiddenCsv))
+            {
+                foreach (var p in hiddenCsv.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (int.TryParse(p, out var hrId))
+                    {
+                        _memberVisible[hrId] = false;
+                    }
+                }
+            }
+            if (_view != ViewMode.Month)
+            {
+                _loading = true;
+                await ReloadRangeAsync();
+                _loading = false;
+            }
+            StateHasChanged();
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task SavePrefsAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", PrefKey("view"), _view.ToString());
+            await JS.InvokeVoidAsync("localStorage.setItem", PrefKey("showPublicHolidays"), _showPublicHolidays.ToString());
+            await JS.InvokeVoidAsync("localStorage.setItem", PrefKey("showSprints"), _showSprints.ToString());
+        }
+        catch { }
+    }
+
+    private async Task SetTogglePersist(string _, Action setter)
+    {
+        setter();
+        await SavePrefsAsync();
+    }
+
+    private async Task SaveMemberPrefsAsync()
+    {
+        try
+        {
+            var hidden = string.Join(",", _memberVisible.Where(kv => !kv.Value).Select(kv => kv.Key));
+            await JS.InvokeVoidAsync("localStorage.setItem", PrefKey("hiddenMembers"), hidden);
+        }
+        catch { }
+    }
+}

@@ -1,0 +1,554 @@
+@attribute [Route(RoutingPath.HolidaysSetup)]
+
+@inject IHolidayTypeService HolidayTypeService
+@inject IPublicHolidayService PublicHolidayService
+@inject IPublicHolidayUploadService PublicHolidayUploadService
+@inject IStaticSettingsService StaticSettings
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject IModalDialogService MessageService
+@inject PublicHolidayUploadPreviewState UploadPreview
+
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.Calendar.Models
+@using Estimation.Core.Calendar.Services
+@using Estimation.Core.Resources.Models
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.JSInterop
+@using Serilog
+
+<PageTitle>Holidays Setup</PageTitle>
+
+<AdminOnly>
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <MudText Typo="Typo.h6" Class="mb-4">Holidays Setup</MudText>
+
+        <MudTabs Elevation="0" Rounded ApplyEffectsToContainer ActivePanelIndexChanged="OnActiveTabChanged">
+
+            <MudTabPanel Text="Public Holidays">
+                <MudPaper Class="pa-4" Elevation="0">
+                    <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Public Holidays</MudText>
+                        <MudSpacer />
+                        <MudSelect T="int?" Value="_filterCountryId" ValueChanged="OnCountryChanged" Label="Country"
+                                   Variant="Variant.Outlined" Dense="true" Clearable="true" Style="min-width:180px">
+                            <MudSelectItem T="int?" Value="@((int?)null)">All countries</MudSelectItem>
+                            @foreach (var c in _countries)
+                            {
+                                <MudSelectItem T="int?" Value="@((int?)c.Id)">@c.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                        <MudNumericField T="int?" Value="_filterYear" ValueChanged="OnYearChanged" Label="Year"
+                                         Variant="Variant.Outlined" Style="max-width:120px" />
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Add"
+                                   OnClick="@(() => OpenPhEditAsync(null))">
+                            Add
+                        </MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Download"
+                                   OnClick="DownloadTemplateAsync">
+                            Download template
+                        </MudButton>
+                        <MudFileUpload T="IBrowserFile" FilesChanged="OnUploadFileSelected" Hidden="true" Accept=".xlsx" MaximumFileCount="1">
+                            <CustomContent>
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                           OnClick="@context.OpenFilePickerAsync"
+                                           StartIcon="@Icons.Material.Filled.UploadFile">
+                                    Upload .xlsx
+                                </MudButton>
+                            </CustomContent>
+                        </MudFileUpload>
+                    </div>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary mb-3 d-block">
+                        Excel columns expected: Date, Name, Country, City (optional), Description (optional).
+                        Provide a City to create a city-specific holiday; leave it blank for a country-wide one.
+                        People in a city get their country's holidays plus the city's own, so a city only needs the days specific to it.
+                    </MudText>
+
+                    <MudDataGrid T="PublicHoliday" Items="_publicHolidays" Hover Dense Striped Elevation="0"
+                                 Loading="@(!_loadedTabs.Contains(0))" LoadingProgressColor="Color.Primary">
+                        <Columns>
+                            <PropertyColumn Property="x => x.Date" Title="Date" Format="yyyy-MM-dd" />
+                            <PropertyColumn Property="x => x.Name" Title="Name" />
+                            <TemplateColumn Title="Scope">
+                                <CellTemplate>
+                                    @if (context.Item.CityId != null)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Class="mr-1">City</MudChip>
+                                        @($"{context.Item.City?.Name} ({context.Item.City?.Country?.Name})")
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Outlined" Class="mr-1">Country</MudChip>
+                                        @context.Item.Country?.Name
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <PropertyColumn Property="x => x.Description" Title="Description" />
+                            <TemplateColumn Title="Actions" CellStyle="width:130px; text-align:right" Sortable="false" Filterable="false">
+                                <CellTemplate>
+                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small"
+                                                   OnClick="@(() => OpenPhEditAsync(context.Item))" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                                                   OnClick="@(() => DeletePhAsync(context.Item))" />
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No public holidays.</MudText></NoRecordsContent>
+                        <PagerContent><MudDataGridPager T="PublicHoliday" PageSizeOptions="new[] { 25, 50, 100 }" /></PagerContent>
+                    </MudDataGrid>
+                </MudPaper>
+            </MudTabPanel>
+
+            <MudTabPanel Text="Holiday Types">
+                <MudPaper Class="pa-4" Elevation="0">
+                    <div class="d-flex align-center gap-2 mb-3">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Holiday Types</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.Add" OnClick="AddHolidayType">
+                            Add
+                        </MudButton>
+                    </div>
+                    <MudDataGrid T="HolidayType" Items="_holidayTypes" Hover Dense Striped Elevation="0"
+                                 Loading="@(!_loadedTabs.Contains(1))" LoadingProgressColor="Color.Primary">
+                        <Columns>
+                            <TemplateColumn Title="Name">
+                                <CellTemplate>
+                                    @if (_editingHolidayTypeId == context.Item.Id)
+                                    {
+                                        <MudTextField @bind-Value="context.Item.Name" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                    }
+                                    else
+                                    {
+                                        @context.Item.Name
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Description">
+                                <CellTemplate>
+                                    @if (_editingHolidayTypeId == context.Item.Id)
+                                    {
+                                        <MudTextField @bind-Value="context.Item.Description" Variant="Variant.Outlined" Margin="Margin.Dense" />
+                                    }
+                                    else
+                                    {
+                                        @context.Item.Description
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Color" CellStyle="width:140px">
+                                <CellTemplate>
+                                    @if (_editingHolidayTypeId == context.Item.Id)
+                                    {
+                                        <MudTextField @bind-Value="context.Item.ColorHex" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="#RRGGBB" />
+                                    }
+                                    else
+                                    {
+                                        <div class="d-flex align-center gap-2">
+                                            <div style="width:18px;height:18px;border-radius:50%;background-color:@context.Item.ColorHex;border:1px solid var(--mud-palette-lines-default)"></div>
+                                            <span>@context.Item.ColorHex</span>
+                                        </div>
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Order" CellStyle="width:90px">
+                                <CellTemplate>
+                                    @if (_editingHolidayTypeId == context.Item.Id)
+                                    {
+                                        <MudNumericField @bind-Value="context.Item.SortOrder" Variant="Variant.Outlined" Margin="Margin.Dense" Min="0" />
+                                    }
+                                    else
+                                    {
+                                        @context.Item.SortOrder
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Active" CellStyle="width:90px">
+                                <CellTemplate>
+                                    @if (_editingHolidayTypeId == context.Item.Id)
+                                    {
+                                        <MudCheckBox @bind-Value="context.Item.IsActive" T="bool" />
+                                    }
+                                    else
+                                    {
+                                        @(context.Item.IsActive ? "Yes" : "No")
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                            <TemplateColumn Title="Actions" CellStyle="width:120px; text-align:right" Sortable="false" Filterable="false">
+                                <CellTemplate>
+                                    @if (_editingHolidayTypeId == context.Item.Id)
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Check" Color="Color.Success" Size="Size.Small" OnClick="() => SaveHolidayTypeAsync(context.Item)" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Default" Size="Size.Small" OnClick="CancelHolidayTypeEdit" />
+                                    }
+                                    else
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="() => _editingHolidayTypeId = context.Item.Id" />
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" OnClick="() => DeleteHolidayTypeAsync(context.Item)" />
+                                    }
+                                </CellTemplate>
+                            </TemplateColumn>
+                        </Columns>
+                        <NoRecordsContent><MudText Class="pa-4 mud-text-secondary">No holiday types defined.</MudText></NoRecordsContent>
+                        <PagerContent><MudDataGridPager T="HolidayType" PageSizeOptions="new[] { 10, 25, 50 }" /></PagerContent>
+                    </MudDataGrid>
+                </MudPaper>
+            </MudTabPanel>
+
+        </MudTabs>
+    </MudPaper>
+</div>
+
+@if (_phEditing is not null)
+{
+    <MudDialog @bind-Visible="_phEditDialogOpen" Options="@(new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true })">
+        <TitleContent>@(_phEditing.Id == 0 ? "New public holiday" : "Edit public holiday")</TitleContent>
+        <DialogContent>
+            <MudDatePicker Label="Date *" @bind-Date="_phEditDate" Variant="Variant.Outlined" Class="mb-3" />
+            <MudTextField @bind-Value="_phEditing.Name" Label="Name *" Variant="Variant.Outlined" Class="mb-3" />
+            <MudSelect T="string" @bind-Value="_phScope" Label="Scope *" Variant="Variant.Outlined" Class="mb-3">
+                <MudSelectItem T="string" Value="@ScopeCountry">Country-wide</MudSelectItem>
+                <MudSelectItem T="string" Value="@ScopeCity">Specific city</MudSelectItem>
+            </MudSelect>
+            <MudSelect T="int?" Value="_phCountryId" ValueChanged="OnPhCountryChanged" Label="Country *" Variant="Variant.Outlined" Class="mb-3">
+                @foreach (var c in _countries)
+                {
+                    <MudSelectItem T="int?" Value="@((int?)c.Id)">@c.Name</MudSelectItem>
+                }
+            </MudSelect>
+            @if (_phScope == ScopeCity)
+            {
+                <MudSelect T="int?" @bind-Value="_phCityId" Label="City *" Variant="Variant.Outlined" Class="mb-3"
+                           ToStringFunc="@CityName">
+                    @foreach (var city in _cities.Where(c => c.CountryId == _phCountryId))
+                    {
+                        <MudSelectItem T="int?" Value="@((int?)city.Id)">@city.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            }
+            <MudTextField @bind-Value="_phEditing.Description" Label="Description" Variant="Variant.Outlined" Lines="2" />
+            @if (!string.IsNullOrEmpty(_phEditError))
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-2">@_phEditError</MudAlert>
+            }
+        </DialogContent>
+        <DialogActions>
+            <MudButton OnClick="@(() => _phEditDialogOpen = false)">Cancel</MudButton>
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SavePhEditAsync">Save</MudButton>
+        </DialogActions>
+    </MudDialog>
+}
+</AdminOnly>
+
+@code {
+    [CascadingParameter(Name = "IsAdmin")]
+    private bool IsAdmin { get; set; }
+
+    private List<HolidayType> _holidayTypes = new();
+    private int? _editingHolidayTypeId;
+    private int _tempId = -1;
+
+    private List<PublicHoliday> _publicHolidays = new();
+    private List<Country> _countries = new();
+    private List<City> _cities = new();
+    private int? _filterCountryId;
+    private int? _filterYear = DateTime.UtcNow.Year;
+
+    private const string ScopeCountry = "Country";
+    private const string ScopeCity = "City";
+
+    private PublicHoliday? _phEditing;
+    private bool _phEditDialogOpen;
+    private DateTime? _phEditDate;
+    private string? _phEditError;
+    private string _phScope = ScopeCountry;
+    private int? _phCountryId;
+    private int? _phCityId;
+
+    private readonly HashSet<int> _loadedTabs = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!IsAdmin)
+        {
+            return;
+        }
+        await LoadTabAsync(0);
+    }
+
+    private async Task OnActiveTabChanged(int index)
+    {
+        if (!_loadedTabs.Contains(index))
+        {
+            await LoadTabAsync(index);
+        }
+    }
+
+    private async Task LoadTabAsync(int index)
+    {
+        try
+        {
+            switch (index)
+            {
+                case 0:
+                    if (_countries.Count == 0)
+                    {
+                        _countries = await StaticSettings.GetAllCountriesAsync();
+                    }
+                    if (_cities.Count == 0)
+                    {
+                        _cities = await StaticSettings.GetAllCitiesAsync();
+                    }
+                    await ReloadPublicHolidaysAsync();
+                    break;
+                case 1:
+                    _holidayTypes = await HolidayTypeService.GetAllAsync(includeInactive: true);
+                    break;
+            }
+        }
+        finally
+        {
+            _loadedTabs.Add(index);
+        }
+    }
+
+    private void AddHolidayType()
+    {
+        var item = new HolidayType { Id = _tempId--, Name = "", ColorHex = "#9E9E9E", IsActive = true };
+        _holidayTypes.Add(item);
+        _editingHolidayTypeId = item.Id;
+    }
+
+    private void CancelHolidayTypeEdit()
+    {
+        _editingHolidayTypeId = null;
+        _holidayTypes.RemoveAll(x => x.Id < 0);
+    }
+
+    private async Task SaveHolidayTypeAsync(HolidayType item)
+    {
+        try
+        {
+            if (item.Id < 0)
+            {
+                item.Id = 0;
+                var created = await HolidayTypeService.CreateAsync(item);
+                _holidayTypes.Remove(item);
+                _holidayTypes.Add(created);
+            }
+            else
+            {
+                await HolidayTypeService.UpdateAsync(item);
+            }
+            _editingHolidayTypeId = null;
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task DeleteHolidayTypeAsync(HolidayType item)
+    {
+        if (!await MessageService.Confirm($"Delete holiday type '{item.Name}' ?"))
+        {
+            return;
+        }
+        try
+        {
+            await HolidayTypeService.DeleteAsync(item.Id);
+            _holidayTypes.Remove(item);
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex) { Snackbar.Add(ex.Message, Severity.Error); }
+    }
+
+    private async Task ReloadPublicHolidaysAsync()
+    {
+        _publicHolidays = await PublicHolidayService.GetAllAsync(_filterCountryId, null, _filterYear);
+    }
+
+    private string CityName(int? id)
+    {
+        if (id is null)
+        {
+            return string.Empty;
+        }
+        return _cities.FirstOrDefault(c => c.Id == id.Value)?.Name ?? string.Empty;
+    }
+
+    private void OnPhCountryChanged(int? value)
+    {
+        _phCountryId = value;
+        if (_phCityId.HasValue && !_cities.Any(c => c.Id == _phCityId.Value && c.CountryId == value))
+        {
+            _phCityId = null;
+        }
+    }
+
+    private async Task OnCountryChanged(int? value)
+    {
+        _filterCountryId = value;
+        await ReloadPublicHolidaysAsync();
+    }
+
+    private async Task OnYearChanged(int? value)
+    {
+        _filterYear = value;
+        await ReloadPublicHolidaysAsync();
+    }
+
+    private Task OpenPhEditAsync(PublicHoliday? source)
+    {
+        _phEditError = null;
+        if (source is null)
+        {
+            _phEditing = new PublicHoliday { Date = DateTime.UtcNow.Date };
+            _phScope = ScopeCountry;
+            _phCountryId = _filterCountryId ?? _countries.FirstOrDefault()?.Id;
+            _phCityId = null;
+        }
+        else
+        {
+            _phEditing = new PublicHoliday
+            {
+                Id = source.Id,
+                Date = source.Date,
+                Name = source.Name,
+                Description = source.Description,
+            };
+            if (source.CityId.HasValue)
+            {
+                _phScope = ScopeCity;
+                _phCityId = source.CityId;
+                _phCountryId = source.City?.CountryId
+                    ?? _cities.FirstOrDefault(c => c.Id == source.CityId.Value)?.CountryId;
+            }
+            else
+            {
+                _phScope = ScopeCountry;
+                _phCountryId = source.CountryId;
+                _phCityId = null;
+            }
+        }
+        _phEditDate = _phEditing.Date;
+        _phEditDialogOpen = true;
+        return Task.CompletedTask;
+    }
+
+    private async Task SavePhEditAsync()
+    {
+        if (_phEditing is null)
+        {
+            return;
+        }
+        _phEditError = null;
+        try
+        {
+            if (_phEditDate is null)
+            {
+                _phEditError = "Date is required.";
+                return;
+            }
+            _phEditing.Date = _phEditDate.Value;
+
+            if (_phScope == ScopeCity)
+            {
+                if (_phCityId is null)
+                {
+                    _phEditError = "City is required.";
+                    return;
+                }
+                _phEditing.CityId = _phCityId;
+                _phEditing.CountryId = null;
+            }
+            else
+            {
+                if (_phCountryId is null)
+                {
+                    _phEditError = "Country is required.";
+                    return;
+                }
+                _phEditing.CountryId = _phCountryId;
+                _phEditing.CityId = null;
+            }
+
+            if (_phEditing.Id == 0)
+            {
+                await PublicHolidayService.CreateAsync(_phEditing);
+                Snackbar.Add("Created.", Severity.Success);
+            }
+            else
+            {
+                await PublicHolidayService.UpdateAsync(_phEditing);
+                Snackbar.Add("Updated.", Severity.Success);
+            }
+            _phEditDialogOpen = false;
+            await ReloadPublicHolidaysAsync();
+        }
+        catch (Exception ex)
+        {
+            _phEditError = ex.Message;
+        }
+    }
+
+    private async Task DeletePhAsync(PublicHoliday item)
+    {
+        if (!await MessageService.Confirm($"Delete public holiday '{item.Name}' ({item.Date:yyyy-MM-dd}) ?"))
+        {
+            return;
+        }
+        try
+        {
+            await PublicHolidayService.DeleteAsync(item.Id);
+            Snackbar.Add("Deleted.", Severity.Success);
+            await ReloadPublicHolidaysAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to delete public holiday");
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task DownloadTemplateAsync()
+    {
+        try
+        {
+            var bytes = await PublicHolidayUploadService.GenerateTemplateAsync();
+            var base64 = Convert.ToBase64String(bytes);
+            await JS.InvokeVoidAsync("eval",
+                $"var a=document.createElement('a');a.href='data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{base64}';a.download='PublicHolidays_Template.xlsx';document.body.appendChild(a);a.click();a.remove();");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to generate public-holiday template");
+            Snackbar.Add($"Template download failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OnUploadFileSelected(IBrowserFile? file)
+    {
+        if (file is null)
+        {
+            return;
+        }
+        try
+        {
+            await using var stream = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 25 * 1024 * 1024).CopyToAsync(stream);
+            stream.Position = 0;
+            var rows = await PublicHolidayUploadService.ParseFileAsync(stream);
+            UploadPreview.PendingUpload = rows;
+            Navigation.NavigateTo(RoutingPath.PublicHolidaysUploadPreview);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to parse public-holiday upload");
+            Snackbar.Add($"Upload failed: {ex.Message}", Severity.Error);
+        }
+    }
+}
