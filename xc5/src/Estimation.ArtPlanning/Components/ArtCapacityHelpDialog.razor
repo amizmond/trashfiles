@@ -1,0 +1,201 @@
+@namespace Estimation.ArtPlanning.Components
+
+<MudDialog>
+    <DialogContent>
+        <div style="max-height:70vh; overflow-y:auto" class="pr-2">
+
+            <MudText Typo="Typo.body2" Class="mb-3">
+                Every resource on the ART contributes their whole pool of available days to a
+                <b>single skill</b> &mdash; the one they are most useful for &mdash; and the table adds those pools up
+                per skill. Nobody is split across several skills.
+            </MudText>
+
+            <MudPaper Elevation="0" Class="pa-2 mb-3 rounded"
+                      Style="background: var(--mud-palette-background-gray); font-family: monospace">
+                capacity(skill) = Σ available_days × level_ratio × role_coefficient × train_coefficient
+            </MudPaper>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">1. The days that count</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                The window runs from the PI's start date to <b>three weeks before its end date</b>. That last tail is
+                the innovation and planning sprint, which is not delivery capacity. It is a flat calendar rule: the
+                teams' own sprint records are not consulted, so a PI shorter than three weeks produces no capacity
+                at all.
+            </MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                Within the window, each person starts with every <b>Monday to Friday</b>. Then:
+            </MudText>
+            <ul class="mb-3">
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Public holidays</b> remove the day outright: those of the person's <b>city</b> and those of
+                        the city's <b>country</b>, a date on both lists counting once. Somebody with no city set loses
+                        nothing.
+                    </MudText>
+                </li>
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Personal leave</b> costs the whole day when the whole day is taken, and half a day for a
+                        morning or afternoon half day.
+                    </MudText>
+                </li>
+                <li>
+                    <MudText Typo="Typo.body2">
+                        Somebody on <b>several of the ART's teams</b> is counted once: their days are divided by the
+                        number of teams they sit on.
+                    </MudText>
+                </li>
+            </ul>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">2. Choosing each person's one skill</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                Everything here is driven by the <b>Settings</b> page. A person's candidate skills are the skills they
+                hold, narrowed and ordered like this:
+            </MudText>
+            <ol class="mb-3">
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Role skill limits.</b> If their team role is listed there, only the skills allowed for
+                        that role are candidates. If they hold none of them they contribute nothing at all. Somebody
+                        who holds a limited role on one team and an ordinary role on another is treated as the
+                        limited role.
+                    </MudText>
+                </li>
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Skill levels.</b> Only levels that have a row on the Skill levels tab can be chosen. A
+                        level with no row is dropped before ranking rather than scored zero, so somebody whose skills
+                        are all at an unlisted level drops out entirely.
+                    </MudText>
+                </li>
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Order of usage</b>, then <b>skill priority</b>. The lowest order of usage wins; ties fall
+                        through to the lowest skill ranking.
+                    </MudText>
+                </li>
+            </ol>
+            <MudText Typo="Typo.body2" Class="mb-3">
+                The winning skill takes the person's entire day pool. Each person contributes to exactly one
+                skill, however many of the ART's teams they sit on.
+            </MudText>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">3. Turning days into capacity</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                Three multipliers are applied to the available days, all from Settings:
+            </MudText>
+            <ul class="mb-3">
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Level ratio</b> &mdash; how much of a working day that skill level delivers. A ratio of 0 is
+                        allowed and means the level contributes nothing while still occupying the person's one skill.
+                    </MudText>
+                </li>
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Role coefficient</b> &mdash; scales a whole team role, for roles that spend part of their
+                        time away from delivery. A role that is not listed counts as 1.
+                    </MudText>
+                </li>
+                <li>
+                    <MudText Typo="Typo.body2">
+                        <b>Train coefficient</b> &mdash; one multiplier for the whole ART, applied last to each skill
+                        total. A value of 1 leaves the numbers unchanged.
+                    </MudText>
+                </li>
+            </ul>
+            <MudText Typo="Typo.body2" Class="mb-3">
+                Open the <b>Members</b> count on any row to see each person's days and every multiplier that was
+                applied to them.
+            </MudText>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">4. The Unassigned row</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                Unassigned is not an error row: it is where working days go when no skill could be chosen. Its
+                capacity is always zero, but its working days are real. Somebody lands there when they have:
+            </MudText>
+            <ul class="mb-3">
+                <li><MudText Typo="Typo.body2">no skill at a level listed on the Skill levels tab;</MudText></li>
+                <li><MudText Typo="Typo.body2">no team role;</MudText></li>
+                <li><MudText Typo="Typo.body2">no employee number, which is how people are matched to their skills;</MudText></li>
+                <li><MudText Typo="Typo.body2">a limited role but none of the skills that role allows.</MudText></li>
+            </ul>
+            <MudText Typo="Typo.body2" Class="mb-3">
+                <b>Inactive members and teams with no members</b> also land here, as nameless rows that still accrue
+                working days. That is why the total can look larger than the people you expect. The chips above the
+                table count them.
+            </MudText>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">5. Rules that surprise people</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                These are all agreed behaviour rather than defects. They are listed because each one can make a number
+                look wrong at a glance.
+            </MudText>
+            <MudSimpleTable Dense Bordered Striped Class="mb-3">
+                <thead>
+                    <tr>
+                        <th style="width:34%">Rule</th>
+                        <th>What it means</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Unranked skills</td>
+                        <td>
+                            A skill with no ranking sorts <b>ahead</b> of every ranked one, so leaving a skill blank
+                            makes it win ties rather than lose them.
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Roles across ARTs</td>
+                        <td>
+                            Skill selection looks at every ART. Somebody on teams in two ARTs may have the role they
+                            hold elsewhere decide the skill and coefficient used here.
+                        </td>
+                    </tr>
+                </tbody>
+            </MudSimpleTable>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">6. Where the settings come from</MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                Settings are held per ART and PI. The PI dropdown on the Settings page also offers <b>Default</b>:
+                values saved there apply to any PI of that ART that has none of its own.
+            </MudText>
+            <MudText Typo="Typo.body2" Class="mb-2">
+                The fallback is <b>per tab</b>. Saving only the skill priorities for a PI leaves its level ratios,
+                coefficients and limits still following the Default. The banner above the table says when a PI is
+                running on the Default.
+            </MudText>
+            <MudText Typo="Typo.body2" Class="mb-3">
+                Nothing is configured until somebody configures it &mdash; an ART with empty settings puts every
+                resource in Unassigned. <b>Copy from previous</b> fills a PI from the most recent earlier PI that has
+                settings, for when only small changes are needed.
+            </MudText>
+
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                The table is rebuilt from the current settings and resource data every time this page is opened.
+            </MudText>
+        </div>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    private void Close() => MudDialog.Close();
+}

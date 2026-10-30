@@ -1,0 +1,432 @@
+@inject ITeamCapacityService CapacityService
+@inject IJSRuntime JS
+
+@using Estimation.Core.Capacity.Services
+
+<MudDialog Style="@_dialogStyle" Class="@_dialogClass">
+    <TitleContent>
+        <div class="d-flex align-center" style="width:100%; gap:8px;">
+            <MudIcon Icon="@Icons.Material.Filled.Search" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">Find features to add</MudText>
+            <MudSpacer />
+            <MudTooltip Text="@(_fullscreen ? "Exit fullscreen" : "Fullscreen")">
+                <MudIconButton
+                    Icon="@(_fullscreen ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)"
+                    Size="Size.Small"
+                    OnClick="ToggleFullscreen" />
+            </MudTooltip>
+        </div>
+    </TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary mb-2 d-block">
+            Searches the database Features table. Only features already assigned to
+            <b>@TeamName</b> can be added; features already in this PI or previously added are marked.
+        </MudText>
+
+        <MudGrid Spacing="2">
+            <MudItem xs="6">
+                <MudSelect T="string" @bind-Value="_projectKey" Label="Jira Project"
+                           Variant="Variant.Outlined" Dense Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var p in Metadata.ProjectKeys)
+                    {
+                        <MudSelectItem T="string" Value="@p">@p</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+
+            <MudItem xs="6">
+                <MudTextField T="string" @bind-Value="_jiraIdsText"
+                              Label="Jira IDs (optional)"
+                              Placeholder="e.g. PROJ-123, PROJ-456"
+                              HelperText="Comma- or space-separated. When provided, the filters below are ignored."
+                              Variant="Variant.Outlined" Clearable />
+            </MudItem>
+
+            <MudItem xs="9">
+                <SearchableDropdown T="string"
+                                    Items="Metadata.Labels"
+                                    Values="_selectedLabels"
+                                    ValuesChanged="@(v => _selectedLabels = v)"
+                                    MultiSelect="true"
+                                    Label="Labels"
+                                    Style="width:100%" />
+            </MudItem>
+            <MudItem xs="3">
+                <MudSelect T="bool" @bind-Value="_labelMatchAll" Label="Label match"
+                           Variant="Variant.Outlined" Dense>
+                    <MudSelectItem T="bool" Value="false">Any</MudSelectItem>
+                    <MudSelectItem T="bool" Value="true">All</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+
+            <MudItem xs="9">
+                <MudSelect T="string" Label="Status" MultiSelection @bind-SelectedValues="_selectedStatuses"
+                           Variant="Variant.Outlined" Dense Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var status in Metadata.Statuses)
+                    {
+                        <MudSelectItem T="string" Value="@status">@status</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="3" Class="d-flex align-end">
+                <MudCheckBox T="bool" @bind-Value="_excludeStatuses" Label="NOT"
+                             Dense Color="Color.Warning" />
+            </MudItem>
+
+            <MudItem xs="9">
+                <MudSelect T="int" Label="Teams" MultiSelection @bind-SelectedValues="_selectedTeamIds"
+                           MultiSelectionTextFunc="@TeamSelectionText"
+                           Variant="Variant.Outlined" Dense Clearable
+                           AnchorOrigin="Origin.BottomCenter">
+                    @foreach (var t in Metadata.Teams)
+                    {
+                        <MudSelectItem T="int" Value="t.Id">@t.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="3">
+                <MudSelect T="bool" @bind-Value="_teamMatchAll" Label="Team match"
+                           Variant="Variant.Outlined" Dense>
+                    <MudSelectItem T="bool" Value="false">Any</MudSelectItem>
+                    <MudSelectItem T="bool" Value="true">All</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+
+            <MudItem xs="12" Class="d-flex justify-end">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Search"
+                           Disabled="_searching"
+                           OnClick="SearchAsync">
+                    @if (_searching)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate Color="Color.Default" Class="mr-2" />
+                        <span>Searching...</span>
+                    }
+                    else
+                    {
+                        <span>Search</span>
+                    }
+                </MudButton>
+            </MudItem>
+
+            @if (_searchExecuted)
+            {
+                <MudItem xs="12">
+                    <div class="d-flex align-center mb-2" style="gap:12px; flex-wrap:wrap;">
+                        <MudText Typo="Typo.subtitle2">Found @_results.Count feature(s)</MudText>
+                        @if (_selectedIds.Count > 0)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled">
+                                @_selectedIds.Count selected
+                            </MudChip>
+                        }
+                        @if (_addableCount > 0)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary"
+                                       OnClick="SelectAllAddable">Select all addable</MudButton>
+                            <MudButton Size="Size.Small" Variant="Variant.Text"
+                                       OnClick="@(() => _selectedIds.Clear())">Clear</MudButton>
+                        }
+                    </div>
+
+                    @if (_results.Count > 0)
+                    {
+                        <MudDataGrid T="FeatureFindRow" Items="_results"
+                                     Dense Hover Striped Bordered
+                                     Filterable="true" FilterMode="DataGridFilterMode.ColumnFilterRow"
+                                     Style="@_gridStyle">
+                            <Columns>
+                                <TemplateColumn Title="" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        <MudCheckBox T="bool"
+                                                     Value="@_selectedIds.Contains(context.Item.FeatureId)"
+                                                     ValueChanged="@((bool v) => ToggleSelect(context.Item, v))"
+                                                     Disabled="@(!IsAddable(context.Item))"
+                                                     Dense Color="Color.Primary" />
+                                    </CellTemplate>
+                                </TemplateColumn>
+                                <PropertyColumn Property="x => x.JiraId" Title="Key" />
+                                <PropertyColumn Property="x => x.Name" Title="Name" />
+                                <PropertyColumn Property="x => x.Status" Title="Status" />
+                                <TemplateColumn Title="Labels" Sortable="false">
+                                    <CellTemplate>@context.Item.Labels</CellTemplate>
+                                </TemplateColumn>
+                                <PropertyColumn Property="x => x.PiName" Title="PI" />
+                                <TemplateColumn Title="Teams" Sortable="false">
+                                    <CellTemplate>@context.Item.TeamNames</CellTemplate>
+                                </TemplateColumn>
+                                <PropertyColumn Property="x => x.Effort" Title="Effort" Format="0.##" />
+                                <TemplateColumn Title="" Sortable="false" Filterable="false">
+                                    <CellTemplate>
+                                        @if (context.Item.AlreadyInPi)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">In this PI</MudChip>
+                                        }
+                                        else if (context.Item.AlreadyAdded)
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">Already added</MudChip>
+                                        }
+                                        else if (!context.Item.LinkedToTeam)
+                                        {
+                                            <MudTooltip Text="@($"Not assigned to {TeamName}. Assign it to this team first.")">
+                                                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">Not on team</MudChip>
+                                            </MudTooltip>
+                                        }
+                                    </CellTemplate>
+                                </TemplateColumn>
+                            </Columns>
+                        </MudDataGrid>
+                    }
+                </MudItem>
+            }
+        </MudGrid>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled"
+                   StartIcon="@Icons.Material.Filled.PlaylistAddCheck"
+                   Disabled="@(_selectedIds.Count == 0)"
+                   OnClick="AddSelected">
+            Add selected@(_selectedIds.Count > 0 ? $" ({_selectedIds.Count})" : "")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter] public int TeamId { get; set; }
+    [Parameter] public int PiId { get; set; }
+    [Parameter] public string TeamName { get; set; } = string.Empty;
+    [Parameter] public FeatureFindMetadata Metadata { get; set; } = new(new(), new(), new(), new());
+
+    private const string FilterStorageKey = "featureFind.filters";
+
+    private string? _projectKey;
+    private string _jiraIdsText = string.Empty;
+    private IReadOnlyCollection<string> _selectedLabels = Array.Empty<string>();
+    private bool _labelMatchAll;
+    private IReadOnlyCollection<string> _selectedStatuses = Array.Empty<string>();
+    private bool _excludeStatuses;
+    private IReadOnlyCollection<int> _selectedTeamIds = Array.Empty<int>();
+    private bool _teamMatchAll;
+
+    private List<FeatureFindRow> _results = new();
+    private readonly HashSet<int> _selectedIds = new();
+    private bool _searching;
+    private bool _searchExecuted;
+    private bool _fullscreen;
+
+    private int _addableCount => _results.Count(IsAddable);
+
+    private string _dialogClass => _fullscreen ? "feature-find-dialog feature-find-dialog-fullscreen" : "feature-find-dialog";
+    private string _dialogStyle => _fullscreen ? "" : "max-width: calc(100vw - 60px); width: 1100px;";
+    private string _gridStyle => _fullscreen
+        ? "height: calc(100vh - 430px); overflow-y:auto;"
+        : "max-height: 55vh; min-height: 280px; overflow-y:auto;";
+
+    private void ToggleFullscreen() => _fullscreen = !_fullscreen;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await RestoreFiltersAsync();
+        }
+    }
+
+    private async Task RestoreFiltersAsync()
+    {
+        PersistedFilters? saved;
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", FilterStorageKey);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+            saved = System.Text.Json.JsonSerializer.Deserialize<PersistedFilters>(json);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (saved is null)
+        {
+            return;
+        }
+
+        _projectKey = saved.ProjectKey is not null && Metadata.ProjectKeys.Contains(saved.ProjectKey)
+            ? saved.ProjectKey
+            : null;
+        _selectedLabels = saved.Labels.Where(Metadata.Labels.Contains).ToArray();
+        _labelMatchAll = saved.LabelMatchAll;
+        _selectedStatuses = saved.Statuses.Where(Metadata.Statuses.Contains).ToArray();
+        _excludeStatuses = saved.ExcludeStatuses;
+        var validTeamIds = Metadata.Teams.Select(t => t.Id).ToHashSet();
+        _selectedTeamIds = saved.TeamIds.Where(validTeamIds.Contains).ToArray();
+        _teamMatchAll = saved.TeamMatchAll;
+
+        StateHasChanged();
+    }
+
+    private async Task PersistFiltersAsync()
+    {
+        try
+        {
+            var data = new PersistedFilters
+            {
+                ProjectKey = _projectKey,
+                Labels = _selectedLabels.ToList(),
+                LabelMatchAll = _labelMatchAll,
+                Statuses = _selectedStatuses.ToList(),
+                ExcludeStatuses = _excludeStatuses,
+                TeamIds = _selectedTeamIds.ToList(),
+                TeamMatchAll = _teamMatchAll,
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(data);
+            await JS.InvokeVoidAsync("localStorage.setItem", FilterStorageKey, json);
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed class PersistedFilters
+    {
+        public string? ProjectKey { get; set; }
+        public List<string> Labels { get; set; } = new();
+        public bool LabelMatchAll { get; set; }
+        public List<string> Statuses { get; set; } = new();
+        public bool ExcludeStatuses { get; set; }
+        public List<int> TeamIds { get; set; } = new();
+        public bool TeamMatchAll { get; set; }
+    }
+
+    private static bool IsAddable(FeatureFindRow row)
+        => row.LinkedToTeam && !row.AlreadyInPi && !row.AlreadyAdded;
+
+    private string TeamSelectionText(IReadOnlyList<string> selectedValues)
+    {
+        var names = selectedValues
+            .Select(v => int.TryParse(v, out var id)
+                ? Metadata.Teams.FirstOrDefault(t => t.Id == id)?.Name
+                : null)
+            .Where(n => !string.IsNullOrEmpty(n));
+        return string.Join(", ", names);
+    }
+
+    private List<string> ParseJiraIds()
+    {
+        if (string.IsNullOrWhiteSpace(_jiraIdsText))
+        {
+            return new List<string>();
+        }
+        var separators = new[] { ',', ';', ' ', '\t', '\n', '\r' };
+        return _jiraIdsText
+            .Split(separators, StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task SearchAsync()
+    {
+        _searching = true;
+        _searchExecuted = false;
+        StateHasChanged();
+
+        try
+        {
+            await PersistFiltersAsync();
+
+            var criteria = new FeatureFindCriteria(
+                _projectKey,
+                ParseJiraIds(),
+                _selectedLabels.ToList(),
+                _labelMatchAll,
+                _selectedStatuses.ToList(),
+                _excludeStatuses,
+                _selectedTeamIds.ToList(),
+                _teamMatchAll);
+
+            _results = await CapacityService.FindFeaturesAsync(TeamId, PiId, criteria);
+            _selectedIds.Clear();
+            _searchExecuted = true;
+        }
+        catch (Exception ex)
+        {
+            _results = new();
+            _selectedIds.Clear();
+            _searchExecuted = true;
+            Serilog.Log.Error(ex, "Feature DB search failed");
+        }
+        finally
+        {
+            _searching = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleSelect(FeatureFindRow row, bool value)
+    {
+        if (!IsAddable(row))
+        {
+            return;
+        }
+        if (value)
+        {
+            _selectedIds.Add(row.FeatureId);
+        }
+        else
+        {
+            _selectedIds.Remove(row.FeatureId);
+        }
+    }
+
+    private void SelectAllAddable()
+    {
+        foreach (var row in _results.Where(IsAddable))
+        {
+            _selectedIds.Add(row.FeatureId);
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task AddSelected()
+    {
+        var selected = _results
+            .Where(r => _selectedIds.Contains(r.FeatureId) && IsAddable(r))
+            .ToList();
+        if (selected.Count == 0)
+        {
+            MudDialog.Cancel();
+            return;
+        }
+        await PersistFiltersAsync();
+        MudDialog.Close(DialogResult.Ok(selected));
+    }
+}
+
+<style>
+    .mud-dialog-container:has(.feature-find-dialog-fullscreen) {
+        max-width: 100vw !important;
+        width: 100vw !important;
+        max-height: 100vh !important;
+        height: 100vh !important;
+        margin: 0 !important;
+    }
+    .feature-find-dialog-fullscreen {
+        max-width: 100vw !important;
+        width: 100vw !important;
+        max-height: 100vh !important;
+        height: 100vh !important;
+        margin: 0 !important;
+        border-radius: 0 !important;
+    }
+</style>

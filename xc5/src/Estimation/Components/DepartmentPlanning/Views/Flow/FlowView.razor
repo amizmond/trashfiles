@@ -1,0 +1,391 @@
+@namespace Estimation.Components.DepartmentPlanning.Views
+@inherits PlanningViewBase
+@using System.Globalization
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.DepartmentPlanning.Views
+
+<div class="fl-wrap">
+    <div class="fl-bar">
+        <MudToggleGroup T="FlowSourceLevel" Value="_source" ValueChanged="SetSource"
+                        SelectionMode="SelectionMode.SingleSelection" Color="Color.Primary" Size="Size.Small" CheckMark="false">
+            <MudToggleItem Value="FlowSourceLevel.Objectives" Text="Strategic objectives" />
+            <MudToggleItem Value="FlowSourceLevel.PortfolioEpics" Text="Portfolio epics" />
+        </MudToggleGroup>
+        <MudTooltip Text="Rows below 2% of the story points shown are bundled into one Other node. Switch on to draw every row.">
+            <MudSwitch T="bool" Value="_showAll" ValueChanged="SetShowAll" Label="Show small rows" Color="Color.Primary" Size="Size.Small" />
+        </MudTooltip>
+        <MudSpacer />
+        <span class="fl-legend">Ribbon width = story points · colour = strategic objective · dashed outline = ART capacity, red = over · a portfolio epic under several objectives has a ribbon from each, the hatched part of a node; the numbers at the ARTs and at Not planned count every feature once.</span>
+    </div>
+    @if (Tree.Lens != PlanningLens.Objectives)
+    {
+        <div class="fl-empty">The Flow view needs the Hierarchy lens.</div>
+    }
+    else if (_layout.IsEmpty)
+    {
+        <div class="fl-empty">No story points to show for the current filters.</div>
+    }
+    else
+    {
+        <div class="fl-canvas">
+            <svg class="fl-svg" style="--fl-ratio:@F(_layout.Height > 0 ? _layout.Width / _layout.Height : 1.6)" viewBox="0 0 @F(_layout.Width) @F(_layout.Height)" role="group" aria-label="@AriaLabel">
+                <g class="fl-links">
+                    @foreach (var link in _layout.Links)
+                    {
+                        <path @key="link.Index"
+                              class="fl-link @ColorClass(link.ColorIndex) @LinkState(link) @(link.ToOutlet ? "to-outlet" : "")"
+                              d="@link.Path"
+                              stroke-width="@F(Math.Max(MinStroke, link.Thickness))"
+                              @onpointerenter="_linkEnter.For(link)"
+                              @onpointerleave="ClearHover"
+                              @onclick="_linkClick.For(link)">
+                            <title>@LinkTip(link)</title>
+                        </path>
+                    }
+                </g>
+                <g class="fl-targets">
+                    @foreach (var node in _layout.Targets)
+                    {
+                        <g @key="node.Key"
+                           class="fl-node @(node.Kind == FlowNodeKind.Art ? "fl-art" : "fl-outlet") @NodeState(node) @(node.OverCapacity ? "over" : "")"
+                           @onpointerenter="_nodeEnter.For(node)"
+                           @onpointerleave="ClearHover">
+                            <title>@NodeTip(node)</title>
+                            @if (node.CapacityHeight is { } capacityHeight)
+                            {
+                                <rect class="fl-cap" x="@F(node.X)" y="@F(node.Y)" width="@F(node.Width)" height="@F(capacityHeight)" rx="2" />
+                            }
+                            <rect class="fl-fill" x="@F(node.X)" y="@F(node.Y)" width="@F(node.Width)" height="@F(Math.Max(MinStroke, node.NetHeight))" rx="2" />
+                            @if (node.HasShared)
+                            {
+                                <rect class="fl-shared" x="@F(node.X)" y="@F(node.Y + node.NetHeight)" width="@F(node.Width)" height="@F(Math.Max(MinStroke, node.Height - node.NetHeight))" />
+                            }
+                            @if (node.OverCapacity && node.CapacityHeight is { } used)
+                            {
+                                <rect class="fl-over" x="@F(node.X)" y="@F(node.Y + used)" width="@F(node.Width)" height="@F(Math.Max(MinStroke, node.NetHeight - used))" />
+                            }
+                            @if (node.SlotHeight >= TitleMin)
+                            {
+                                var twoLines = node.SlotHeight >= SubMin;
+                                @Label("fl-title", node.X + node.Width + 6, twoLines ? node.CenterY - 6.5 : node.CenterY, null, FlowLayout.Fit(node.Title, TitleChars))
+                                @if (twoLines)
+                                {
+                                    @Label("fl-sub", node.X + node.Width + 6, node.CenterY + 7, null, TargetSub(node))
+                                }
+                            }
+                        </g>
+                    }
+                </g>
+                <g class="fl-sources">
+                    @foreach (var node in _layout.Sources)
+                    {
+                        <g @key="node.Key"
+                           class="fl-node fl-source @ColorClass(node.ColorIndex) @NodeState(node) @(IsSelectedNode(node) ? "selected" : "") @(node.IsBucket ? "bucket" : "") @(node.IsSelectable ? "selectable" : "")"
+                           tabindex="@(node.IsSelectable ? "0" : null)"
+                           role="@(node.IsSelectable ? "button" : null)"
+                           aria-label="@(node.IsSelectable ? SourceLabel(node) : null)"
+                           @onpointerenter="_nodeEnter.For(node)"
+                           @onpointerleave="ClearHover"
+                           @onfocus="_nodeEnter.For(node)"
+                           @onblur="ClearHover"
+                           @onclick="_nodeClick.For(node)"
+                           @onkeydown="_nodeKey.For(node)">
+                            <title>@NodeTip(node)</title>
+                            <rect class="fl-fill" x="@F(node.X)" y="@F(node.Y)" width="@F(node.Width)" height="@F(Math.Max(MinStroke, node.Height))" rx="2" />
+                            @if (node.Height >= TitleMin)
+                            {
+                                var twoLines = node.Height >= SubMin;
+                                @Label("fl-title", node.X - 6, twoLines ? node.CenterY - 6.5 : node.CenterY, "end", FlowLayout.Fit(SourceLabel(node), TitleChars))
+                                @if (twoLines)
+                                {
+                                    @Label("fl-sub", node.X - 6, node.CenterY + 7, "end", SourceSub(node))
+                                }
+                            }
+                        </g>
+                    }
+                </g>
+            </svg>
+        </div>
+        <div class="fl-foot">
+            <span>Totals as in the grid, each feature counted once: @Sp(Tree.Total.PlannedSp) SP planned · @Sp(Tree.Total.UnplannedSp) SP not planned · capacity @Sp(Tree.TotalCapacitySp) SP.</span>
+            @if (_layout.BundledRows > 0)
+            {
+                <span>@_layout.BundledRows small @RowWord(_layout.BundledRows) bundled into Other.</span>
+            }
+            @if (_layout.HiddenRows > 0)
+            {
+                <span>@_layout.HiddenRows @RowWord(_layout.HiddenRows) with no story points not drawn.</span>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private const double TitleMin = 11d;
+    private const double SubMin = 26d;
+    private const double MinStroke = 0.75d;
+    private const int TitleChars = 36;
+    private const int SubChars = 44;
+    private const int OtherNames = 12;
+
+    private FlowSourceLevel _source = FlowSourceLevel.Objectives;
+    private bool _showAll;
+    private FlowLayout _layout = FlowLayout.Empty;
+    private PlanningTree? _layoutTree;
+    private FlowOptions? _layoutOptions;
+    private Dictionary<string, FlowNode> _nodesByKey = new(StringComparer.Ordinal);
+    private string? _hoverKey;
+    private int? _hoverLink;
+    private readonly HashSet<string> _litNodes = new(StringComparer.Ordinal);
+    private readonly HashSet<int> _litLinks = [];
+    private readonly PlanningHandlerCache<FlowLink, Action> _linkEnter;
+    private readonly PlanningHandlerCache<FlowLink, Func<Task>> _linkClick;
+    private readonly PlanningHandlerCache<FlowNode, Action> _nodeEnter;
+    private readonly PlanningHandlerCache<FlowNode, Func<Task>> _nodeClick;
+    private readonly PlanningHandlerCache<FlowNode, Func<KeyboardEventArgs, Task>> _nodeKey;
+    private Dictionary<string, string> _nodeTips = new(StringComparer.Ordinal);
+    private Dictionary<int, string> _linkTips = [];
+
+    public FlowView()
+    {
+        _linkEnter = new(link => () => HoverLink(link), ReferenceEqualityComparer.Instance);
+        _linkClick = new(link => () => SelectLinkAsync(link), ReferenceEqualityComparer.Instance);
+        _nodeEnter = new(node => () => HoverNode(node), ReferenceEqualityComparer.Instance);
+        _nodeClick = new(node => () => SelectNodeAsync(node), ReferenceEqualityComparer.Instance);
+        _nodeKey = new(node => e => OnNodeKeyAsync(e, node), ReferenceEqualityComparer.Instance);
+    }
+
+    private bool Hovering => _hoverKey is not null || _hoverLink is not null;
+
+    private string AriaLabel => _layout.Source == FlowSourceLevel.PortfolioEpics
+        ? "Story points flowing from portfolio epics into ARTs and into not planned"
+        : "Story points flowing from strategic objectives into ARTs and into not planned";
+
+    protected override void OnParametersSet() => Rebuild();
+
+    private void Rebuild()
+    {
+        var options = new FlowOptions { Source = _source, BundleSmall = !_showAll, ShowCapacity = Options.ActiveFilterCount == 0 };
+        if (ReferenceEquals(_layoutTree, Tree) && options == _layoutOptions)
+        {
+            return;
+        }
+
+        _layoutTree = Tree;
+        _layoutOptions = options;
+        _layout = FlowLayout.Build(Tree, options, Data?.Objectives.Select(o => o.Id).ToList());
+        _nodesByKey = _layout.Nodes.ToDictionary(n => n.Key, StringComparer.Ordinal);
+        _nodeTips = _layout.Nodes.ToDictionary(n => n.Key, NodeTooltip, StringComparer.Ordinal);
+        _linkTips = _layout.Links.ToDictionary(l => l.Index, LinkTooltip);
+        _linkEnter.Clear();
+        _linkClick.Clear();
+        _nodeEnter.Clear();
+        _nodeClick.Clear();
+        _nodeKey.Clear();
+        ClearHover();
+    }
+
+    private void SetSource(FlowSourceLevel source)
+    {
+        _source = source;
+        Rebuild();
+    }
+
+    private void SetShowAll(bool value)
+    {
+        _showAll = value;
+        Rebuild();
+    }
+
+    private void HoverNode(FlowNode node)
+    {
+        if (_hoverKey == node.Key && _hoverLink is null)
+        {
+            return;
+        }
+
+        _hoverKey = node.Key;
+        _hoverLink = null;
+        _litNodes.Clear();
+        _litLinks.Clear();
+        _litNodes.Add(node.Key);
+        foreach (var link in _layout.Links)
+        {
+            if (link.SourceKey != node.Key && link.TargetKey != node.Key)
+            {
+                continue;
+            }
+
+            _litLinks.Add(link.Index);
+            _litNodes.Add(link.SourceKey);
+            _litNodes.Add(link.TargetKey);
+        }
+    }
+
+    private void HoverLink(FlowLink link)
+    {
+        if (_hoverLink == link.Index)
+        {
+            return;
+        }
+
+        _hoverKey = null;
+        _hoverLink = link.Index;
+        _litNodes.Clear();
+        _litLinks.Clear();
+        _litLinks.Add(link.Index);
+        _litNodes.Add(link.SourceKey);
+        _litNodes.Add(link.TargetKey);
+    }
+
+    private void ClearHover()
+    {
+        _hoverKey = null;
+        _hoverLink = null;
+        _litNodes.Clear();
+        _litLinks.Clear();
+    }
+
+    private string NodeState(FlowNode node) => !Hovering ? "" : _litNodes.Contains(node.Key) ? "lit" : "dim";
+
+    private string LinkState(FlowLink link) => !Hovering ? "" : _litLinks.Contains(link.Index) ? "lit" : "dim";
+
+    private static string ColorClass(int index) => index < 0 ? "c-none" : "c" + index.ToString(CultureInfo.InvariantCulture);
+
+    private bool IsSelectedNode(FlowNode node) =>
+        node.RowId is { } id && SelectedId is { } selected
+        && (selected == id || selected.StartsWith(id + "/", StringComparison.Ordinal));
+
+    private Task SelectNodeAsync(FlowNode node) => node.RowId is { } id ? ShowDetailsAsync(id) : Task.CompletedTask;
+
+    private Task SelectLinkAsync(FlowLink link) =>
+        _nodesByKey.TryGetValue(link.SourceKey, out var node) ? SelectNodeAsync(node) : Task.CompletedTask;
+
+    private Task OnNodeKeyAsync(KeyboardEventArgs e, FlowNode node) =>
+        e.Key is "Enter" or " " ? SelectNodeAsync(node) : Task.CompletedTask;
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static RenderFragment Label(string cssClass, double x, double y, string? anchor, string text) => builder =>
+    {
+        builder.OpenElement(0, "text");
+        builder.AddAttribute(1, "class", cssClass);
+        builder.AddAttribute(2, "x", F(x));
+        builder.AddAttribute(3, "y", F(y));
+        if (anchor is not null)
+        {
+            builder.AddAttribute(4, "text-anchor", anchor);
+        }
+
+        builder.AddAttribute(5, "dominant-baseline", "middle");
+        builder.AddContent(6, text);
+        builder.CloseElement();
+    };
+
+    private static string Sp(decimal value) => PlanningFormat.Sp(value);
+
+    private static string RowWord(int count) => count == 1 ? "row" : "rows";
+
+    private static string SourceLabel(FlowNode node) => node.Kind == FlowNodeKind.Other
+        ? $"Other ({node.BundledCount})"
+        : string.IsNullOrEmpty(node.JiraId) ? node.Title : $"{node.JiraId} {node.Title}";
+
+    private static string SourceSub(FlowNode node) =>
+        FlowLayout.Fit($"{Sp(node.PlannedSp)} SP planned · {Sp(node.UnplannedSp)} not planned", SubChars);
+
+    private bool CapacityShown => _layoutOptions?.ShowCapacity ?? true;
+
+    private string TargetSub(FlowNode node)
+    {
+        if (node.Kind == FlowNodeKind.Outlet)
+        {
+            return $"{Sp(node.NetSp)} SP · {PlanningFormat.Percent(ShareOfDemand(node.NetSp))} of the demand shown";
+        }
+
+        if (!CapacityShown)
+        {
+            return $"{Sp(node.NetSp)} SP planned · capacity not compared while filtered";
+        }
+
+        if (node.CapacitySp is not { } capacity || capacity <= 0m)
+        {
+            return $"{Sp(node.NetSp)} SP planned · no capacity";
+        }
+
+        return node.OverCapacity
+            ? $"{Sp(node.NetSp)} of {Sp(capacity)} SP · {Sp(-node.FreeSp)} SP over"
+            : $"{Sp(node.NetSp)} of {Sp(capacity)} SP · {Sp(node.FreeSp)} SP free";
+    }
+
+    private double? ShareOfDemand(decimal value)
+    {
+        var demand = Tree.Total.DemandSp;
+        return demand > 0m ? (double)(value / demand) : null;
+    }
+
+    private static string SharedLine(FlowNode node) => node.HasShared
+        ? $"\nThe ribbons add up to {Sp(node.Sp)} SP because {Sp(node.SharedSp)} SP of portfolio epics under several objectives are drawn once per objective (hatched)."
+        : "";
+
+    private string NodeTip(FlowNode node) => _nodeTips.GetValueOrDefault(node.Key) ?? NodeTooltip(node);
+
+    private string LinkTip(FlowLink link) => _linkTips.GetValueOrDefault(link.Index) ?? LinkTooltip(link);
+
+    private string NodeTooltip(FlowNode node)
+    {
+        switch (node.Kind)
+        {
+            case FlowNodeKind.Art:
+                var capacity = !CapacityShown
+                    ? "Capacity is not compared while a filter is on: the work the filter hides uses the same capacity"
+                    : node.CapacitySp is { } c && c > 0m
+                        ? $"Capacity {Sp(c)} SP, {(node.OverCapacity ? $"{Sp(-node.FreeSp)} SP over" : $"{Sp(node.FreeSp)} SP free")}"
+                        : "No capacity set for this PI";
+                return $"{node.Title}\n{Sp(node.NetSp)} SP planned on its teams, each feature counted once\n{capacity}{SharedLine(node)}";
+            case FlowNodeKind.Outlet:
+                return $"Not planned\n{Sp(node.NetSp)} SP below a team or ART line or on teams without capacity, {PlanningFormat.Percent(ShareOfDemand(node.NetSp))} of the demand shown{SharedLine(node)}";
+            case FlowNodeKind.Other:
+                var names = string.Join("\n", node.BundledTitles.Take(OtherNames));
+                var more = node.BundledCount > OtherNames ? $"\n… and {node.BundledCount - OtherNames} more" : "";
+                return $"Other: {node.BundledCount} rows below 2% of the story points shown\n{Sp(node.PlannedSp)} SP planned · {Sp(node.UnplannedSp)} SP not planned\n{names}{more}";
+            default:
+                return RowTooltip(node);
+        }
+    }
+
+    private static string RowTooltip(FlowNode node)
+    {
+        var row = node.Row!;
+        var lines = new List<string>
+        {
+            SourceLabel(node),
+            $"{Sp(row.Metrics.DemandSp)} SP demand · {Sp(row.Metrics.PlannedSp)} planned · {Sp(row.Metrics.UnplannedSp)} not planned",
+        };
+        if (row.AlsoUnder.Count > 0)
+        {
+            lines.Add($"Also under {string.Join(", ", row.AlsoUnder)}: counted under each objective here");
+        }
+
+        if (row.IsBelowArtLine)
+        {
+            lines.Add("Below the ART line");
+        }
+
+        if (node.Sp != row.Metrics.DemandSp)
+        {
+            lines.Add($"{Sp(node.Sp)} SP drawn: a team in two ARTs counts in both");
+        }
+
+        lines.Add("Click to open the details");
+        return string.Join("\n", lines);
+    }
+
+    private string LinkTooltip(FlowLink link)
+    {
+        var from = _nodesByKey.TryGetValue(link.SourceKey, out var source) ? SourceLabel(source) : "";
+        var to = _nodesByKey.TryGetValue(link.TargetKey, out var target) ? target.Title : "";
+        return link.ToOutlet
+            ? $"{from} → Not planned\n{Sp(link.Sp)} SP, {PlanningFormat.Percent(link.ShareOfSource)} of the row's story points, {PlanningFormat.Percent(link.ShareOfTarget)} of all not planned"
+            : $"{from} → {to}\n{Sp(link.Sp)} SP planned, {PlanningFormat.Percent(link.ShareOfSource)} of the row's story points, {PlanningFormat.Percent(link.ShareOfTarget)} of what the ART plans";
+    }
+}

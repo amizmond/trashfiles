@@ -1,0 +1,417 @@
+@namespace Estimation.Components.DepartmentPlanning.Views
+@inherits PlanningViewBase
+
+@using System.Globalization
+@using System.Text
+@using Estimation.Core.DepartmentPlanning.Services
+@using Estimation.Core.DepartmentPlanning.Views
+@using Estimation.Core.JiraIntegration.Models
+
+<div class="rq-wrap">
+    <div class="rq-toolbar">
+        <div class="rq-control">
+            <span class="rq-control-label">Bubbles</span>
+            <MudToggleGroup T="PlanningLevel" Value="_level" ValueChanged="SetLevel"
+                            SelectionMode="SelectionMode.SingleSelection" Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="PlanningLevel.PortfolioEpic">Portfolio epics</MudToggleItem>
+                <MudToggleItem Value="PlanningLevel.BusinessOutcome">Business outcomes</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <div class="rq-control">
+            <span class="rq-control-label">Size</span>
+            <MudToggleGroup T="RiskQuadrantSizeAxis" Value="_sizeAxis" ValueChanged="SetSizeAxis"
+                            SelectionMode="SelectionMode.SingleSelection" Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="RiskQuadrantSizeAxis.Demand">Demand</MudToggleItem>
+                <MudToggleItem Value="RiskQuadrantSizeAxis.ShareOfCapacity">Share of capacity</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <div class="rq-control">
+            <span class="rq-control-label">Risk</span>
+            <MudToggleGroup T="RiskQuadrantRiskAxis" Value="_riskAxis" ValueChanged="SetRiskAxis"
+                            SelectionMode="SelectionMode.SingleSelection" Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                <MudToggleItem Value="RiskQuadrantRiskAxis.AtRiskEpics">Features at risk</MudToggleItem>
+                <MudToggleItem Value="RiskQuadrantRiskAxis.AtRiskDemand">Demand at risk</MudToggleItem>
+                <MudToggleItem Value="RiskQuadrantRiskAxis.NotPlanned">Not planned</MudToggleItem>
+            </MudToggleGroup>
+        </div>
+        <div class="rq-control">
+            <span class="rq-control-label">Lines</span>
+            <div class="rq-stepper" title="Where big starts: the median by default. Move it in half tick steps.">
+                <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small" aria-label="Move the size line left"
+                               Disabled="@(_layout.Points.Count == 0 || _layout.SizeThreshold <= 0d)" OnClick="@(() => StepSize(-1))" />
+                <span class="rq-stepper-value">@SizeThresholdText</span>
+                <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small" aria-label="Move the size line right"
+                               Disabled="@(_layout.Points.Count == 0 || _layout.SizeThreshold >= _layout.SizeMax)" OnClick="@(() => StepSize(1))" />
+            </div>
+            <div class="rq-stepper" title="Where at risk starts: 25% by default. Move it in steps of 5 percentage points.">
+                <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small" aria-label="Move the risk line down"
+                               Disabled="@(_layout.RiskThreshold <= RiskQuadrantLayout.RiskThresholdStep)" OnClick="@(() => StepRisk(-1))" />
+                <span class="rq-stepper-value">@RiskThresholdText</span>
+                <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small" aria-label="Move the risk line up"
+                               Disabled="@(_layout.RiskThreshold >= 1d - RiskQuadrantLayout.RiskThresholdStep)" OnClick="@(() => StepRisk(1))" />
+            </div>
+            @if (_sizeSteps != 0 || _riskSteps != 0)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Secondary" OnClick="ResetThresholds">Reset lines</MudButton>
+            }
+        </div>
+    </div>
+
+    @if (_layout.Points.Count == 0)
+    {
+        <div class="rq-empty">@EmptyText</div>
+    }
+    else
+    {
+        <div class="rq-body">
+            <div class="rq-chart-box">
+                <svg class="rq-chart" style="--rq-ratio:@F(_layout.Height > 0 ? _layout.Width / _layout.Height : 1.6667)" viewBox="0 0 @F(_layout.Width) @F(_layout.Height)" preserveAspectRatio="xMidYMid meet" role="group"
+                     aria-label="@($"{PlanningFormat.LevelPlural(_layout.Level)} by {SizeAxisTitle} and {RiskAxisTitle}")">
+                    <rect class="rq-zone delegate" x="@F(_layout.PlotLeft)" y="@F(_layout.PlotTop)" width="@F(_layout.SizeThresholdX - _layout.PlotLeft)" height="@F(_layout.RiskThresholdY - _layout.PlotTop)" />
+                    <rect class="rq-zone decide" x="@F(_layout.SizeThresholdX)" y="@F(_layout.PlotTop)" width="@F(_layout.PlotRight - _layout.SizeThresholdX)" height="@F(_layout.RiskThresholdY - _layout.PlotTop)" />
+                    <rect class="rq-zone watch" x="@F(_layout.PlotLeft)" y="@F(_layout.RiskThresholdY)" width="@F(_layout.SizeThresholdX - _layout.PlotLeft)" height="@F(_layout.PlotBottom - _layout.RiskThresholdY)" />
+                    <rect class="rq-zone protect" x="@F(_layout.SizeThresholdX)" y="@F(_layout.RiskThresholdY)" width="@F(_layout.PlotRight - _layout.SizeThresholdX)" height="@F(_layout.PlotBottom - _layout.RiskThresholdY)" />
+
+                    @foreach (var tick in _layout.SizeTicks)
+                    {
+                        <g>
+                            <line class="rq-grid" x1="@F(tick.Position)" x2="@F(tick.Position)" y1="@F(_layout.PlotTop)" y2="@F(_layout.PlotBottom)" />
+                            <text class="rq-tick" x="@F(tick.Position)" y="@F(_layout.PlotBottom + 17d)" text-anchor="middle">@SizeTickText(tick.Value)</text>
+                        </g>
+                    }
+                    @foreach (var tick in _layout.RiskTicks)
+                    {
+                        <g>
+                            <line class="rq-grid" x1="@F(_layout.PlotLeft)" x2="@F(_layout.PlotRight)" y1="@F(tick.Position)" y2="@F(tick.Position)" />
+                            <text class="rq-tick" x="@F(_layout.PlotLeft - 8d)" y="@F(tick.Position + 4d)" text-anchor="end">@PlanningFormat.Percent(tick.Value)</text>
+                        </g>
+                    }
+                    <rect class="rq-frame" x="@F(_layout.PlotLeft)" y="@F(_layout.PlotTop)" width="@F(_layout.PlotRight - _layout.PlotLeft)" height="@F(_layout.PlotBottom - _layout.PlotTop)" />
+
+                    <text class="rq-axis-title" x="@F((_layout.PlotLeft + _layout.PlotRight) / 2d)" y="@F(_layout.Height - 12d)" text-anchor="middle">@SizeAxisTitle →</text>
+                    <text class="rq-axis-title" transform="rotate(-90)" x="@F(-(_layout.PlotTop + _layout.PlotBottom) / 2d)" y="16" text-anchor="middle">@RiskAxisTitle →</text>
+
+                    <line class="rq-threshold" x1="@F(_layout.SizeThresholdX)" x2="@F(_layout.SizeThresholdX)" y1="@F(_layout.PlotTop)" y2="@F(_layout.PlotBottom)" />
+                    <text class="rq-threshold-text" x="@F(_layout.SizeThresholdX + (SizeLabelOnLeft ? -5d : 5d))" y="@F(_layout.PlotTop - 8d)" text-anchor="@(SizeLabelOnLeft ? "end" : "start")">@SizeThresholdText</text>
+                    <line class="rq-threshold" x1="@F(_layout.PlotLeft)" x2="@F(_layout.PlotRight)" y1="@F(_layout.RiskThresholdY)" y2="@F(_layout.RiskThresholdY)" />
+                    <text class="rq-threshold-text" x="@F(_layout.PlotLeft + 5d)" y="@F(_layout.RiskThresholdY - 5d)">@RiskThresholdText</text>
+
+                    @foreach (var zone in Zones)
+                    {
+                        var right = zone is RiskQuadrantZone.DecideNow or RiskQuadrantZone.Protect;
+                        var top = zone is RiskQuadrantZone.DecideNow or RiskQuadrantZone.Delegate;
+                        <g @key="zone">
+                            <text class="rq-caption @ZoneClass(zone) @(zone == _listZone ? "active" : "")"
+                                  x="@F(right ? _layout.PlotRight - 10d : _layout.PlotLeft + 10d)"
+                                  y="@F(top ? _layout.PlotTop + 20d : _layout.PlotBottom - 10d)"
+                                  text-anchor="@(right ? "end" : "start")"
+                                  role="button"
+                                  @onclick="_zoneClick.For(zone)">
+                                <title>@ZoneHint(zone). Click to list this quadrant on the right.</title>
+                                @ZoneTitle(zone) · @_layout.CountIn(zone)
+                            </text>
+                        </g>
+                    }
+
+                    @foreach (var point in _layout.Points)
+                    {
+                        var ragClass = PlanningFormat.RagClass(point.Rag);
+                        <g class="rq-bubble @ragClass @(point.IsBelowArtLine ? "hollow" : "") @(point.IsSelected ? "selected" : "") @(point.IsBucket ? "bucket" : "")"
+                           @key="point.RowId"
+                           tabindex="0"
+                           role="button"
+                           @onclick="DetailsHandler(point.RowId)"
+                           @onkeydown="DetailsKeyHandler(point.RowId)">
+                            <title>@TooltipOf(point)</title>
+                            <circle class="rq-dot" cx="@F(point.X)" cy="@F(point.Y)" r="@F(point.Radius)" />
+                            @if (point.Progress > 0d)
+                            {
+                                <circle class="rq-arc" cx="@F(point.X)" cy="@F(point.Y)" r="@F(point.ArcRadius)"
+                                        stroke-dasharray="@F(point.ArcLength) @F(point.ArcCircumference)"
+                                        transform="rotate(-90 @F(point.X) @F(point.Y))" />
+                            }
+                            @if (point.Radius >= 9d && ragClass == "rag-red")
+                            {
+                                <path class="rq-glyph" d="@Triangle(point)" />
+                            }
+                            else if (point.Radius >= 9d && ragClass == "rag-amber")
+                            {
+                                <rect class="rq-glyph" x="@F(point.X - 3.5d)" y="@F(point.Y - 3.5d)" width="7" height="7" />
+                            }
+                            @if (point.IsLate)
+                            {
+                                <circle class="rq-late" cx="@F(point.X + (point.Radius * 0.72d))" cy="@F(point.Y - (point.Radius * 0.72d))" r="4" />
+                            }
+                            @if (point.Label is not null)
+                            {
+                                <g>
+                                    <text class="rq-label" x="@F(point.LabelX)" y="@F(point.LabelY)">@point.Label</text>
+                                </g>
+                            }
+                        </g>
+                    }
+                </svg>
+            </div>
+
+            <div class="rq-list">
+                <div class="rq-list-head">
+                    <span class="rq-list-title @ZoneClass(_listZone)">@ZoneTitle(_listZone)</span>
+                    <span class="rq-list-count">@_list.Count</span>
+                </div>
+                <div class="rq-list-sub">@ZoneHint(_listZone)</div>
+                @if (_list.Count == 0)
+                {
+                    <div class="rq-list-empty">No @PlanningFormat.LevelPlural(_layout.Level).ToLowerInvariant() in this quadrant.</div>
+                }
+                else
+                {
+                    <div class="rq-list-cols">
+                        <span></span>
+                        <span>@PlanningFormat.LevelName(_layout.Level)</span>
+                        <span class="num">Demand</span>
+                        <span class="num">@RiskColumnTitle</span>
+                    </div>
+                    <div class="rq-items">
+                        @foreach (var point in _list)
+                        {
+                            <div class="rq-item @(point.IsSelected ? "selected" : "") @(point.IsBucket ? "bucket" : "")"
+                                 @key="point.RowId"
+                                 role="button"
+                                 title="@TooltipOf(point)"
+                                 @onclick="DetailsHandler(point.RowId)">
+                                <span class="rq-item-rag @PlanningFormat.RagClass(point.Rag) @(point.IsBelowArtLine ? "hollow" : "")"></span>
+                                <span class="rq-item-text">
+                                    @if (!string.IsNullOrEmpty(point.JiraId))
+                                    {
+                                        <span class="rq-item-key">@point.JiraId</span>
+                                    }
+                                    <span class="rq-item-title">@point.Title</span>
+                                </span>
+                                <span class="rq-item-num">@PlanningFormat.Sp(point.DemandSp)</span>
+                                <span class="rq-item-num @(point.RiskValue >= _layout.RiskThreshold ? "warn" : "")">@PlanningFormat.Percent(point.RiskValue)</span>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="rq-notes">
+            @if (_layout.RiskAxisSwitched)
+            {
+                <span class="rq-note switched">No feature is at risk, so the risk axis shows the not-planned share instead.</span>
+            }
+            @if (_layout.SizeAxisSwitched)
+            {
+                <span class="rq-note switched">No capacity is in scope, so size shows demand instead of the share of capacity.</span>
+            }
+            @if (Data is { DependenciesLoaded: false })
+            {
+                <span class="rq-note switched">Dependencies could not be loaded: at risk means blocked or a red RAG only.</span>
+            }
+            <span class="rq-note">Bubble area = demand · colour = own RAG or the worst RAG underneath (triangle red, square amber, grey none) · ring = share done · hollow = below the ART line · small ring = target end after the PI · dashed = no @PlanningFormat.LevelName(_layout.Level).ToLowerInvariant()</span>
+            <span class="rq-note">Shared @PlanningFormat.LevelPlural(_layout.Level).ToLowerInvariant() appear once@(_layout.SharedCollapsed > 0 ? $" ({_layout.SharedCollapsed} repeated under other strategic objectives)" : "")@(_layout.ExcludedEmpty > 0 ? $" · {_layout.ExcludedEmpty} without features are not placed" : "")</span>
+        </div>
+    }
+</div>
+
+@code {
+    private static readonly RiskQuadrantZone[] Zones = [RiskQuadrantZone.Delegate, RiskQuadrantZone.DecideNow, RiskQuadrantZone.Watch, RiskQuadrantZone.Protect];
+
+    private PlanningLevel _level = PlanningLevel.PortfolioEpic;
+    private RiskQuadrantSizeAxis _sizeAxis = RiskQuadrantSizeAxis.Demand;
+    private RiskQuadrantRiskAxis _riskAxis = RiskQuadrantRiskAxis.AtRiskEpics;
+    private RiskQuadrantZone _listZone = RiskQuadrantZone.DecideNow;
+    private int _sizeSteps;
+    private int _riskSteps;
+    private RiskQuadrantLayout _layout = RiskQuadrantLayout.Empty;
+    private IReadOnlyList<RiskQuadrantPoint> _list = [];
+    private Dictionary<string, string> _tooltips = new(StringComparer.Ordinal);
+    private PlanningTree? _layoutTree;
+    private RiskQuadrantSettings? _layoutSettings;
+    private PlanningTree? _tooltipTree;
+    private RiskQuadrantSettings? _tooltipSettings;
+    private readonly PlanningHandlerCache<RiskQuadrantZone, Action> _zoneClick;
+
+    public RiskQuadrantView()
+    {
+        _zoneClick = new(zone => () => ShowZone(zone));
+    }
+
+    protected override void OnParametersSet() => Rebuild();
+
+    private RiskQuadrantSettings Settings => new()
+    {
+        Level = _level,
+        SizeAxis = _sizeAxis,
+        RiskAxis = _riskAxis,
+        SizeThresholdSteps = _sizeSteps,
+        RiskThresholdSteps = _riskSteps,
+        SelectedId = SelectedId,
+        PiEnd = Data?.PiEnd,
+    };
+
+    private void Rebuild()
+    {
+        var settings = Settings;
+        if (ReferenceEquals(_layoutTree, Tree) && settings == _layoutSettings)
+        {
+            return;
+        }
+
+        _layout = RiskQuadrantLayout.Build(Tree, settings);
+        _layoutTree = Tree;
+        _layoutSettings = settings;
+        _list = _layout.ListFor(_listZone);
+
+        var tooltipSettings = settings with { SelectedId = null };
+        if (ReferenceEquals(_tooltipTree, Tree) && tooltipSettings == _tooltipSettings)
+        {
+            return;
+        }
+
+        _tooltips = _layout.Points.ToDictionary(p => p.RowId, Tooltip, StringComparer.Ordinal);
+        _tooltipTree = Tree;
+        _tooltipSettings = tooltipSettings;
+    }
+
+    private void SetLevel(PlanningLevel level)
+    {
+        _level = level;
+        Rebuild();
+    }
+
+    private void SetSizeAxis(RiskQuadrantSizeAxis axis)
+    {
+        _sizeAxis = axis;
+        _sizeSteps = 0;
+        Rebuild();
+    }
+
+    private void SetRiskAxis(RiskQuadrantRiskAxis axis)
+    {
+        _riskAxis = axis;
+        Rebuild();
+    }
+
+    private void StepSize(int direction)
+    {
+        _sizeSteps += direction;
+        Rebuild();
+    }
+
+    private void StepRisk(int direction)
+    {
+        _riskSteps += direction;
+        Rebuild();
+    }
+
+    private void ResetThresholds()
+    {
+        _sizeSteps = 0;
+        _riskSteps = 0;
+        Rebuild();
+    }
+
+    private void ShowZone(RiskQuadrantZone zone)
+    {
+        _listZone = zone;
+        _list = _layout.ListFor(zone);
+    }
+
+    private string EmptyText => Tree.FeaturesShown == 0
+        ? "No features are in scope for this PI with the current search and filters, so there is nothing to place."
+        : $"No {PlanningFormat.LevelPlural(_level).ToLowerInvariant()} with features match the search and filters.";
+
+    private string SizeAxisTitle => _layout.SizeAxis == RiskQuadrantSizeAxis.ShareOfCapacity
+        ? "Share of capacity (planned SP of the capacity in scope)"
+        : "Demand (story points asked of the teams in scope)";
+
+    private string RiskAxisTitle => _layout.RiskAxis switch
+    {
+        RiskQuadrantRiskAxis.AtRiskDemand => "Demand at risk (share of the story points)",
+        RiskQuadrantRiskAxis.NotPlanned => "Not planned (share of the demand)",
+        _ => "Features at risk (share with a red RAG, blocked or a dependency at risk)",
+    };
+
+    private string RiskColumnTitle => _layout.RiskAxis == RiskQuadrantRiskAxis.NotPlanned ? "Not planned" : "At risk";
+
+    private string SizeThresholdText => _layout.Points.Count == 0
+        ? "—"
+        : (_sizeSteps == 0 ? "median " : "") + SizeText(_layout.SizeThreshold);
+
+    private string RiskThresholdText => PlanningFormat.Percent(_layout.RiskThreshold);
+
+    private bool SizeLabelOnLeft => _layout.SizeThresholdX > (_layout.PlotLeft + _layout.PlotRight) / 2d;
+
+    private string SizeTickText(double value) => _layout.SizeAxis == RiskQuadrantSizeAxis.ShareOfCapacity
+        ? RiskQuadrantLayout.SharePercent(value, _layout.SizeThresholdStep)
+        : PlanningFormat.Sp((decimal)value);
+
+    private string SizeText(double value) => _layout.SizeAxis == RiskQuadrantSizeAxis.ShareOfCapacity
+        ? RiskQuadrantLayout.ShareValuePercent(value, _layout.SizeThresholdStep)
+        : PlanningFormat.Sp((decimal)value) + " SP";
+
+    private string TooltipOf(RiskQuadrantPoint point) => _tooltips.GetValueOrDefault(point.RowId) ?? point.Title;
+
+    private string Tooltip(RiskQuadrantPoint point)
+    {
+        var text = new StringBuilder();
+        text.Append(string.IsNullOrEmpty(point.JiraId) ? point.Title : $"{point.JiraId} {point.Title}");
+        text.Append('\n').Append($"Demand {PlanningFormat.Sp(point.DemandSp)} SP · planned {PlanningFormat.Sp(point.PlannedSp)} SP · not planned {PlanningFormat.Sp(point.UnplannedSp)} SP");
+        text.Append('\n').Append($"{point.Features} features · {point.Done} done · {point.AtRiskFeatures} at risk ({PlanningFormat.Sp(point.AtRiskSp)} SP)");
+        text.Append('\n').Append($"At risk because: {point.DependenciesAtRisk} dependencies at risk · {point.Blocked} blocked · {point.RedFeatures} red RAG");
+        if (point.HygieneFailingFeatures > 0)
+        {
+            text.Append('\n').Append($"{point.HygieneFailingFeatures} features failing a hygiene rule");
+        }
+
+        text.Append('\n').Append($"RAG {point.Rag ?? "none"}");
+        if (point.IsBelowArtLine)
+        {
+            text.Append(" · below the ART line");
+        }
+
+        if (point.IsLate)
+        {
+            text.Append(" · target end after the PI end");
+        }
+
+        if (point.SharedWith > 0)
+        {
+            text.Append($" · also under {point.SharedWith} other strategic objective{(point.SharedWith == 1 ? "" : "s")}");
+        }
+
+        text.Append('\n').Append($"{SizeText(point.SizeValue)} × {PlanningFormat.Percent(point.RiskValue)} → {ZoneTitle(point.Zone)}");
+        return text.ToString();
+    }
+
+    private static string ZoneTitle(RiskQuadrantZone zone) => zone switch
+    {
+        RiskQuadrantZone.DecideNow => "Decide now",
+        RiskQuadrantZone.Protect => "Protect",
+        RiskQuadrantZone.Delegate => "Delegate",
+        _ => "Watch",
+    };
+
+    private static string ZoneHint(RiskQuadrantZone zone) => zone switch
+    {
+        RiskQuadrantZone.DecideNow => "Big and at risk: the short list for a decision today",
+        RiskQuadrantZone.Protect => "Big and healthy: keep them on track and protect their capacity",
+        RiskQuadrantZone.Delegate => "Small and at risk: the ART can handle these",
+        _ => "Small and healthy: nothing to do",
+    };
+
+    private static string ZoneClass(RiskQuadrantZone zone) => zone switch
+    {
+        RiskQuadrantZone.DecideNow => "decide",
+        RiskQuadrantZone.Protect => "protect",
+        RiskQuadrantZone.Delegate => "delegate",
+        _ => "watch",
+    };
+
+    private static string Triangle(RiskQuadrantPoint point) =>
+        $"M{F(point.X)},{F(point.Y - 4.5d)} L{F(point.X + 4.5d)},{F(point.Y + 3.5d)} L{F(point.X - 4.5d)},{F(point.Y + 3.5d)} Z";
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}

@@ -1,0 +1,533 @@
+@attribute [Route(RoutingPath.Housekeeping)]
+@inherits LocalTimeComponentBase
+
+@inject IHousekeepingService CheckService
+@inject IWindowsAuthService WindowsAuthService
+@inject IJiraAuthService JiraAuth
+@inject IDialogService DialogService
+@inject IModalDialogService MessageService
+@inject IOptions<JiraSettings> JiraOptions
+@inject ISnackbar Snackbar
+
+@implements IDisposable
+
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.Administration.Services
+@using Estimation.Core.JiraIntegration.Client
+@using Microsoft.Extensions.Options
+
+<PageTitle>Housekeeping</PageTitle>
+
+<AdminOnly>
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg mb-3" Elevation="2">
+        <MudText Typo="Typo.h5" Class="mb-4">Housekeeping</MudText>
+
+        <MudText Typo="Typo.h6">Issue types changed in Jira</MudText>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-1">
+            The tool keeps the issue type it read when an issue was synced, and the sync only fetches the types it is set up for.
+            If an issue's type is changed in Jira later, for example a Feature turned into a Story, the tool never learns about it.
+            Check a table to ask Jira for the current type of every issue stored in it.
+        </MudText>
+        <MudText Typo="Typo.caption" Class="d-block mud-text-secondary mb-3">
+            Uses your own Jira login. Jira is asked about @BatchSize issues per request, one request at a time,
+            so a large table takes a while. You can stop a check at any time.
+        </MudText>
+
+        @if (!JiraAuth.IsConfigured)
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                Jira is not configured for this application, so tables cannot be checked.
+            </MudAlert>
+        }
+        else if (_jiraChecked && !_jiraConnected)
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                <div class="d-flex flex-wrap align-center gap-2">
+                    <span>Log in to Jira to check tables.</span>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Login" OnClick="LoginToJiraAsync">
+                        Log in to Jira
+                    </MudButton>
+                </div>
+            </MudAlert>
+        }
+
+        <MudSimpleTable Dense Bordered Class="mb-3">
+            <thead>
+                <tr>
+                    <th>Table</th>
+                    <th>Should hold</th>
+                    <th>Issues with a Jira ID</th>
+                    <th>Last check</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var table in HousekeepingTables.All)
+                {
+                    var count = _counts?.GetValueOrDefault(table);
+                    <tr>
+                        <td>@TableName(table)</td>
+                        <td>@HousekeepingTables.ExpectedIssueType(table)</td>
+                        <td>
+                            @if (count is { } n)
+                            {
+                                <span>@n.ToString("N0")</span>
+                                <span class="mud-text-secondary"> (@Count(Requests(n), "request"))</span>
+                            }
+                            else
+                            {
+                                <span class="mud-text-secondary">…</span>
+                            }
+                        </td>
+                        <td>@LastCheckText(table)</td>
+                        <td class="text-end">
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                                       StartIcon="@Icons.Material.Filled.ManageSearch"
+                                       Disabled="@(!CanCheck || count is null or 0)"
+                                       OnClick="@(() => CheckAsync(table))">
+                                Check @TableName(table)
+                            </MudButton>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+
+        @if (_running is { } running)
+        {
+            <MudPaper Outlined="true" Class="pa-3 mb-3">
+                <div class="d-flex flex-wrap align-center gap-2 mb-2">
+                    <MudText Typo="Typo.body2">
+                        Checking @TableName(running): @_progress.Checked.ToString("N0") of @_progress.Total.ToString("N0") issues
+                    </MudText>
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.Stop"
+                               Disabled="@(_cts?.IsCancellationRequested ?? true)"
+                               OnClick="Stop">
+                        Stop
+                    </MudButton>
+                </div>
+                <MudProgressLinear Color="Color.Primary" Value="@Percent" Indeterminate="@(_progress.Total == 0)" />
+            </MudPaper>
+        }
+
+        @if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="mb-3">@_error</MudAlert>
+        }
+
+        @foreach (var result in _results.Values.OrderBy(r => r.Table))
+        {
+            @if (result.Error is not null)
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense Class="mb-2">
+                    The @TableName(result.Table) check stopped after @result.Checked.ToString("N0") of @result.Total.ToString("N0") issues.
+                    <div>@result.Error</div>
+                    <div>The results below cover the checked issues only.</div>
+                </MudAlert>
+            }
+            else if (result.Cancelled)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense Class="mb-2">
+                    The @TableName(result.Table) check was stopped after @result.Checked.ToString("N0") of @result.Total.ToString("N0") issues.
+                    The results below cover the checked issues only.
+                </MudAlert>
+            }
+
+            @if (result.NotFoundKeys.Count > 0)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense Class="mb-2">
+                    @Count(result.NotFoundKeys.Count, "issue") in @TableName(result.Table) @(result.NotFoundKeys.Count == 1 ? "was" : "were")
+                    not found in Jira (deleted, or not visible to your Jira account), so @(result.NotFoundKeys.Count == 1 ? "its" : "their") type could not be checked:
+                    @KeyList(result.NotFoundKeys)
+                </MudAlert>
+            }
+
+            @if (result.MovedKeys.Count > 0)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense Class="mb-2">
+                    @Count(result.MovedKeys.Count, "issue") in @TableName(result.Table) @(result.MovedKeys.Count == 1 ? "has" : "have")
+                    a new key in Jira:
+                    @KeyList(result.MovedKeys.Select(m => $"{m.StoredKey} → {m.CurrentKey}").ToList())
+                </MudAlert>
+            }
+        }
+
+        @if (_results.Count > 0)
+        {
+            var items = Items;
+            @if (items.Count == 0)
+            {
+                <MudAlert Severity="Severity.Success" Variant="Variant.Outlined" Class="mb-2">
+                    Every checked issue still has its table's type in Jira.
+                </MudAlert>
+            }
+            else
+            {
+                <div class="d-flex flex-wrap align-center gap-2 mb-2">
+                    <MudText Typo="Typo.body2">
+                        @Count(items.Count, "issue") @(items.Count == 1 ? "has" : "have") another type in Jira:
+                    </MudText>
+                    @foreach (var group in items.GroupBy(i => i.Table).OrderBy(g => g.Key))
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ma-0">@TableName(group.Key): @group.Count()</MudChip>
+                    }
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.Delete"
+                               Disabled="@(Busy || _selected.Count == 0)"
+                               OnClick="RemoveSelectedAsync">
+                        Remove selected@(_selected.Count > 0 ? $" ({_selected.Count})" : "")
+                    </MudButton>
+                    <MudButton Variant="Variant.Filled" Color="Color.Error"
+                               StartIcon="@Icons.Material.Filled.DeleteSweep"
+                               Disabled="Busy"
+                               OnClick="RemoveAllAsync">
+                        Remove all (@items.Count)
+                    </MudButton>
+                </div>
+                <MudText Typo="Typo.caption" Class="d-block mud-text-secondary mb-3">
+                    Removing deletes the rows from this tool's database only; nothing is changed in Jira.
+                </MudText>
+
+                <MudDataGrid T="HousekeepingItem" Items="items"
+                             MultiSelection="true"
+                             SelectOnRowClick="false"
+                             @bind-SelectedItems="_selected"
+                             Dense Hover Striped Bordered
+                             SortMode="SortMode.Multiple">
+                    <Columns>
+                        <SelectColumn T="HousekeepingItem" />
+                        <PropertyColumn Property="x => x.Table" Title="Table">
+                            <CellTemplate>@TableName(context.Item.Table)</CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.JiraKey" Title="@PlanningDisplayNames.JiraId">
+                            <CellTemplate>
+                                @{ var currentKey = context.Item.CurrentJiraKey ?? context.Item.JiraKey; }
+                                @if (JiraBrowseUrl(currentKey) is { } url)
+                                {
+                                    <MudLink Href="@url" Target="_blank">@context.Item.JiraKey</MudLink>
+                                }
+                                else
+                                {
+                                    @context.Item.JiraKey
+                                }
+                                @if (context.Item.CurrentJiraKey is not null)
+                                {
+                                    <div class="mud-text-secondary" style="font-size: 0.75rem;">now @context.Item.CurrentJiraKey</div>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.Summary" Title="@PlanningDisplayNames.Summary">
+                            <CellTemplate>
+                                <MudLink Href="@EditUrl(context.Item)" Target="_blank">@context.Item.Summary</MudLink>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.ExpectedIssueType" Title="Type in the tool" />
+                        <PropertyColumn Property="x => x.IssueType" Title="Type in Jira">
+                            <CellTemplate>
+                                <MudChip T="string" Size="Size.Small" Color="@JiraIssueTypeHelper.IssueTypeColor(context.Item.IssueType)" Class="ma-0">
+                                    @context.Item.IssueType
+                                </MudChip>
+                            </CellTemplate>
+                        </PropertyColumn>
+                        <PropertyColumn Property="x => x.Status" Title="Status in Jira" />
+                        <PropertyColumn Property="x => x.IssueTypeTable" Title="Table for its type">
+                            <CellTemplate>
+                                @if (context.Item.IssueTypeTable is { } table)
+                                {
+                                    <span>@TableName(table)</span>
+                                    @if (context.Item.ExistsInIssueTypeTable)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined" Class="ml-2 my-0"
+                                                 title="@($"{TableName(table)} already holds {context.Item.CurrentJiraKey ?? context.Item.JiraKey}")">
+                                            Copy exists
+                                        </MudChip>
+                                    }
+                                    else
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ml-2 my-0"
+                                                 title="@($"{context.Item.CurrentJiraKey ?? context.Item.JiraKey} is not in {TableName(table)} yet")">
+                                            No copy
+                                        </MudChip>
+                                    }
+                                }
+                                else
+                                {
+                                    <span class="mud-text-secondary" title="@($"No table in this tool holds {context.Item.IssueType} issues")">None</span>
+                                }
+                            </CellTemplate>
+                        </PropertyColumn>
+                    </Columns>
+                </MudDataGrid>
+            }
+        }
+    </MudPaper>
+</div>
+</AdminOnly>
+
+@code {
+    private const int KeysShown = 50;
+    private const int BatchSize = global::Estimation.Core.Administration.Services.HousekeepingService.BatchSize;
+
+    private IReadOnlyDictionary<HousekeepingTable, int>? _counts;
+    private readonly Dictionary<HousekeepingTable, HousekeepingCheckResult> _results = [];
+    private readonly Dictionary<HousekeepingTable, DateTime> _checkedAt = [];
+    private HashSet<HousekeepingItem> _selected = [];
+    private string? _userName;
+    private bool _jiraChecked;
+    private bool _jiraConnected;
+    private HousekeepingTable? _running;
+    private HousekeepingCheckProgress _progress = new(0, 0);
+    private CancellationTokenSource? _cts;
+    private bool _removing;
+    private string? _error;
+    private bool _disposed;
+
+    private bool Busy => _running is not null || _removing;
+
+    private bool CanCheck => !Busy && JiraAuth.IsConfigured && _jiraConnected && _userName is not null;
+
+    private double Percent => _progress.Total == 0 ? 0 : 100.0 * _progress.Checked / _progress.Total;
+
+    private List<HousekeepingItem> Items => _results.Values.OrderBy(r => r.Table).SelectMany(r => r.Items).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _userName = await WindowsAuthService.GetUserName();
+        if (JiraAuth.IsConfigured && _userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+        _jiraChecked = true;
+
+        await LoadCountsAsync();
+    }
+
+    private async Task LoadCountsAsync()
+    {
+        try
+        {
+            _counts = await CheckService.CountJiraKeysAsync();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Housekeeping could not count stored Jira keys");
+            _error = $"Could not read the tables: {ex.Message}";
+        }
+    }
+
+    private async Task LoginToJiraAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>("Jira Authentication", options);
+        await dialogRef.Result;
+
+        if (_userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+    }
+
+    private async Task CheckAsync(HousekeepingTable table)
+    {
+        if (!CanCheck)
+        {
+            return;
+        }
+
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        _running = table;
+        _progress = new HousekeepingCheckProgress(0, _counts?.GetValueOrDefault(table) ?? 0);
+        _error = null;
+
+        var progress = new Progress<HousekeepingCheckProgress>(p =>
+        {
+            if (_disposed)
+            {
+                return;
+            }
+            _progress = p;
+            StateHasChanged();
+        });
+
+        try
+        {
+            var result = await CheckService.CheckIssueTypesAsync(table, _userName!, progress, _cts.Token);
+            if (_disposed)
+            {
+                return;
+            }
+
+            _results[table] = result;
+            _checkedAt[table] = DateTime.UtcNow;
+            _selected = _selected.Where(i => i.Table != table).ToHashSet();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Housekeeping check of {Table} failed", table);
+            _error = $"The {TableName(table)} check failed: {ex.Message}";
+        }
+        finally
+        {
+            _running = null;
+        }
+    }
+
+    private void Stop() => _cts?.Cancel();
+
+    private Task RemoveSelectedAsync() => RemoveAsync(_selected.ToList());
+
+    private Task RemoveAllAsync() => RemoveAsync(Items);
+
+    private async Task RemoveAsync(IReadOnlyList<HousekeepingItem> items)
+    {
+        if (Busy || items.Count == 0)
+        {
+            return;
+        }
+
+        if (!await MessageService.Confirm(ConfirmMessage(items), "Remove issues", "Remove"))
+        {
+            return;
+        }
+
+        _removing = true;
+        _error = null;
+        try
+        {
+            var result = await CheckService.RemoveAsync(
+                items.Select(i => new HousekeepingItemKey(i.Table, i.Id, i.JiraKey)).ToList());
+
+            Snackbar.Add($"Removed {Count(result.Removed, "issue")}.", result.Removed > 0 ? Severity.Success : Severity.Info);
+            if (result.Skipped > 0)
+            {
+                Snackbar.Add(
+                    result.Skipped == 1
+                        ? "Skipped 1 issue that no longer exists in the tool or now has another Jira key."
+                        : $"Skipped {result.Skipped} issues that no longer exist in the tool or now have another Jira key.",
+                    Severity.Warning);
+            }
+
+            var removed = items.Select(i => (i.Table, i.Id)).ToHashSet();
+            foreach (var (table, check) in _results.ToList())
+            {
+                _results[table] = check with { Items = check.Items.Where(i => !removed.Contains((i.Table, i.Id))).ToList() };
+            }
+            _selected = _selected.Where(i => !removed.Contains((i.Table, i.Id))).ToHashSet();
+
+            await LoadCountsAsync();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "Housekeeping removal failed");
+            _error = $"Removing failed, nothing was removed: {ex.Message}";
+        }
+        finally
+        {
+            _removing = false;
+        }
+    }
+
+    private RenderFragment LastCheckText(HousekeepingTable table) => __builder =>
+    {
+        if (_running == table)
+        {
+            <span class="mud-text-secondary">Checking…</span>
+        }
+        else if (_results.TryGetValue(table, out var result))
+        {
+            var parts = new List<string> { $"{result.Checked:N0} checked" };
+            if (!result.Completed)
+            {
+                parts[0] += $" of {result.Total:N0}";
+            }
+            parts.Add($"{result.Items.Count:N0} with another type");
+            if (result.NotFoundKeys.Count > 0)
+            {
+                parts.Add($"{result.NotFoundKeys.Count:N0} not found");
+            }
+            <span>@string.Join(" · ", parts)</span>
+            <span class="mud-text-secondary"> at @UserTime.Format(_checkedAt[table], "HH:mm")</span>
+        }
+        else
+        {
+            <span class="mud-text-secondary">Not checked yet</span>
+        }
+    };
+
+    private static string KeyList(IReadOnlyList<string> keys) =>
+        keys.Count <= KeysShown
+            ? string.Join(", ", keys)
+            : $"{string.Join(", ", keys.Take(KeysShown))} and {keys.Count - KeysShown:N0} more";
+
+    private static int Requests(int keys) => (keys + BatchSize - 1) / BatchSize;
+
+    private static string ConfirmMessage(IReadOnlyList<HousekeepingItem> items)
+    {
+        var tables = items.Select(i => i.Table).ToHashSet();
+        var lines = new List<string>
+        {
+            $"Remove {Count(items.Count, "issue")} from this tool's database? Nothing is changed in Jira.",
+        };
+
+        if (tables.Contains(HousekeepingTable.Features))
+        {
+            lines.Add("Removed features lose their team planning, comments and risk links in this tool.");
+        }
+
+        if (tables.Contains(HousekeepingTable.BusinessOutcomes))
+        {
+            lines.Add("Features under a removed business outcome lose their parent link.");
+        }
+
+        if (tables.Contains(HousekeepingTable.PortfolioEpics))
+        {
+            lines.Add("Business outcomes under a removed portfolio epic lose their parent link.");
+        }
+
+        if (tables.Contains(HousekeepingTable.StrategicObjectives))
+        {
+            lines.Add("Removed strategic objectives are unlinked from their ARTs and portfolio epics.");
+        }
+
+        return string.Join("<br/><br/>", lines);
+    }
+
+    private static string Count(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count:N0} {noun}s";
+
+    private static string TableName(HousekeepingTable table) => table switch
+    {
+        HousekeepingTable.StrategicObjectives => "Strategic Objectives",
+        HousekeepingTable.PortfolioEpics => "Portfolio Epics",
+        HousekeepingTable.BusinessOutcomes => "Business Outcomes",
+        _ => PlanningDisplayNames.Features,
+    };
+
+    private static string EditUrl(HousekeepingItem item) => item.Table switch
+    {
+        HousekeepingTable.StrategicObjectives => $"{RoutingPath.StrategicObjectives}/{item.Id}",
+        HousekeepingTable.PortfolioEpics => $"{RoutingPath.PortfolioEpics}/{item.Id}",
+        HousekeepingTable.BusinessOutcomes => $"{RoutingPath.BusinessOutcomes}/{item.Id}",
+        _ => $"{RoutingPath.Features}/{item.Id}",
+    };
+
+    private string? JiraBrowseUrl(string jiraKey)
+    {
+        var baseUrl = JiraOptions.Value.Url;
+        return string.IsNullOrWhiteSpace(baseUrl)
+            ? null
+            : $"{baseUrl.TrimEnd('/')}/browse/{Uri.EscapeDataString(jiraKey.Trim())}";
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+}
