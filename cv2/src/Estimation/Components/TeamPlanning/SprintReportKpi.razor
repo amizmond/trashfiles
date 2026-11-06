@@ -1,0 +1,28 @@
+<div class="sr-kpi @Css">
+    <div class="sr-kpi-label">
+        <span>@Label</span>
+        @if (!string.IsNullOrEmpty(Help))
+        {
+            <MudTooltip Text="@Help">
+                <MudIcon Icon="@Icons.Material.Outlined.Info" Class="sr-kpi-help" />
+            </MudTooltip>
+        }
+    </div>
+    <div class="sr-kpi-value">@Value</div>
+    @if (!string.IsNullOrEmpty(Sub))
+    {
+        <div class="sr-kpi-sub">@Sub</div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired] public string Value { get; set; } = string.Empty;
+
+    [Parameter] public string? Sub { get; set; }
+
+    [Parameter] public string? Help { get; set; }
+
+    [Parameter] public string? Css { get; set; }
+}

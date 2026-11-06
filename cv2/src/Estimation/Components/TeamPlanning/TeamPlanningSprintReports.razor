@@ -1,0 +1,12 @@
+@attribute [Route(RoutingPath.TeamPlanningSprintReports)]
+
+<AccessGuard PageKey="SprintReports">
+    <TeamPlanningShell Title="Sprint Reports" EmptyText="Select an ART or a team to view sprint reports." PageKey="SprintReports">
+        <ChildContent Context="team">
+            <SprintReportTeamView TeamId="team.TeamId" @key="team.TeamId" />
+        </ChildContent>
+        <ArtContent Context="art">
+            <SprintReportArtView ArtId="art.ArtId" ArtName="@art.ArtName" Teams="art.Teams" @key="art.ArtId" />
+        </ArtContent>
+    </TeamPlanningShell>
+</AccessGuard>

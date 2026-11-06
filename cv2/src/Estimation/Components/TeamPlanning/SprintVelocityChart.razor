@@ -1,0 +1,129 @@
+@using System.Globalization
+
+@if (Items.Count > 0)
+{
+    <div class="vc-wrap">
+        <svg class="vc-svg" viewBox="0 0 @F(Width) @F(Height)" role="img" aria-label="Velocity">
+            @foreach (var tick in _ticks)
+            {
+                <g>
+                    <line class="vc-grid" x1="@F(PlotLeft)" x2="@F(PlotRight)" y1="@F(tick.Y)" y2="@F(tick.Y)" />
+                    <text class="vc-tick" x="@F(PlotLeft - 6)" y="@F(tick.Y + 3.5)" text-anchor="end">@tick.Label</text>
+                </g>
+            }
+            @foreach (var bar in _bars)
+            {
+                <rect class="@bar.Css" x="@F(bar.X)" y="@F(bar.Y)" width="@F(bar.Width)" height="@F(bar.Height)" rx="2"><title>@bar.Title</title></rect>
+            }
+            @foreach (var label in _labels)
+            {
+                <g>
+                    <text class="vc-tick @(label.IsCurrent ? "current" : "")" x="@F(label.X)" y="@F(PlotBottom + 16)" text-anchor="middle">@label.Text</text>
+                </g>
+            }
+            @if (_averageY is { } averageY)
+            {
+                <g>
+                    <line class="vc-avg" x1="@F(PlotLeft)" x2="@F(PlotRight)" y1="@F(averageY)" y2="@F(averageY)" />
+                    <text class="vc-avg-text" x="@F(PlotRight)" y="@F(averageY - 4)" text-anchor="end">@_averageLabel</text>
+                </g>
+            }
+        </svg>
+        <div class="vc-legend">
+            <span><i class="vc-swatch committed"></i>Committed</span>
+            <span><i class="vc-swatch completed"></i>Completed</span>
+            @if (_averageY is not null)
+            {
+                <span><i class="vc-swatch average"></i>Average of closed sprints</span>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    public sealed record Item(string Name, int Committed, int Completed, bool IsCurrent, bool IsClosed);
+
+    [Parameter, EditorRequired] public IReadOnlyList<Item> Items { get; set; } = [];
+
+    private const double Width = 760;
+    private const double Height = 230;
+    private const double PlotLeft = 40;
+    private const double PlotRight = 748;
+    private const double PlotTop = 14;
+    private const double PlotBottom = 192;
+    private const double PlotHeight = PlotBottom - PlotTop;
+
+    private sealed record Tick(double Y, string Label);
+
+    private sealed record Bar(double X, double Y, double Width, double Height, string Css, string Title);
+
+    private sealed record XLabel(double X, string Text, bool IsCurrent);
+
+    private List<Tick> _ticks = new();
+    private List<Bar> _bars = new();
+    private List<XLabel> _labels = new();
+    private double? _averageY;
+    private string _averageLabel = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        _ticks = new();
+        _bars = new();
+        _labels = new();
+        _averageY = null;
+
+        var count = Items.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        var max = Items.SelectMany(i => new[] { i.Committed, i.Completed }).DefaultIfEmpty(0).Max();
+        var top = NiceCeiling(Math.Max(max, 1));
+        var groupWidth = (PlotRight - PlotLeft) / count;
+        var barWidth = Math.Min(40, groupWidth * 0.32);
+
+        double Y(double value) => PlotBottom - value / top * PlotHeight;
+
+        for (var k = 0; k <= 4; k++)
+        {
+            var value = top * k / 4;
+            _ticks.Add(new Tick(Y(value), value.ToString("0.#", CultureInfo.InvariantCulture)));
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            var item = Items[i];
+            var center = PlotLeft + groupWidth * (i + 0.5);
+            var current = item.IsCurrent ? " current" : string.Empty;
+            _bars.Add(new Bar(center - barWidth - 1.5, Y(item.Committed), barWidth, PlotBottom - Y(item.Committed),
+                "vc-bar vc-committed" + current, $"{item.Name}: committed {item.Committed}"));
+            _bars.Add(new Bar(center + 1.5, Y(item.Completed), barWidth, PlotBottom - Y(item.Completed),
+                "vc-bar vc-completed" + current, $"{item.Name}: completed {item.Completed}"));
+            _labels.Add(new XLabel(center, item.Name, item.IsCurrent));
+        }
+
+        var closed = Items.Where(i => i.IsClosed).ToList();
+        if (closed.Count > 0)
+        {
+            var average = closed.Average(i => i.Completed);
+            _averageY = Y(average);
+            _averageLabel = "avg " + average.ToString("0.#", CultureInfo.InvariantCulture);
+        }
+    }
+
+    private static double NiceCeiling(double value)
+    {
+        var magnitude = Math.Pow(10, Math.Floor(Math.Log10(value)));
+        foreach (var multiplier in new[] { 1, 2, 2.5, 5, 10 })
+        {
+            if (multiplier * magnitude >= value)
+            {
+                return multiplier * magnitude;
+            }
+        }
+        return 10 * magnitude;
+    }
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}

@@ -1,0 +1,1689 @@
+@attribute [Route(RoutingPath.DependencyMap)]
+@inherits DependencyMapScopedPageBase
+@implements IAsyncDisposable
+
+@inject IDependencyMapService MapService
+@inject NavigationManager Nav
+@inject IConfiguration Configuration
+@inject IBrowserDownloadService DownloadService
+@inject ISnackbar Snackbar
+
+@using System.Globalization
+@using Estimation.Core.Features.DependencyMap.Services
+@using Estimation.Core.Features.Models
+@using Microsoft.AspNetCore.WebUtilities
+@using Serilog
+
+<PageTitle>@PlanningDisplayNames.DependencyMap</PageTitle>
+
+<AccessGuard PageKey="@PageKey">
+<div class="container-fluid mt-3 mb-5"
+     @ref="_pageRoot"
+     data-back="@(CanGoBack ? "1" : null)"
+     data-close="@(_focus is null ? null : "1")"
+     data-fullscreen="@(_fullScreen ? "1" : null)">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudText Typo="Typo.h6" Class="mr-2">@PlanningDisplayNames.DependencyMap</MudText>
+
+            <MudSelect T="int?"
+                       Value="ArtId"
+                       ValueChanged="OnArtChangedAsync"
+                       Label="@PlanningDisplayNames.Art"
+                       Variant="Variant.Outlined"
+                       Dense
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:260px">
+                @foreach (var art in Arts)
+                {
+                    <MudSelectItem T="int?" Value="@art.Id">@art.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudSelect T="int?"
+                       Value="PiId"
+                       ValueChanged="OnPiChangedAsync"
+                       Label="@PlanningDisplayNames.PI"
+                       Variant="Variant.Outlined"
+                       Dense
+                       Disabled="_loading"
+                       AnchorOrigin="Origin.BottomCenter"
+                       Style="width:180px">
+                @foreach (var pi in Pis)
+                {
+                    <MudSelectItem T="int?" Value="@pi.Id">@pi.Name</MudSelectItem>
+                }
+            </MudSelect>
+
+            @if (SelectedPi?.IsLocked == true)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                         Icon="@Icons.Material.Filled.Lock">
+                    Locked
+                </MudChip>
+            }
+
+            <MudTooltip Text="Also show features that belong to the PI through its label rules, not only by their PI field.">
+                <MudSwitch T="bool"
+                           Value="_includeLabelMatches"
+                           ValueChanged="OnIncludeLabelMatchesChangedAsync"
+                           Label="Include label matches"
+                           Color="Color.Primary"
+                           Disabled="_loading" />
+            </MudTooltip>
+
+            <MudSpacer />
+
+            <div style="width:240px">
+                <MudAutocomplete T="FindOption"
+                                 @ref="_find"
+                                 ValueChanged="OnFindSelectedAsync"
+                                 SearchFunc="SearchAsync"
+                                 ToStringFunc="@(o => o?.Text ?? string.Empty)"
+                                 Placeholder="Find feature"
+                                 Variant="Variant.Outlined"
+                                 Margin="Margin.Dense"
+                                 Dense="true"
+                                 ResetValueOnEmptyText="true"
+                                 CoerceText="false"
+                                 MaxItems="@MaxFindResults"
+                                 Disabled="@(_index is null || _loading)" />
+            </div>
+
+            @ViewToggle
+
+            @if (!_tableView)
+            {
+                @LinesControl
+            }
+
+            @ZoomControl
+
+            <MudButton Variant="Variant.Outlined"
+                       Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Fullscreen"
+                       title="@($"Show the {(_tableView ? "table" : "board")} on the whole screen; Esc returns")"
+                       Disabled="@(_loading || !HasMain)"
+                       OnClick="EnterFullScreen">
+                Full screen
+            </MudButton>
+
+            <MudBadge Content="@ActiveFilterCount" Color="Color.Secondary" Overlap="true" Bordered="true"
+                      Visible="@(ActiveFilterCount > 0)">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.FilterList"
+                           Disabled="_loading"
+                           OnClick="() => _drawerOpen = !_drawerOpen">
+                    @PlanningDisplayNames.Filters
+                </MudButton>
+            </MudBadge>
+
+            <MudTooltip Text="Exports the dependencies shown, with a Checked column for a review.">
+                <MudButton Variant="Variant.Outlined"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="@(_loading || _view is null || _view.Rows.Count == 0 || _exporting)"
+                           OnClick="ExportAsync">
+                    Export to excel
+                </MudButton>
+            </MudTooltip>
+
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                           Color="Color.Primary"
+                           title="Refresh"
+                           aria-label="Refresh"
+                           Disabled="@(_loading || ArtId is null || PiId is null)"
+                           OnClick="RefreshAsync" />
+        </div>
+
+        <DependencyFilterDrawer @bind-Open="_drawerOpen"
+                                Filter="_filter"
+                                FeatureFilter="_featureFilter"
+                                Features="_inScopeRows"
+                                LinkTypes="LinkTypes"
+                                Changed="OnFiltersChanged" />
+
+        @if (!ScopeReady || _loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-3" />
+        }
+        else if (Arts.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                No ART with Jira keys is available to you on this page.
+            </MudAlert>
+        }
+        else if (ArtId is null || PiId is null)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                Choose an ART and a PI.
+            </MudAlert>
+        }
+        else if (_error is not null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Class="ma-2">@_error</MudAlert>
+        }
+        else if (_data is null || _index is null || _view is null)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                This ART or PI no longer exists.
+            </MudAlert>
+        }
+        else if (_inScopeRows.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="ma-2">
+                No features of @_data.ArtName are in @_data.PiName.
+            </MudAlert>
+        }
+        else
+        {
+            var view = _view;
+            var summary = view.Summary;
+
+            @if (_index.Dependencies.Count > 0)
+            {
+                <MudPaper Elevation="0" Class="pa-3 rounded-lg mb-3" Style="border:1px solid var(--mud-palette-lines-default)">
+                    <div class="d-flex flex-wrap align-center gap-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mr-1">@PlanningDisplayNames.TeamOverview</MudText>
+                        <MudText Typo="Typo.body2" Class="mr-1">@Plural(summary.Total, "dependency", "dependencies")</MudText>
+                        @foreach (var risk in DependencyRiskDisplay.All)
+                        {
+                            var current = risk;
+                            <MudChip T="string"
+                                     Size="Size.Small"
+                                     Color="@DependencyRiskDisplay.ColorOf(current)"
+                                     Variant="@(_filter.Risks.Contains(current) ? Variant.Filled : Variant.Outlined)"
+                                     OnClick="@(() => ToggleRisk(current))">
+                                @CountOf(summary, current) @DependencyRiskRule.Label(current)
+                            </MudChip>
+                        }
+                        <div class="ml-2" style="width:220px">
+                            <SearchableDropdown T="DependencyLane"
+                                                Items="TeamLanes"
+                                                Value="MyTeamLane"
+                                                ValueChanged="SetMyTeamAsync"
+                                                Label="@PlanningDisplayNames.MyTeam"
+                                                Clearable="true"
+                                                Margin="Margin.Dense"
+                                                ToStringFunc="@(l => l?.Name ?? string.Empty)" />
+                        </div>
+                        <MudSpacer />
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary">@PlanningDisplayNames.LinksAsOfSync</MudText>
+                        <MudIconButton Icon="@(_overviewOpen ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
+                                       Size="Size.Small"
+                                       title="@(_overviewOpen ? "Hide the team overview" : "Show the team overview")"
+                                       aria-label="Toggle the team overview"
+                                       OnClick="ToggleOverviewAsync" />
+                    </div>
+
+                    @if (LinkTypes.Count > 0)
+                    {
+                        <div class="d-flex flex-wrap align-center gap-1 mt-1">
+                            <MudText Typo="Typo.caption" Class="mud-text-secondary mr-1"
+                                     title="Click a link type to hide or show its links everywhere on this page. Your choice is remembered.">
+                                Link types
+                            </MudText>
+                            @foreach (var type in LinkTypes)
+                            {
+                                var current = type;
+                                var shown = _filter.ShowsLinkType(current.TypeName);
+                                <MudChip T="string"
+                                         Size="Size.Small"
+                                         Variant="@(shown ? Variant.Filled : Variant.Outlined)"
+                                         Icon="@(shown ? Icons.Material.Filled.Visibility : Icons.Material.Filled.VisibilityOff)"
+                                         Class="@(shown ? null : "dm-type-off")"
+                                         title="@LinkTypeTitle(current, shown)"
+                                         aria-pressed="@(shown ? "true" : "false")"
+                                         OnClick="@(() => ToggleLinkType(current.TypeName))">
+                                    @LinkTypeText(current) · @current.LinkCount
+                                </MudChip>
+                            }
+                            @if (_filter.FiltersLinkTypes)
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" OnClick="ShowAllLinkTypes">
+                                    Show all
+                                </MudButton>
+                            }
+                        </div>
+                    }
+
+                    @if (!_selection.IsEmpty || MyTeamLane is not null)
+                    {
+                        <div class="d-flex align-center gap-1 mt-1">
+                            <MudText Typo="Typo.body2"><b>Showing:</b> @SelectionText</MudText>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close"
+                                           Size="Size.Small"
+                                           title="Show all teams"
+                                           aria-label="Show all teams"
+                                           OnClick="ClearSelectionLineAsync" />
+                        </div>
+                    }
+
+                    <MudCollapse Expanded="_overviewOpen">
+                        <div class="dm-matrix-wrap mt-2">
+                            <DependencyMatrixTable Matrix="view.Matrix"
+                                                   Selection="_selection"
+                                                   MyTeamLaneId="_myTeamLaneId"
+                                                   SelectionChanged="SetSelection" />
+                        </div>
+                    </MudCollapse>
+                </MudPaper>
+            }
+
+            @if (!_data.HasArtSprints)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true" Class="mb-3">
+                    @_data.ArtName has no sprints in @_data.PiName, so sprint order is not checked. Cards show as Planned or Not planned.
+                </MudAlert>
+            }
+
+            @if (_index.Dependencies.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-3">
+                    <div>
+                        @(_inScopeRows.Count == 1 ? "The only feature here has no linked issue yet." : $"None of the {_inScopeRows.Count} features has a linked issue yet.") Links come from Jira through the Jira sync and are shown as of the last sync; add them in Jira or on the feature page.
+                    </div>
+                    @if (!_filter.ShowUnlinked)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" Class="mt-1" OnClick="ShowUnlinked">
+                            Show features without links
+                        </MudButton>
+                    }
+                </MudAlert>
+            }
+            else if (view.Rows.Count == 0 && view.Board.Lanes.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-3">
+                    @if (!_selection.IsEmpty)
+                    {
+                        <span>@EmptySelectionText</span>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" Class="ml-2" OnClick="@(() => SetSelection(DependencySelection.None))">
+                            Clear selection
+                        </MudButton>
+                    }
+                    else if (ActiveFilterCount > 0)
+                    {
+                        <span>No dependency matches the filters.</span>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" Class="ml-2" OnClick="ClearFilters">
+                            @PlanningDisplayNames.ClearFilters
+                        </MudButton>
+                    }
+                    else if (MyTeamLane is { } myTeam)
+                    {
+                        <span>@myTeam.Name has no dependencies to show.</span>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" Class="ml-2" OnClick="@(() => SetMyTeamAsync(null))">
+                            Show all teams
+                        </MudButton>
+                    }
+                    else
+                    {
+                        <span>No dependency between features to show.</span>
+                    }
+                </MudAlert>
+            }
+
+            @if (view.Panel is { HiddenByFilters: true } hiddenPanel)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Variant="Variant.Text" Class="mb-2">
+                    @KeyOrTitle(hiddenPanel.Feature) is hidden by your filters; it is shown with its chain while focused.
+                </MudAlert>
+            }
+
+            @if (!_tableView && _lines == DependencyLineMode.All && view.Board.Lines.Count > DependencyViewBuilder.ManyLinesThreshold)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" Variant="Variant.Text" Class="mb-2">
+                    @view.Board.Lines.Count lines are drawn. Choose @PlanningDisplayNames.MyTeam or a matrix cell, or set Lines to Risks.
+                </MudAlert>
+            }
+
+            @if (HasMain)
+            {
+                <div class="@(_fullScreen ? "dm-host dm-fullscreen" : "dm-host")" tabindex="@(_fullScreen ? "-1" : null)">
+                    @if (_fullScreen)
+                    {
+                        @FullScreenBar
+                    }
+                    <div class="@(view.Panel is null ? "dm-main" : "dm-main has-panel")">
+                        <div class="dm-left">
+                            @if (_tableView)
+                            {
+                                <DependencyCheckTable Rows="view.Rows"
+                                                      JiraTaskUrl="@_jiraTaskUrl"
+                                                      SelectedDependencyId="@_focus?.DependencyId"
+                                                      Zoom="_tableZoom"
+                                                      FullHeight="_fullScreen"
+                                                      RowSelected="SelectRow"
+                                                      Locate="LocateAsync" />
+                            }
+                            else
+                            {
+                                <DependencyBoardCanvas Board="view.Board"
+                                                       Lines="_lines"
+                                                       FocusNodeIds="view.FocusNodeIds"
+                                                       FocusLineKeys="view.FocusLineKeys"
+                                                       ScrollToNodeId="@_scrollTo"
+                                                       ScrollRequest="_scrollRequest"
+                                                       JiraTaskUrl="@_jiraTaskUrl"
+                                                       Zoom="_boardZoom"
+                                                       FullHeight="_fullScreen"
+                                                       NodeActivated="ActivateNode"
+                                                       LineActivated="ActivateLine"
+                                                       TeamFocused="FocusTeamAsync" />
+                            }
+                        </div>
+                        @if (view.Panel is { } panel)
+                        {
+                            <div class="dm-panel">
+                                <DependencyDetailsPanel Panel="panel"
+                                                        Chain="_chain"
+                                                        ChainChanged="SetChain"
+                                                        TrailKeys="TrailKeys"
+                                                        Back="Back"
+                                                        JumpTo="JumpTo"
+                                                        CanOpenFeature="@_openable.Contains(panel.Feature.FeatureId)"
+                                                        OpenFeature="OpenFeatureAsync"
+                                                        JiraTaskUrl="@_jiraTaskUrl"
+                                                        NodeActivated="WalkTo"
+                                                        Close="ClearFocus" />
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                @if (!_tableView)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2 px-1">
+                        &rarr; from the feature that must finish first (provider) to the feature that waits (consumer). Thick red with ! = out of order · amber = at risk · thin green = in order · dashed grey = not checked · dashed without arrow = no order (e.g. relates to). Dashed card = outside this ART/PI. A card spans the sprints its teams planned. ≈ = the team's sprint does not line up with the ART sprints.
+                    </MudText>
+                }
+            }
+
+            @if ((!_filter.ShowUnlinked && view.HiddenUnlinked > 0) || _data.FeaturesWithoutKey > 0)
+            {
+                <div class="d-flex flex-wrap align-center gap-2 px-1 pt-2 mud-text-secondary dm-footer">
+                    @if (!_filter.ShowUnlinked && view.HiddenUnlinked > 0)
+                    {
+                        <span>@(view.HiddenUnlinked == 1 ? "1 feature without links is hidden." : $"{view.HiddenUnlinked} features without links are hidden.")</span>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Primary" OnClick="ShowUnlinked">Show them</MudButton>
+                    }
+                    @if (_data.FeaturesWithoutKey > 0)
+                    {
+                        <span>@(_data.FeaturesWithoutKey == 1 ? "1 feature has no Jira key and cannot have links." : $"{_data.FeaturesWithoutKey} features have no Jira key and cannot have links.")</span>
+                    }
+                </div>
+            }
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+<style>
+    .dm-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+    .dm-main.has-panel { grid-template-columns: minmax(0, 1fr) 380px; }
+    .dm-left { min-width: 0; }
+    .dm-panel { position: sticky; top: 72px; max-height: calc(100vh - 88px); overflow-y: auto; border-radius: 8px; }
+    .dm-matrix-wrap { overflow-x: auto; }
+    .dm-footer { font-size: .8rem; }
+    .dm-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 4px; vertical-align: middle; flex: 0 0 auto; }
+    .dm-status { white-space: nowrap; }
+    .dm-tone-default { color: var(--mud-palette-text-secondary); }
+    .dm-tone-primary { color: var(--mud-palette-primary); }
+    .dm-tone-secondary { color: var(--mud-palette-secondary); }
+    .dm-tone-info { color: var(--mud-palette-info); }
+    .dm-tone-success { color: var(--mud-palette-success); }
+    .dm-tone-warning { color: var(--mud-palette-warning); }
+    .dm-tone-error { color: var(--mud-palette-error); }
+    .dm-badge { display: inline-flex; align-items: center; gap: 2px; font-size: .68rem; line-height: 1.4; padding: 0 5px; border-radius: 8px; background: var(--mud-palette-action-default-hover); color: var(--mud-palette-text-secondary); white-space: nowrap; }
+    .dm-badge svg { width: 12px; height: 12px; fill: currentColor; }
+    .dm-badge.dm-scope { border: 1px dashed var(--mud-palette-lines-inputs); background: transparent; }
+    .dm-badge.dm-tone-warning { color: var(--mud-palette-warning); }
+    .dm-rchip { font-size: .68rem; font-weight: 600; line-height: 1.5; padding: 0 6px; border-radius: 8px; white-space: nowrap; }
+    .dm-rchip.r-late { background: var(--mud-palette-error); color: var(--mud-palette-error-text); }
+    .dm-rchip.r-risk { background: var(--mud-palette-warning); color: var(--mud-palette-warning-text); }
+    .dm-rchip.r-ok { background: var(--mud-palette-success); color: var(--mud-palette-success-text); }
+    .dm-rchip.r-none { background: var(--mud-palette-action-default-hover); color: var(--mud-palette-text-secondary); }
+    .dm-type-off { color: var(--mud-palette-text-secondary) !important; }
+    .dm-zoom { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--mud-palette-lines-default); border-radius: 6px; padding: 0 4px; }
+    .dm-zoom-value { min-width: 44px; text-align: center; font-size: .8rem; font-variant-numeric: tabular-nums; }
+    .dm-host { min-width: 0; }
+    .dm-host.dm-fullscreen { position: fixed; inset: 0; z-index: 1350; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; background: var(--mud-palette-background); outline: none; }
+    .dm-fullscreen-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .dm-fullscreen .dm-main { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+    .dm-fullscreen .dm-left { min-height: 0; display: flex; flex-direction: column; }
+    .dm-fullscreen .dm-table { flex: 1 1 auto; min-height: 0; }
+    .dm-fullscreen .dm-panel { position: static; max-height: none; min-height: 0; }
+    @@media (max-width: 1100px) {
+        .dm-main.has-panel { grid-template-columns: minmax(0, 1fr); }
+        .dm-panel { position: fixed; top: 72px; bottom: 8px; right: 8px; width: min(92vw, 380px); max-height: none; z-index: 1300; box-shadow: var(--mud-elevation-8); }
+        .dm-fullscreen .dm-panel { position: fixed; top: 56px; }
+    }
+</style>
+
+@code {
+    private const int MaxTrail = 10;
+    private const int MaxFindResults = 20;
+    private const string FeaturesPageKey = "Features";
+    private const string TeamStorageKey = "dependencyMap.myTeamId";
+    private const string LinesStorageKey = "dependencyMap.lines";
+    private const string ViewStorageKey = "dependencyMap.view";
+    private const string OverviewStorageKey = "dependencyMap.overviewOpen";
+    private const string BoardZoomStorageKey = "dependencyMap.zoom";
+    private const string TableZoomStorageKey = "dependencyMap.zoom.table";
+    private const string LinkTypesStorageKey = "dependencyMap.linkTypes";
+    private const string StoragePrefix = "dependencyMap.";
+    private const int MinZoom = 60;
+    private const int MaxZoom = 160;
+    private const int ZoomStep = 10;
+    private const int DefaultZoom = 100;
+    private const string TableValue = "table";
+    private const string BoardValue = "board";
+    private const string RisksValue = "risks";
+    private const string AllValue = "all";
+
+    private DependencyMapData? _data;
+    private DependencyIndex? _index;
+    private DependencyMapView? _view;
+    private DependencyFilter _filter = new();
+    private FeatureCardFilter _featureFilter = new();
+    private bool _includeLabelMatches = true;
+    private string? _myTeamLaneId;
+    private DependencySelection _selection = DependencySelection.None;
+    private DependencyFocus? _focus;
+    private ChainMode _chain = ChainMode.Direct;
+    private readonly List<string> _trail = new();
+    private bool _tableView;
+    private DependencyLineMode _lines = DependencyLineMode.All;
+    private bool _overviewOpen = true;
+    private bool _drawerOpen;
+    private bool _loading;
+    private string? _error;
+    private bool _exporting;
+    private bool _firstLoad = true;
+    private bool _preferencesRestored;
+    private Dictionary<string, string?> _query = new(StringComparer.OrdinalIgnoreCase);
+    private DependencyMapUrlState? _urlState;
+    private HashSet<int> _openable = new();
+    private string? _jiraTaskUrl;
+    private string? _scrollTo;
+    private int _scrollRequest;
+    private (int ArtId, int PiId, bool LabelMatches)? _loadedKey;
+    private readonly CancellationTokenSource _disposeCts = new();
+    private bool _disposed;
+    private int _loadVersion;
+    private string? _lastUri;
+    private string? _writtenUri;
+    private Task<IJSObjectReference>? _urlModule;
+    private ElementReference _pageRoot;
+    private DotNetObjectReference<DependencyMapPage>? _keysRef;
+    private bool _keysBound;
+    private readonly string _keysId = Guid.NewGuid().ToString("N");
+    private string? _keepTeamName;
+    private IReadOnlyList<IFeatureFilterRow> _inScopeRows = [];
+    private IReadOnlyList<FindOption> _findOptions = [];
+    private Dictionary<string, FeatureDependency> _dependencies = new(StringComparer.Ordinal);
+    private MudAutocomplete<FindOption>? _find;
+    private Dictionary<string, string?> _stored = new(StringComparer.Ordinal);
+    private string? _shownLinkTypes;
+    private int _boardZoom = DefaultZoom;
+    private int _tableZoom = DefaultZoom;
+    private bool _fullScreen;
+    private bool _focusFullScreen;
+
+    private sealed record FindOption(string NodeId, string Text);
+
+    private int ActiveFilterCount => _filter.ActiveCount + _featureFilter.ActiveCount;
+
+    private int Zoom => _tableView ? _tableZoom : _boardZoom;
+
+    private bool HasMain => _view is { } view && (view.Rows.Count > 0 || view.Board.Lanes.Count > 0 || view.Panel is not null);
+
+    private IReadOnlyList<DependencyLinkTypeInfo> LinkTypes => _index?.LinkTypes ?? [];
+
+    private IReadOnlyList<DependencyLane> TeamLanes =>
+        _index?.Lanes.Where(IsTeamLane).ToList() ?? [];
+
+    private DependencyLane? MyTeamLane => LaneOf(_myTeamLaneId);
+
+    private IReadOnlyList<string> TrailKeys => _trail.Select(KeyOfNode).ToList();
+
+    private bool CanGoBack => _trail.Any(id => id != _focus?.NodeId && IsCardNode(id));
+
+    private string SelectionText
+    {
+        get
+        {
+            var row = LaneOf(_selection.ConsumerLaneId)?.Name;
+            var column = LaneOf(_selection.ProviderLaneId)?.Name;
+
+            if (row is not null && column is not null)
+            {
+                return $"{row} needs {column}";
+            }
+
+            if (row is not null)
+            {
+                return $"what {row} needs";
+            }
+
+            if (column is not null)
+            {
+                return $"who needs {column}";
+            }
+
+            return MyTeamLane is { } lane ? $"dependencies of {lane.Name}" : string.Empty;
+        }
+    }
+
+    private string EmptySelectionText
+    {
+        get
+        {
+            var row = LaneOf(_selection.ConsumerLaneId)?.Name;
+            var column = LaneOf(_selection.ProviderLaneId)?.Name;
+
+            if (row is not null && column is not null)
+            {
+                return $"{row} does not need {column}.";
+            }
+
+            return row is not null ? $"{row} does not need any team here." : $"No team needs {column} here.";
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _query = ReadQuery();
+        _urlState = DependencyMapQuery.Parse(_query);
+        _includeLabelMatches = _urlState.IncludePiLabelMatches;
+        _chain = _urlState.Chain;
+        _tableView = _urlState.TableView;
+
+        if (DependencyMapQuery.HasFilterKeys(_query))
+        {
+            _filter = _urlState.Filter;
+            _featureFilter = _urlState.FeatureFilter;
+        }
+
+        _jiraTaskUrl = Configuration["JiraTaskUrl"];
+        await base.OnInitializedAsync();
+    }
+
+    protected override (int? ArtId, int? PiId) RequestedScope()
+    {
+        var artName = _urlState?.Art;
+        var piName = _urlState?.Pi;
+
+        var art = artName is null
+            ? null
+            : Arts.FirstOrDefault(a => string.Equals(a.Name?.Trim(), artName, StringComparison.OrdinalIgnoreCase));
+        var pi = piName is null
+            ? null
+            : Pis.Where(p => string.Equals(p.Name?.Trim(), piName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(p => p.StartDate ?? DateTime.MinValue)
+                .FirstOrDefault();
+
+        return (art?.Id, pi?.Id);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await BindKeysAsync();
+
+        if (_focusFullScreen)
+        {
+            _focusFullScreen = false;
+            await FocusFullScreenAsync();
+        }
+
+        await base.OnAfterRenderAsync(firstRender);
+    }
+
+    protected override async Task OnScopeChangedAsync()
+    {
+        if (!_preferencesRestored)
+        {
+            _preferencesRestored = true;
+            await RestorePreferencesAsync();
+        }
+        else
+        {
+            _firstLoad = false;
+
+            if (_index is not null
+                && _loadedKey is { } loaded
+                && loaded.ArtId == ArtId
+                && loaded.PiId == PiId
+                && loaded.LabelMatches == _includeLabelMatches)
+            {
+                return;
+            }
+
+            _keepTeamName = MyTeamLane is { } lane && IsTeamLane(lane) ? lane.Name : null;
+            _myTeamLaneId = null;
+            _selection = DependencySelection.None;
+            _focus = null;
+            _scrollTo = null;
+            _trail.Clear();
+            _featureFilter = new FeatureCardFilter();
+
+            if (_find is not null)
+            {
+                await _find.ClearAsync();
+            }
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (ArtId is not int artId || PiId is not int piId)
+        {
+            ClearData();
+            return;
+        }
+
+        var version = ++_loadVersion;
+        _loading = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            var data = await MapService.GetAsync(artId, piId, _includeLabelMatches, _disposeCts.Token);
+
+            if (_disposed || version != _loadVersion)
+            {
+                return;
+            }
+
+            SetData(data);
+            _loadedKey = (artId, piId, _includeLabelMatches);
+
+            if (_index is not null)
+            {
+                if (_firstLoad)
+                {
+                    ApplyUrlState();
+                }
+                else
+                {
+                    Reconcile();
+                }
+            }
+
+            _firstLoad = false;
+            Rebuild();
+            UpdateUrl();
+        }
+        catch (OperationCanceledException) when (_disposed)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (_disposed || version != _loadVersion)
+            {
+                return;
+            }
+
+            Log.Error(ex, "Failed to load the dependency map for ART {ArtId} and PI {PiId}", artId, piId);
+            ClearData();
+            _error = "The dependency map could not be loaded. Try Refresh, or choose another ART or PI.";
+        }
+        finally
+        {
+            if (version == _loadVersion)
+            {
+                _loading = false;
+            }
+        }
+    }
+
+    private void SetData(DependencyMapData? data)
+    {
+        _data = data;
+        _index = data is null ? null : DependencyClassifier.Build(data);
+        _view = null;
+
+        if (data is null || _index is null)
+        {
+            _inScopeRows = [];
+            _openable = new HashSet<int>();
+            _findOptions = [];
+            _dependencies = new Dictionary<string, FeatureDependency>(StringComparer.Ordinal);
+            return;
+        }
+
+        _inScopeRows = data.Features
+            .Where(f => f.Kind == DependencyEndKind.InScope)
+            .Cast<IFeatureFilterRow>()
+            .ToList();
+        _openable = data.Features
+            .Where(f => PermissionSet.CanEdit(FeaturesPageKey, f.Scope))
+            .Select(f => f.FeatureId)
+            .ToHashSet();
+        _findOptions = _index.Nodes.Values
+            .Where(n => n.Feature is not null)
+            .OrderBy(n => n.Feature!.Kind)
+            .ThenBy(n => n.Key, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(n => n.Feature!.FeatureId)
+            .Select(n => new FindOption(n.NodeId, string.IsNullOrEmpty(n.Key) ? n.Feature!.Title : $"{n.Key} — {n.Feature!.Title}"))
+            .ToList();
+        _dependencies = _index.Dependencies.ToDictionary(d => d.Id, StringComparer.Ordinal);
+    }
+
+    private void ClearData()
+    {
+        _fullScreen = false;
+        SetData(null);
+    }
+
+    private void ApplyUrlState()
+    {
+        var url = _urlState;
+
+        _myTeamLaneId = LaneIdByName(url?.Team);
+
+        if (_myTeamLaneId is null && DependencyMapQuery.UsesStoredTeam(_query))
+        {
+            _myTeamLaneId = StoredTeamLane() ?? GlobalTeamLane();
+        }
+
+        var from = LaneIdByName(url?.From);
+        var to = LaneIdByName(url?.To);
+        _selection = from is null && to is null ? DependencySelection.None : new DependencySelection(from, to);
+
+        if (FeatureNodeByKey(url?.Focus) is { } focusNodeId)
+        {
+            _focus = new DependencyFocus(focusNodeId, _chain, null);
+            RequestScroll(focusNodeId);
+        }
+
+        KeepKnownLinkTypes();
+    }
+
+    private void Reconcile()
+    {
+        if (_keepTeamName is not null)
+        {
+            _myTeamLaneId = TeamLanes.FirstOrDefault(l => string.Equals(l.Name, _keepTeamName, StringComparison.OrdinalIgnoreCase))?.LaneId;
+            _keepTeamName = null;
+        }
+        else if (LaneOf(_myTeamLaneId) is null)
+        {
+            _myTeamLaneId = null;
+        }
+
+        var selectionGone = (_selection.ConsumerLaneId is not null && LaneOf(_selection.ConsumerLaneId) is null)
+            || (_selection.ProviderLaneId is not null && LaneOf(_selection.ProviderLaneId) is null);
+
+        if (selectionGone)
+        {
+            _selection = DependencySelection.None;
+        }
+
+        if (_focus is not null && !IsCardNode(_focus.NodeId))
+        {
+            _focus = null;
+            _scrollTo = null;
+            _trail.Clear();
+        }
+
+        DependencyTrail.Prune(_trail, IsCardNode, _focus?.NodeId);
+        KeepKnownLinkTypes();
+    }
+
+    private void KeepKnownLinkTypes() => _filter.KeepKnownLinkTypes(LinkTypes.Select(t => t.TypeName));
+
+    private void Rebuild()
+    {
+        _view = _index is null
+            ? null
+            : DependencyViewBuilder.Build(_index, new DependencyViewState(_filter, _featureFilter, _myTeamLaneId, _selection, _focus));
+        _shownLinkTypes = DependencyMapQuery.WriteLinkTypePreference(_filter);
+
+        if (!HasMain)
+        {
+            _fullScreen = false;
+        }
+    }
+
+    private void UpdateUrl()
+    {
+        if (_disposed || ArtId is null || PiId is null)
+        {
+            return;
+        }
+
+        var state = new DependencyMapUrlState(
+            SelectedArt?.Name,
+            SelectedPi?.Name,
+            LaneOf(_myTeamLaneId)?.Name,
+            LaneOf(_selection.ConsumerLaneId)?.Name,
+            LaneOf(_selection.ProviderLaneId)?.Name,
+            _tableView,
+            FocusKey(),
+            _chain,
+            _includeLabelMatches,
+            _filter,
+            _featureFilter);
+
+        var uri = Nav.GetUriWithQueryParameters(DependencyMapQuery.Write(state));
+
+        if (!string.Equals(uri, _lastUri ?? Nav.Uri, StringComparison.Ordinal))
+        {
+            _lastUri = uri;
+            _ = ReplaceUrlAsync(uri);
+        }
+    }
+
+    private async Task ReplaceUrlAsync(string uri)
+    {
+        var written = false;
+
+        try
+        {
+            var module = await ModuleAsync();
+
+            if (!_disposed)
+            {
+                await module.InvokeVoidAsync("replaceUrl", uri);
+                written = true;
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+        catch (JSException ex)
+        {
+            Log.Warning(ex, "Failed to update the dependency map address");
+        }
+        finally
+        {
+            if (written)
+            {
+                _writtenUri = uri;
+            }
+            else if (string.Equals(_lastUri, uri, StringComparison.Ordinal))
+            {
+                _lastUri = _writtenUri;
+            }
+        }
+    }
+
+    private Task<IJSObjectReference> ModuleAsync()
+    {
+        if (_urlModule is { IsFaulted: true } or { IsCanceled: true })
+        {
+            _urlModule = null;
+        }
+
+        _urlModule ??= JS.InvokeAsync<IJSObjectReference>("import", "./js/dependencyMap.min.js").AsTask();
+        return _urlModule;
+    }
+
+    private async Task BindKeysAsync()
+    {
+        if (_keysBound || _disposed || string.IsNullOrEmpty(_pageRoot.Id))
+        {
+            return;
+        }
+
+        _keysBound = true;
+
+        try
+        {
+            _keysRef ??= DotNetObjectReference.Create(this);
+            var module = await ModuleAsync();
+
+            if (!_disposed)
+            {
+                await module.InvokeVoidAsync("bindKeys", _pageRoot, _keysRef, _keysId);
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+            _keysBound = false;
+        }
+        catch (JSException ex)
+        {
+            _keysBound = false;
+            Log.Warning(ex, "Failed to bind the dependency map keys");
+        }
+    }
+
+    [JSInvokable]
+    public Task OnJsEscape() => InvokeAsync(() =>
+    {
+        if (_focus is not null)
+        {
+            ClearFocus();
+        }
+        else
+        {
+            ExitFullScreen();
+        }
+
+        StateHasChanged();
+    });
+
+    [JSInvokable]
+    public Task OnJsBack() => InvokeAsync(() =>
+    {
+        Back();
+        StateHasChanged();
+    });
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _disposeCts.Cancel();
+        _disposeCts.Dispose();
+
+        if (_urlModule is { } import)
+        {
+            try
+            {
+                var module = await import;
+
+                if (_keysBound)
+                {
+                    await module.InvokeVoidAsync("unbindKeys", _keysId);
+                }
+
+                await module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (TaskCanceledException)
+            {
+            }
+            catch (JSException)
+            {
+            }
+        }
+
+        _keysRef?.Dispose();
+    }
+
+    private void ActivateNode(string nodeId)
+    {
+        if (_focus?.NodeId == nodeId)
+        {
+            ClearFocus();
+            return;
+        }
+
+        FocusNode(nodeId, null);
+    }
+
+    private void WalkTo(string nodeId) => FocusNode(nodeId, null);
+
+    private void ActivateLine(string lineKey)
+    {
+        var line = _view?.Board.Lines.FirstOrDefault(l => l.Key == lineKey);
+
+        if (line is null)
+        {
+            return;
+        }
+
+        var worst = line.DependencyIds
+            .Select(id => _dependencies.GetValueOrDefault(id))
+            .OfType<FeatureDependency>()
+            .OrderByDescending(d => d.Verdict.Risk)
+            .FirstOrDefault();
+
+        if (worst is not null)
+        {
+            FocusNode(worst.Consumer.NodeId, worst.Id);
+        }
+    }
+
+    private void SelectRow(DependencyRow row)
+    {
+        var dependency = row.Dependency;
+        var nodeId = dependency.Consumer.IsCard ? dependency.Consumer.NodeId : dependency.Provider.NodeId;
+        FocusNode(nodeId, dependency.Id);
+    }
+
+    private async Task LocateAsync(DependencyRow row)
+    {
+        _tableView = false;
+        await WriteStoredAsync(ViewStorageKey, BoardValue);
+        SelectRow(row);
+    }
+
+    private void FocusNode(string nodeId, string? dependencyId)
+    {
+        if (!IsCardNode(nodeId))
+        {
+            return;
+        }
+
+        if (_focus is not null && _focus.NodeId != nodeId)
+        {
+            PushTrail(_focus.NodeId);
+        }
+
+        _focus = new DependencyFocus(nodeId, _chain, dependencyId);
+        RequestScroll(nodeId);
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private void PushTrail(string nodeId)
+    {
+        if (_trail.Count > 0 && _trail[^1] == nodeId)
+        {
+            return;
+        }
+
+        _trail.Add(nodeId);
+
+        if (_trail.Count > MaxTrail)
+        {
+            _trail.RemoveAt(0);
+        }
+    }
+
+    private void Back()
+    {
+        while (_trail.Count > 0)
+        {
+            var nodeId = _trail[^1];
+            _trail.RemoveAt(_trail.Count - 1);
+
+            if (nodeId != _focus?.NodeId && IsCardNode(nodeId))
+            {
+                _focus = new DependencyFocus(nodeId, _chain, null);
+                RequestScroll(nodeId);
+                Rebuild();
+                UpdateUrl();
+                return;
+            }
+        }
+    }
+
+    private void JumpTo(int index)
+    {
+        if (index < 0 || index >= _trail.Count)
+        {
+            return;
+        }
+
+        var nodeId = _trail[index];
+        _trail.RemoveRange(index, _trail.Count - index);
+
+        if (!IsCardNode(nodeId))
+        {
+            return;
+        }
+
+        _focus = new DependencyFocus(nodeId, _chain, null);
+        RequestScroll(nodeId);
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private void ClearFocus()
+    {
+        if (_focus is null && _trail.Count == 0)
+        {
+            return;
+        }
+
+        _focus = null;
+        _scrollTo = null;
+        _trail.Clear();
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private void SetSelection(DependencySelection selection)
+    {
+        _selection = selection == _selection ? DependencySelection.None : selection;
+        _focus = null;
+        _scrollTo = null;
+        _trail.Clear();
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private async Task SetMyTeamAsync(DependencyLane? lane)
+    {
+        _myTeamLaneId = lane?.LaneId;
+        _selection = DependencySelection.None;
+        await WriteStoredAsync(TeamStorageKey, lane?.TeamId?.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private Task FocusTeamAsync(string laneId) => SetMyTeamAsync(LaneOf(laneId));
+
+    private async Task ClearSelectionLineAsync()
+    {
+        if (!_selection.IsEmpty)
+        {
+            SetSelection(DependencySelection.None);
+            return;
+        }
+
+        await SetMyTeamAsync(null);
+    }
+
+    private void ToggleRisk(DependencyRisk risk)
+    {
+        var selected = _filter.Risks.ToHashSet();
+
+        if (selected.Count == 0)
+        {
+            selected.Add(risk);
+        }
+        else if (!selected.Remove(risk))
+        {
+            selected.Add(risk);
+        }
+
+        if (selected.Count == DependencyRiskDisplay.All.Count)
+        {
+            selected.Clear();
+        }
+
+        _filter.Risks = DependencyRiskDisplay.All.Where(selected.Contains).ToList();
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private void SetChain(ChainMode mode)
+    {
+        _chain = mode;
+
+        if (_focus is not null)
+        {
+            _focus = _focus with { Chain = mode };
+        }
+
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private void OnFiltersChanged()
+    {
+        SaveLinkTypes();
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private void ClearFilters()
+    {
+        _filter.Clear();
+        _featureFilter.Clear();
+        OnFiltersChanged();
+    }
+
+    private void ToggleLinkType(string typeName)
+    {
+        _filter.ToggleLinkType(typeName, LinkTypes.Select(t => t.TypeName));
+        OnFiltersChanged();
+    }
+
+    private void ShowAllLinkTypes()
+    {
+        _filter.ShowAllLinkTypes();
+        OnFiltersChanged();
+    }
+
+    private void SaveLinkTypes()
+    {
+        var current = DependencyMapQuery.WriteLinkTypePreference(_filter);
+
+        if (!string.Equals(current, _shownLinkTypes, StringComparison.Ordinal))
+        {
+            _ = WriteStoredAsync(LinkTypesStorageKey, current);
+        }
+    }
+
+    private void ZoomBy(int delta)
+    {
+        var zoom = Math.Clamp(Zoom + delta, MinZoom, MaxZoom);
+        var value = zoom == DefaultZoom ? null : zoom.ToString(CultureInfo.InvariantCulture);
+
+        if (_tableView)
+        {
+            _tableZoom = zoom;
+            _ = WriteStoredAsync(TableZoomStorageKey, value);
+        }
+        else
+        {
+            _boardZoom = zoom;
+            _ = WriteStoredAsync(BoardZoomStorageKey, value);
+        }
+    }
+
+    private void EnterFullScreen()
+    {
+        if (!HasMain)
+        {
+            return;
+        }
+
+        _fullScreen = true;
+        _focusFullScreen = true;
+    }
+
+    private void ExitFullScreen() => _fullScreen = false;
+
+    private async Task FocusFullScreenAsync()
+    {
+        if (!_fullScreen || _disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            var module = await ModuleAsync();
+
+            if (!_disposed)
+            {
+                await module.InvokeVoidAsync("focusFullScreen", _pageRoot);
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (TaskCanceledException)
+        {
+        }
+        catch (JSException ex)
+        {
+            Log.Warning(ex, "Failed to focus the dependency map full screen view");
+        }
+    }
+
+    private void ShowUnlinked()
+    {
+        _filter.ShowUnlinked = true;
+        Rebuild();
+        UpdateUrl();
+    }
+
+    private async Task SetTableViewAsync(bool tableView)
+    {
+        _tableView = tableView;
+        await WriteStoredAsync(ViewStorageKey, tableView ? TableValue : BoardValue);
+        UpdateUrl();
+    }
+
+    private async Task SetLinesAsync(DependencyLineMode mode)
+    {
+        _lines = mode;
+        await WriteStoredAsync(LinesStorageKey, mode == DependencyLineMode.Risks ? RisksValue : AllValue);
+    }
+
+    private async Task ToggleOverviewAsync()
+    {
+        _overviewOpen = !_overviewOpen;
+        await WriteStoredAsync(OverviewStorageKey, _overviewOpen ? "1" : "0");
+    }
+
+    private async Task OnIncludeLabelMatchesChangedAsync(bool value)
+    {
+        _includeLabelMatches = value;
+        await LoadAsync();
+    }
+
+    private Task RefreshAsync() => LoadAsync();
+
+    private async Task OnFindSelectedAsync(FindOption? option)
+    {
+        if (option is null)
+        {
+            return;
+        }
+
+        FocusNode(option.NodeId, null);
+
+        if (_find is not null)
+        {
+            await _find.ClearAsync();
+        }
+    }
+
+    private Task<IEnumerable<FindOption>> SearchAsync(string? value, CancellationToken token)
+    {
+        var needle = value?.Trim();
+        IEnumerable<FindOption> matches = string.IsNullOrEmpty(needle)
+            ? _findOptions
+            : _findOptions.Where(o => o.Text.Contains(needle, StringComparison.OrdinalIgnoreCase));
+
+        return Task.FromResult<IEnumerable<FindOption>>(matches.Take(MaxFindResults).ToList());
+    }
+
+    private async Task OpenFeatureAsync()
+    {
+        if (_view?.Panel is not { } panel || !_openable.Contains(panel.Feature.FeatureId))
+        {
+            return;
+        }
+
+        await JS.InvokeVoidAsync("open", $"{RoutingPath.Features}/{panel.Feature.FeatureId}", "_blank");
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_loading || _data is null || _view is null || _exporting)
+        {
+            return;
+        }
+
+        _exporting = true;
+
+        try
+        {
+            var bytes = DependencyExcelExportService.Build(_data, _view.Rows, _jiraTaskUrl, FilterText());
+            var fileName = $"dependencies-{SafeFileName(_data.ArtName)}-{SafeFileName(_data.PiName)}-{DateTime.UtcNow:yyyyMMdd}.xlsx";
+            await DownloadService.DownloadAsync(bytes, fileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to export the dependency map to Excel");
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private string FilterText()
+    {
+        var parts = new List<string>();
+
+        if (MyTeamLane is { } team)
+        {
+            parts.Add($"{PlanningDisplayNames.MyTeam}: {team.Name}");
+        }
+
+        if (!_selection.IsEmpty)
+        {
+            parts.Add($"Showing: {SelectionText}");
+        }
+
+        parts.Add($"Link types: {LinkTypesText()}");
+        parts.Add($"Risks: {(_filter.Risks.Count == 0 ? "all" : string.Join(", ", DependencyRiskDisplay.All.Where(_filter.Risks.Contains).Select(DependencyRiskRule.Label)))}");
+        parts.Add($"Same ART, other PI: {OnOff(_filter.ShowOtherPi)}");
+        parts.Add($"Other ART or no ART: {OnOff(_filter.ShowOtherArt)}");
+        parts.Add($"Issues that are not features: {OnOff(_filter.ShowNotInTool)}");
+        parts.Add($"Links inside one team: {OnOff(_filter.ShowWithinTeam)}");
+        parts.Add($"Feature filters: {_featureFilter.ActiveCount}");
+        parts.Add($"Label matches: {OnOff(_includeLabelMatches)}");
+
+        return string.Join("; ", parts);
+    }
+
+    private string LinkTypesText()
+    {
+        if (!_filter.FiltersLinkTypes)
+        {
+            return "all";
+        }
+
+        var names = string.Join(", ", _filter.LinkTypes);
+        return _filter.LinkTypesNot ? $"all except {names}" : names;
+    }
+
+    private async Task RestorePreferencesAsync()
+    {
+        _stored = await ReadPreferencesAsync();
+
+        if (DependencyMapQuery.UsesStoredView(_query))
+        {
+            _tableView = string.Equals(Stored(ViewStorageKey), TableValue, StringComparison.OrdinalIgnoreCase);
+        }
+
+        _lines = string.Equals(Stored(LinesStorageKey), RisksValue, StringComparison.OrdinalIgnoreCase)
+            ? DependencyLineMode.Risks
+            : DependencyLineMode.All;
+        _overviewOpen = Stored(OverviewStorageKey) != "0";
+        _boardZoom = StoredZoom(BoardZoomStorageKey);
+        _tableZoom = StoredZoom(TableZoomStorageKey);
+
+        if (!DependencyMapQuery.HasLinkTypeKeys(_query))
+        {
+            DependencyMapQuery.ReadLinkTypePreference(Stored(LinkTypesStorageKey), _filter);
+        }
+    }
+
+    private string? Stored(string key) => _stored.GetValueOrDefault(key);
+
+    private int StoredZoom(string key) =>
+        int.TryParse(Stored(key), NumberStyles.Integer, CultureInfo.InvariantCulture, out var zoom)
+            ? Math.Clamp(zoom, MinZoom, MaxZoom)
+            : DefaultZoom;
+
+    private string? StoredTeamLane() =>
+        int.TryParse(Stored(TeamStorageKey), out var teamId) ? TeamLaneIdOf(teamId) : null;
+
+    private string? GlobalTeamLane() => GlobalTeamIds.Count == 1 ? TeamLaneIdOf(GlobalTeamIds[0]) : null;
+
+    private string? TeamLaneIdOf(int teamId)
+    {
+        var laneId = DependencyClassifier.TeamLaneId(teamId);
+        return LaneOf(laneId) is { } lane && IsTeamLane(lane) ? laneId : null;
+    }
+
+    private string? LaneIdByName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || _index is null)
+        {
+            return null;
+        }
+
+        var trimmed = name.Trim();
+        return _index.Lanes.FirstOrDefault(l => string.Equals(l.Name, trimmed, StringComparison.OrdinalIgnoreCase))?.LaneId;
+    }
+
+    private string? FeatureNodeByKey(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key) || _index is null)
+        {
+            return null;
+        }
+
+        var trimmed = key.Trim();
+        return _index.Nodes.Values
+            .Where(n => n.Feature is not null && string.Equals(n.Key, trimmed, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(n => n.Feature!.Kind)
+            .ThenBy(n => n.Feature!.FeatureId)
+            .Select(n => n.NodeId)
+            .FirstOrDefault();
+    }
+
+    private string? FocusKey()
+    {
+        if (_focus is null || _index is null || !_index.Nodes.TryGetValue(_focus.NodeId, out var node))
+        {
+            return null;
+        }
+
+        return string.IsNullOrEmpty(node.Key) ? null : node.Key;
+    }
+
+    private DependencyLane? LaneOf(string? laneId) =>
+        laneId is null ? null : _index?.Lanes.FirstOrDefault(l => l.LaneId == laneId);
+
+    private bool IsCardNode(string nodeId) =>
+        _index is not null && _index.Nodes.TryGetValue(nodeId, out var node) && node.IsCard;
+
+    private string KeyOfNode(string nodeId)
+    {
+        if (_index is null || !_index.Nodes.TryGetValue(nodeId, out var node))
+        {
+            return nodeId;
+        }
+
+        return string.IsNullOrEmpty(node.Key) ? node.Feature?.Title ?? nodeId : node.Key;
+    }
+
+    private void RequestScroll(string nodeId)
+    {
+        _scrollTo = nodeId;
+        _scrollRequest++;
+    }
+
+    private Dictionary<string, string?> ReadQuery()
+    {
+        var result = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (key, value) in QueryHelpers.ParseQuery(Nav.ToAbsoluteUri(Nav.Uri).Query))
+        {
+            result.TryAdd(key, value.ToString());
+        }
+
+        return result;
+    }
+
+    private async Task<Dictionary<string, string?>> ReadPreferencesAsync()
+    {
+        try
+        {
+            var module = await ModuleAsync();
+            var values = await module.InvokeAsync<Dictionary<string, string?>?>("readStorage", StoragePrefix);
+            return values is null
+                ? new Dictionary<string, string?>(StringComparer.Ordinal)
+                : new Dictionary<string, string?>(values, StringComparer.Ordinal);
+        }
+        catch
+        {
+            return new Dictionary<string, string?>(StringComparer.Ordinal);
+        }
+    }
+
+    private async Task WriteStoredAsync(string key, string? value)
+    {
+        try
+        {
+            if (value is null)
+            {
+                await JS.InvokeVoidAsync("localStorage.removeItem", key);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("localStorage.setItem", key, value);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private RenderFragment ViewToggle => @<MudToggleGroup T="bool" Value="_tableView" ValueChanged="SetTableViewAsync"
+                                                         SelectionMode="SelectionMode.SingleSelection"
+                                                         Color="Color.Primary" Size="Size.Small" CheckMark="false">
+        <MudToggleItem Value="false">Board</MudToggleItem>
+        <MudToggleItem Value="true">Table</MudToggleItem>
+    </MudToggleGroup>;
+
+    private RenderFragment LinesControl => @<div class="d-flex align-center gap-1">
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">Lines</MudText>
+        <MudToggleGroup T="DependencyLineMode" Value="_lines" ValueChanged="SetLinesAsync"
+                        SelectionMode="SelectionMode.SingleSelection"
+                        Color="Color.Primary" Size="Size.Small" CheckMark="false">
+            <MudToggleItem Value="DependencyLineMode.All">All</MudToggleItem>
+            <MudToggleItem Value="DependencyLineMode.Risks">Risks</MudToggleItem>
+        </MudToggleGroup>
+    </div>;
+
+    private RenderFragment ZoomControl => @<div class="dm-zoom">
+        <MudIconButton Icon="@Icons.Material.Filled.Remove" Size="Size.Small" title="Zoom out" aria-label="Zoom out" Disabled="@(Zoom <= MinZoom)" OnClick="@(() => ZoomBy(-ZoomStep))" />
+        <span class="dm-zoom-value" title="@(_tableView ? "Table zoom" : "Board zoom")">@Zoom%</span>
+        <MudIconButton Icon="@Icons.Material.Filled.Add" Size="Size.Small" title="Zoom in" aria-label="Zoom in" Disabled="@(Zoom >= MaxZoom)" OnClick="@(() => ZoomBy(ZoomStep))" />
+    </div>;
+
+    private RenderFragment FullScreenBar => @<div class="dm-fullscreen-bar">
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mr-2">@PlanningDisplayNames.DependencyMap · @_data?.ArtName · @_data?.PiName</MudText>
+        @ViewToggle
+        @if (!_tableView)
+        {
+            @LinesControl
+        }
+        @ZoomControl
+        <MudSpacer />
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                   StartIcon="@Icons.Material.Filled.FullscreenExit"
+                   title="Back to the page (Esc)"
+                   OnClick="ExitFullScreen">
+            Exit full screen
+        </MudButton>
+    </div>;
+
+    private string LinkTypeText(DependencyLinkTypeInfo type)
+    {
+        var phrases = LinkTypePhrases(type);
+        var shared = LinkTypes.Count(t => string.Equals(LinkTypePhrases(t), phrases, StringComparison.OrdinalIgnoreCase)) > 1;
+
+        if (!shared)
+        {
+            return phrases;
+        }
+
+        var name = type.TypeName == DependencyClassifier.UnnamedLinkType ? "no type name" : type.TypeName;
+        return $"{phrases} ({name})";
+    }
+
+    private static string LinkTypePhrases(DependencyLinkTypeInfo type) =>
+        string.Equals(type.Outward, type.Inward, StringComparison.OrdinalIgnoreCase)
+            ? type.Outward
+            : $"{type.Outward} / {type.Inward}";
+
+    private static string LinkTypeTitle(DependencyLinkTypeInfo type, bool shown) =>
+        $"Jira link type \"{type.TypeName}\" · {LinkOrderRule.Describe(type.Order, type.Outward)} · {Plural(type.LinkCount, "link", "links")} here. Click to {(shown ? "hide" : "show")} these links.";
+
+    private static bool IsTeamLane(DependencyLane lane) =>
+        lane.Kind is DependencyLaneKind.ArtTeam or DependencyLaneKind.OtherTeam;
+
+    private static string KeyOrTitle(DependencyFeature feature) =>
+        string.IsNullOrEmpty(feature.JiraId) ? feature.Title : feature.JiraId;
+
+    private static int CountOf(RiskSummary summary, DependencyRisk risk) => risk switch
+    {
+        DependencyRisk.OutOfOrder => summary.OutOfOrder,
+        DependencyRisk.AtRisk => summary.AtRisk,
+        DependencyRisk.InOrder => summary.InOrder,
+        _ => summary.NotChecked
+    };
+
+    private static string Plural(int count, string one, string many) => count == 1 ? $"1 {one}" : $"{count} {many}";
+
+    private static string OnOff(bool value) => value ? "on" : "off";
+
+    private static string SafeFileName(string value)
+    {
+        var chars = value.Trim().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        var name = new string(chars).Trim('-');
+        return name.Length == 0 ? "export" : name;
+    }
+}

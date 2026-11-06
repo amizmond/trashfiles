@@ -1,0 +1,91 @@
+@inherits LocalTimeComponentBase
+
+@using System.Globalization
+@using Estimation.Core.JiraIntegration.Reports
+
+@if (Issues.Count == 0)
+{
+    <MudText Typo="Typo.body2" Class="mud-text-secondary pa-2">@EmptyText</MudText>
+}
+else
+{
+    <div style="overflow-x:auto">
+        <table class="sr-table">
+            <thead>
+                <tr>
+                    <th style="width:110px">Key</th>
+                    <th style="width:110px">Type</th>
+                    <th>Summary</th>
+                    <th style="width:150px">Status</th>
+                    <th class="num" style="width:60px">SP</th>
+                    <th style="width:170px">Assignee</th>
+                    @if (Mode == IssueTableMode.Added)
+                    {
+                        <th style="width:150px">Added</th>
+                    }
+                    else if (Mode == IssueTableMode.Completed)
+                    {
+                        <th style="width:150px">Done</th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var issue in Issues)
+                {
+                    <tr @key="issue.Key">
+                        <td><MudLink Href="@BrowseUrl(issue.Key)" Target="_blank">@issue.Key</MudLink></td>
+                        <td>
+                            <MudChip T="string" Size="Size.Small" Color="@JiraIssueTypeHelper.IssueTypeColor(issue.Issue.IssueType)">
+                                @(issue.Issue.IssueType ?? "—")
+                            </MudChip>
+                        </td>
+                        <td>
+                            @issue.Issue.Summary
+                            @if (Mode == IssueTableMode.All && issue.IsAdded)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning" Class="ml-1">added</MudChip>
+                            }
+                        </td>
+                        <td>
+                            <MudChip T="string" Size="Size.Small" Color="@JiraStatusHelper.StatusColor(issue.Status)" Variant="Variant.Filled">
+                                @(issue.Status ?? "—")
+                            </MudChip>
+                        </td>
+                        <td class="num">@(issue.Points?.ToString(CultureInfo.InvariantCulture) ?? "—")</td>
+                        <td>@(issue.Issue.AssigneeDisplayName ?? "—")</td>
+                        @if (Mode == IssueTableMode.Added)
+                        {
+                            <td>@UserTime.Format(issue.AddedAt?.UtcDateTime)</td>
+                        }
+                        else if (Mode == IssueTableMode.Completed)
+                        {
+                            <td>@UserTime.Format(issue.DoneAt?.UtcDateTime)</td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    public enum IssueTableMode
+    {
+        All,
+
+        Added,
+
+        Completed,
+    }
+
+    [Parameter, EditorRequired] public IReadOnlyList<SprintReportIssue> Issues { get; set; } = [];
+
+    [Parameter] public IssueTableMode Mode { get; set; }
+
+    [Parameter, EditorRequired] public string JiraUrl { get; set; } = string.Empty;
+
+    [Parameter] public string EmptyText { get; set; } = "No issues.";
+
+    private string BrowseUrl(string issueKey) =>
+        $"{JiraUrl.TrimEnd('/')}/browse/{Uri.EscapeDataString(issueKey)}";
+}

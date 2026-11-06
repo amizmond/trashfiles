@@ -1,0 +1,141 @@
+@using Estimation.Core.Features.DependencyMap.Services
+@using Estimation.Core.Features.Models
+
+<MudDrawer Open="Open" OpenChanged="OpenChanged" Anchor="Anchor.End" Elevation="2"
+           Variant="DrawerVariant.Temporary" Width="400px"
+           Style="background: var(--mud-palette-surface)">
+    <MudDrawerHeader>
+        <div class="d-flex align-center justify-space-between" style="width:100%">
+            <MudText Typo="Typo.h6">@PlanningDisplayNames.Filters</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="CloseAsync" />
+        </div>
+    </MudDrawerHeader>
+    <div class="d-flex flex-column gap-3 pa-4">
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@PlanningDisplayNames.Dependencies</MudText>
+
+        <div class="d-flex align-end gap-2">
+            <SearchableDropdown T="string"
+                                Items="LinkTypeNames"
+                                Values="Filter.LinkTypes"
+                                ValuesChanged="OnLinkTypesChanged"
+                                MultiSelect="true"
+                                Label="Link types"
+                                Placeholder="All link types"
+                                ToStringFunc="LinkTypeText"
+                                SelectedTextFunc="@(name => name ?? string.Empty)"
+                                PopoverStyle="min-width: 340px; max-width: 480px;"
+                                Style="flex:1; min-width:0" />
+            <MudTooltip Text="Negate: hide the selected link types instead of showing only them">
+                <MudCheckBox T="bool" Value="Filter.LinkTypesNot"
+                             ValueChanged="@((bool v) => SetAsync(() => Filter.LinkTypesNot = v))"
+                             Label="Not" Dense Color="Color.Secondary" />
+            </MudTooltip>
+        </div>
+
+        <MudSwitch T="bool" Value="Filter.ShowOtherPi"
+                   ValueChanged="@((bool v) => SetAsync(() => Filter.ShowOtherPi = v))"
+                   Label="Same ART, other PI" Color="Color.Primary" />
+
+        <MudSwitch T="bool" Value="Filter.ShowOtherArt"
+                   ValueChanged="@((bool v) => SetAsync(() => Filter.ShowOtherArt = v))"
+                   Label="Other ART or no ART" Color="Color.Primary" />
+
+        <MudSwitch T="bool" Value="Filter.ShowNotInTool"
+                   ValueChanged="@((bool v) => SetAsync(() => Filter.ShowNotInTool = v))"
+                   Label="Issues that are not features (BO, PE, SO, stories, other projects): table and matrix only"
+                   Color="Color.Primary" />
+
+        <MudSwitch T="bool" Value="Filter.ShowWithinTeam"
+                   ValueChanged="@((bool v) => SetAsync(() => Filter.ShowWithinTeam = v))"
+                   Label="Links inside one team" Color="Color.Primary" />
+
+        <SearchableDropdown T="DependencyRisk"
+                            Items="DependencyRiskDisplay.All"
+                            Values="Filter.Risks"
+                            ValuesChanged="OnRisksChanged"
+                            MultiSelect="true"
+                            ShowSearch="false"
+                            Label="Risk"
+                            Placeholder="All risks"
+                            ToStringFunc="@(r => DependencyRiskRule.Label(r))" />
+
+        <MudSwitch T="bool" Value="Filter.ShowUnlinked"
+                   ValueChanged="@((bool v) => SetAsync(() => Filter.ShowUnlinked = v))"
+                   Label="Show features without links" Color="Color.Primary" />
+
+        <MudDivider Class="my-1" />
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@PlanningDisplayNames.Features</MudText>
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+            Applies to the features of this ART and PI. A dependency stays when one of its features matches.
+        </MudText>
+
+        <FeatureCardFilterPanel Embedded="true"
+                                Features="Features"
+                                Filter="FeatureFilter"
+                                FilterChanged="Changed"
+                                ShowHygiene="false" />
+
+        <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+                   StartIcon="@Icons.Material.Filled.ClearAll"
+                   Disabled="@(Filter.ActiveCount + FeatureFilter.ActiveCount == 0)"
+                   FullWidth OnClick="ClearAsync" Class="mt-2">
+            @PlanningDisplayNames.ClearFilters
+        </MudButton>
+    </div>
+</MudDrawer>
+
+@code {
+    [Parameter] public bool Open { get; set; }
+
+    [Parameter] public EventCallback<bool> OpenChanged { get; set; }
+
+    [Parameter, EditorRequired] public DependencyFilter Filter { get; set; } = null!;
+
+    [Parameter, EditorRequired] public FeatureCardFilter FeatureFilter { get; set; } = null!;
+
+    [Parameter] public IReadOnlyList<IFeatureFilterRow> Features { get; set; } = [];
+
+    [Parameter] public IReadOnlyList<DependencyLinkTypeInfo> LinkTypes { get; set; } = [];
+
+    [Parameter] public EventCallback Changed { get; set; }
+
+    private IEnumerable<string> LinkTypeNames => LinkTypes.Select(t => t.TypeName);
+
+    private string LinkTypeText(string? name)
+    {
+        var info = LinkTypes.FirstOrDefault(t => string.Equals(t.TypeName, name, StringComparison.OrdinalIgnoreCase));
+
+        return info is null
+            ? name ?? string.Empty
+            : $"{info.TypeName} ({info.Outward} / {info.Inward}) · {LinkOrderRule.Describe(info.Order, info.Outward)}";
+    }
+
+    private Task OnLinkTypesChanged(IReadOnlyCollection<string> values)
+    {
+        Filter.LinkTypes = values.ToList();
+        return Changed.InvokeAsync();
+    }
+
+    private Task OnRisksChanged(IReadOnlyCollection<DependencyRisk> values)
+    {
+        var selected = DependencyRiskDisplay.All.Where(values.Contains).ToList();
+        Filter.Risks = selected.Count == DependencyRiskDisplay.All.Count ? [] : selected;
+        return Changed.InvokeAsync();
+    }
+
+    private Task SetAsync(Action change)
+    {
+        change();
+        return Changed.InvokeAsync();
+    }
+
+    private Task CloseAsync() => OpenChanged.InvokeAsync(false);
+
+    private Task ClearAsync()
+    {
+        Filter.Clear();
+        FeatureFilter.Clear();
+        return Changed.InvokeAsync();
+    }
+}

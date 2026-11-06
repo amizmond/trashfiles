@@ -1,0 +1,447 @@
+@inject IArtSprintService ArtSprintService
+@inject ISprintService SprintService
+@inject IJiraAuthService JiraAuth
+@inject IJiraSprintReportService ReportService
+@inject IWindowsAuthService WindowsAuth
+@inject IDialogService DialogService
+
+@implements IDisposable
+
+@using System.Globalization
+@using Serilog
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Reports
+@using Estimation.Core.JiraIntegration.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Train.Models
+@using Estimation.Core.Train.Services
+
+<PageTitle>@($"{ArtName} — Sprint Reports")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+            <MudSelect T="int?"
+                       Value="_selectedArtSprintId"
+                       ValueChanged="OnArtSprintChangedAsync"
+                       Label="ART sprint"
+                       Variant="Variant.Outlined"
+                       Dense
+                       AnchorOrigin="Origin.BottomCenter"
+                       Disabled="@(_loading || _artSprints.Count == 0)"
+                       Style="width:340px">
+                @foreach (var sprint in _artSprints)
+                {
+                    <MudSelectItem T="int?" Value="sprint.Id">@SprintLabel(sprint)</MudSelectItem>
+                }
+            </MudSelect>
+            <MudText Typo="Typo.h6" Class="ml-2">@($"{ArtName} — Sprint execution")</MudText>
+            <MudSpacer />
+            @if (_jiraConnected && _rows.Count > 0)
+            {
+                <MudTooltip Text="Read every team's sprint again from Jira">
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small"
+                                   OnClick="@(() => LoadRowsAsync(true))" Disabled="_loadingRows" />
+                </MudTooltip>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_artSprints.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">This ART has no sprints yet.</MudAlert>
+        }
+        else if (!JiraAuth.IsConfigured)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                Jira integration is not configured; sprint reports cannot be built.
+            </MudAlert>
+        }
+        else if (!_jiraConnected)
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                Connect to Jira to build the sprint reports of this ART.
+            </MudAlert>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                       StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectJiraAsync">
+                Connect to Jira
+            </MudButton>
+        }
+        else if (_rows.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">This ART has no teams you can see.</MudAlert>
+        }
+        else
+        {
+            @if (_loadingRows)
+            {
+                <MudProgressLinear Color="Color.Primary" Value="@Progress" Class="mb-1" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                    Reading sprint @(_loaded + 1) of @_toLoad from Jira…
+                </MudText>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                    Story points per team for the ART sprint; click a row's arrow for the team's full report.
+                </MudText>
+            }
+            <div style="overflow-x:auto">
+                <table class="sr-table">
+                    <thead>
+                        <tr>
+                            <th>Team</th>
+                            <th>Sprint</th>
+                            <th>State</th>
+                            <th class="num" title="Story points in the sprint when it started">Committed</th>
+                            <th class="num" title="Story points pulled in after the start">Added</th>
+                            <th class="num" title="Story points done at the end of the sprint, or now while it runs">Completed</th>
+                            <th style="width:150px" title="Completed share of the commitment">Commitment met</th>
+                            <th class="num" title="Story points still open">Not completed</th>
+                            <th class="num" title="Issues without story points">Unestimated</th>
+                            <th class="num" title="Available person-days times the team's story points per day">Capacity</th>
+                            <th class="num" title="Committed divided by capacity">Load</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _rows)
+                        {
+                            <tr @key="row.Team.Id">
+                                <td class="font-weight-bold">@row.Team.Name</td>
+                                @if (row.Sprint is null)
+                                {
+                                    <td colspan="10" class="mud-text-secondary">No team sprint matches this ART sprint.</td>
+                                    <td></td>
+                                }
+                                else if (row.Loading)
+                                {
+                                    <td>@row.Sprint.Name</td>
+                                    <td colspan="9"><MudProgressCircular Size="Size.Small" Indeterminate Color="Color.Primary" /></td>
+                                    <td></td>
+                                }
+                                else if (row.Result is null)
+                                {
+                                    <td>@row.Sprint.Name</td>
+                                    <td colspan="9" class="mud-text-secondary">…</td>
+                                    <td></td>
+                                }
+                                else if (row.Result.Report is not { } r)
+                                {
+                                    <td>@row.Sprint.Name</td>
+                                    <td colspan="9" style="color:var(--mud-palette-error)">@ErrorText(row.Result)</td>
+                                    <td>
+                                        <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" Href="@DetailUrl(row)" />
+                                    </td>
+                                }
+                                else
+                                {
+                                    <td style="white-space:nowrap">@row.Sprint.Name</td>
+                                    <td style="white-space:nowrap">@StateText(r)</td>
+                                    <td class="num" title="@($"{r.CommittedIssues} issue(s)")">@r.CommittedPoints</td>
+                                    <td class="num" title="@($"{r.AddedIssues} issue(s)")">@r.AddedPoints</td>
+                                    <td class="num" title="@($"{r.CompletedIssues} issue(s)")">@r.CompletedPoints</td>
+                                    <td>
+                                        @if (r.Window.State == SprintReportState.Future)
+                                        {
+                                            <span class="mud-text-secondary">—</span>
+                                        }
+                                        else
+                                        {
+                                            <div class="d-flex align-center gap-2">
+                                                <div class="sr-bar" style="flex:1"><span style="width:@BarWidth(r.CommitmentCompletion)"></span></div>
+                                                <span class="@RatioCss(r)" style="min-width:36px; text-align:right">@Pct(r.CommitmentCompletion)</span>
+                                            </div>
+                                        }
+                                    </td>
+                                    <td class="num" title="@($"{r.NotCompletedIssues} issue(s)")">@r.NotCompletedPoints</td>
+                                    <td class="num">@r.UnestimatedIssues</td>
+                                    <td class="num">@(row.Result.Capacity is { } capacity ? capacity.Points.ToString("0", CultureInfo.InvariantCulture) : "—")</td>
+                                    <td class="num">@(row.Result.Capacity is { } cap && cap.Points > 0 ? Pct(r.CommittedPoints / cap.Points) : "—")</td>
+                                    <td>
+                                        <MudIconButton Icon="@Icons.Material.Filled.ArrowForward" Size="Size.Small" Href="@DetailUrl(row)" />
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                    @if (Reports.Count > 0)
+                    {
+                        <tfoot>
+                            <tr>
+                                <td colspan="3">Total of @Reports.Count team(s)</td>
+                                <td class="num">@Reports.Sum(r => r.CommittedPoints)</td>
+                                <td class="num">@Reports.Sum(r => r.AddedPoints)</td>
+                                <td class="num">@Reports.Sum(r => r.CompletedPoints)</td>
+                                <td>
+                                    <div class="d-flex align-center gap-2">
+                                        <div class="sr-bar" style="flex:1"><span style="width:@BarWidth(TotalCommitmentMet)"></span></div>
+                                        <span style="min-width:36px; text-align:right">@Pct(TotalCommitmentMet)</span>
+                                    </div>
+                                </td>
+                                <td class="num">@Reports.Sum(r => r.NotCompletedPoints)</td>
+                                <td class="num">@Reports.Sum(r => r.UnestimatedIssues)</td>
+                                <td class="num">@(TotalCapacity is { } total ? total.ToString("0", CultureInfo.InvariantCulture) : "—")</td>
+                                <td class="num">@(TotalCapacity is { } cap && cap > 0 ? Pct(Reports.Sum(r => r.CommittedPoints) / cap) : "—")</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    }
+                </table>
+            </div>
+        }
+    </MudPaper>
+</div>
+
+@code {
+    [Parameter] public int ArtId { get; set; }
+
+    [Parameter] public string ArtName { get; set; } = string.Empty;
+
+    [Parameter] public IReadOnlyList<Team> Teams { get; set; } = [];
+
+    private sealed class TeamRow
+    {
+        public required Team Team { get; init; }
+
+        public Sprint? Sprint { get; init; }
+
+        public SprintReportResult? Result { get; set; }
+
+        public bool Loading { get; set; }
+    }
+
+    private bool _loading = true;
+    private List<ArtSprint> _artSprints = new();
+    private int? _selectedArtSprintId;
+    private string? _userName;
+    private bool _jiraConnected;
+    private List<TeamRow> _rows = new();
+    private bool _loadingRows;
+    private int _loaded;
+    private int _toLoad;
+    private CancellationTokenSource? _cts;
+
+    private double Progress => _toLoad == 0 ? 0 : 100.0 * _loaded / _toLoad;
+
+    private List<SprintReport> Reports => _rows.Select(r => r.Result?.Report).Where(r => r is not null).Select(r => r!).ToList();
+
+    private double? TotalCommitmentMet
+    {
+        get
+        {
+            var reports = Reports.Where(r => r.Window.State != SprintReportState.Future).ToList();
+            var committed = reports.Sum(r => r.CommittedPoints);
+            return committed > 0 ? (double)reports.Sum(r => r.CompletedCommittedPoints) / committed : null;
+        }
+    }
+
+    private double? TotalCapacity
+    {
+        get
+        {
+            var capacities = _rows.Where(r => r.Result?.Report is not null).Select(r => r.Result!.Capacity).ToList();
+            return capacities.Count == 0 || capacities.Any(c => c is null) ? null : capacities.Sum(c => c!.Points);
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _artSprints = await ArtSprintService.GetForProjectAsync(ArtId);
+        _selectedArtSprintId = DefaultArtSprintId();
+
+        if (JiraAuth.IsConfigured)
+        {
+            _userName = await WindowsAuth.GetUserName();
+            _jiraConnected = _userName is not null && await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+
+        _loading = false;
+        if (_jiraConnected && _selectedArtSprintId is not null)
+        {
+            await BuildRowsAsync();
+            await LoadRowsAsync(false);
+        }
+    }
+
+    private int? DefaultArtSprintId()
+    {
+        var today = DateTime.Today;
+        var current = _artSprints.FirstOrDefault(s => s.StartDate.Date <= today && today <= s.EndDate.Date);
+        var latestStarted = _artSprints.Where(s => s.StartDate.Date <= today).MaxBy(s => s.StartDate);
+        return (current ?? latestStarted ?? _artSprints.MinBy(s => s.StartDate))?.Id;
+    }
+
+    private async Task OnArtSprintChangedAsync(int? artSprintId)
+    {
+        _selectedArtSprintId = artSprintId;
+        CancelLoading();
+        _rows = new();
+        if (!_jiraConnected || artSprintId is null)
+        {
+            return;
+        }
+        await BuildRowsAsync();
+        await LoadRowsAsync(false);
+    }
+
+    private async Task BuildRowsAsync()
+    {
+        var artSprint = _artSprints.FirstOrDefault(s => s.Id == _selectedArtSprintId);
+        if (artSprint is null)
+        {
+            _rows = new();
+            return;
+        }
+
+        var sprintsByTeam = (await SprintService.GetForTeamsAsync(Teams.Select(t => t.Id).ToList())).ToLookup(s => s.TeamId);
+        _rows = Teams
+            .OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(t => new TeamRow
+            {
+                Team = t,
+                Sprint = sprintsByTeam[t.Id].FirstOrDefault(s => s.SourceArtSprintId == artSprint.Id)
+                         ?? sprintsByTeam[t.Id].FirstOrDefault(s => s.StartDate.Date == artSprint.StartDate.Date && s.EndDate.Date == artSprint.EndDate.Date),
+            })
+            .ToList();
+    }
+
+    private async Task LoadRowsAsync(bool refresh)
+    {
+        if (_userName is null)
+        {
+            return;
+        }
+
+        CancelLoading();
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+        var token = cts.Token;
+
+        var pending = _rows.Where(r => r.Sprint is not null).ToList();
+        foreach (var row in pending)
+        {
+            row.Result = null;
+        }
+        _toLoad = pending.Count;
+        _loaded = 0;
+        _loadingRows = pending.Count > 0;
+        StateHasChanged();
+
+        foreach (var row in pending)
+        {
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+            row.Loading = true;
+            StateHasChanged();
+            try
+            {
+                row.Result = await ReportService.GetReportAsync(_userName, row.Sprint!, refresh, token);
+            }
+            catch (OperationCanceledException)
+            {
+                row.Loading = false;
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to build the sprint report for sprint {SprintName}", row.Sprint!.Name);
+                row.Result = new SprintReportResult { Status = SprintLookupStatus.Error, ErrorMessage = ex.Message };
+            }
+            row.Loading = false;
+            _loaded++;
+            StateHasChanged();
+        }
+
+        if (!token.IsCancellationRequested)
+        {
+            _loadingRows = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CancelLoading()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = null;
+        _loadingRows = false;
+        foreach (var row in _rows)
+        {
+            row.Loading = false;
+        }
+    }
+
+    private async Task ConnectJiraAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>("Jira Authentication", options);
+        var result = await dialogRef.Result;
+
+        if (result?.Data is bool connected)
+        {
+            _jiraConnected = connected;
+        }
+        else if (_userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+
+        if (_jiraConnected && _selectedArtSprintId is not null)
+        {
+            await BuildRowsAsync();
+            await LoadRowsAsync(false);
+        }
+    }
+
+    private static string SprintLabel(ArtSprint sprint)
+    {
+        var today = DateTime.Today;
+        var current = sprint.StartDate.Date <= today && today <= sprint.EndDate.Date ? " • current" : string.Empty;
+        return $"{sprint.Name} ({sprint.StartDate:dd MMM} – {sprint.EndDate:dd MMM yyyy}){current}";
+    }
+
+    private static string StateText(SprintReport report) => report.Window.State switch
+    {
+        SprintReportState.Future => "Not started",
+        SprintReportState.Active => $"Active, day {report.WorkingDaysElapsed} of {report.WorkingDays}",
+        _ => "Closed",
+    };
+
+    private static string ErrorText(SprintReportResult result) => result.Status switch
+    {
+        SprintLookupStatus.NotFound => "Sprint not found on Jira",
+        SprintLookupStatus.AmbiguousName => "Several Jira sprints have this name",
+        _ => result.ErrorMessage ?? "Failed",
+    };
+
+    private static string RatioCss(SprintReport report)
+    {
+        if (report.CommitmentCompletion is not { } ratio || (report.Window.State == SprintReportState.Active && ratio < 0.5))
+        {
+            return string.Empty;
+        }
+        return ratio >= 0.8 ? "sr-good" : ratio >= 0.5 ? "sr-warn" : "sr-bad";
+    }
+
+    private static string Pct(double? value) =>
+        value is null ? "—" : (value.Value * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static string BarWidth(double? ratio) =>
+        ratio is null ? "0%" : Math.Clamp(ratio.Value * 100, 0, 100).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+
+    private static string DetailUrl(TeamRow row) =>
+        $"{RoutingPath.TeamPlanningSprintReports}/{row.Team.Id}/{row.Sprint!.Id}";
+
+    public void Dispose()
+    {
+        CancelLoading();
+    }
+}

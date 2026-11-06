@@ -1,0 +1,95 @@
+@inject ISprintService SprintService
+@inject NavigationManager Navigation
+
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Microsoft.AspNetCore.WebUtilities
+
+<div class="container-fluid mt-3">
+    <MudPaper Class="p-3 rounded-lg d-flex align-center gap-3 flex-wrap" Elevation="2">
+        <MudSelect T="int?"
+                   Value="_selectedSprintId"
+                   ValueChanged="OnSprintChangedAsync"
+                   Label="Sprint"
+                   Variant="Variant.Outlined"
+                   Dense
+                   AnchorOrigin="Origin.BottomCenter"
+                   Disabled="_loading"
+                   Style="width:360px">
+            @foreach (var sprint in _sprints)
+            {
+                <MudSelectItem T="int?" Value="sprint.Id">@SprintLabel(sprint)</MudSelectItem>
+            }
+        </MudSelect>
+        @if (!_loading)
+        {
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">@_sprints.Count sprint(s)</MudText>
+        }
+    </MudPaper>
+</div>
+
+@if (_loading)
+{
+    <div class="container-fluid mt-3">
+        <MudProgressLinear Indeterminate Color="Color.Primary" />
+    </div>
+}
+else if (_selectedSprintId is { } sprintId)
+{
+    <SprintReportView TeamId="TeamId" SprintId="sprintId" @key="sprintId" />
+}
+else
+{
+    <div class="container-fluid mt-3 mb-5">
+        <MudPaper Class="p-3 rounded-lg" Elevation="2">
+            <MudText Class="mud-text-secondary">This team has no sprints yet.</MudText>
+        </MudPaper>
+    </div>
+}
+
+@code {
+    private const string SprintQueryKey = "sprintId";
+
+    [Parameter] public int TeamId { get; set; }
+
+    private bool _loading = true;
+    private List<Sprint> _sprints = new();
+    private int? _selectedSprintId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _sprints = await SprintService.GetForTeamAsync(TeamId);
+        _selectedSprintId = RequestedSprintId() ?? DefaultSprintId();
+        _loading = false;
+    }
+
+    private int? RequestedSprintId()
+    {
+        var query = QueryHelpers.ParseQuery(new Uri(Navigation.Uri).Query);
+        return query.TryGetValue(SprintQueryKey, out var raw) && int.TryParse(raw, out var id) && _sprints.Any(s => s.Id == id)
+            ? id
+            : null;
+    }
+
+    private int? DefaultSprintId()
+    {
+        var today = DateTime.Today;
+        var current = _sprints.FirstOrDefault(s => s.StartDate.Date <= today && today <= s.EndDate.Date);
+        var latestStarted = _sprints.Where(s => s.StartDate.Date <= today).MaxBy(s => s.StartDate);
+        return (current ?? latestStarted ?? _sprints.MinBy(s => s.StartDate))?.Id;
+    }
+
+    private Task OnSprintChangedAsync(int? sprintId)
+    {
+        _selectedSprintId = sprintId;
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter(SprintQueryKey, sprintId), replace: true);
+        return Task.CompletedTask;
+    }
+
+    private static string SprintLabel(Sprint sprint)
+    {
+        var today = DateTime.Today;
+        var current = sprint.StartDate.Date <= today && today <= sprint.EndDate.Date ? " • current" : string.Empty;
+        return $"{sprint.Name} ({sprint.StartDate:dd MMM} – {sprint.EndDate:dd MMM yyyy}){current}";
+    }
+}

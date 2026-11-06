@@ -1,0 +1,883 @@
+@inject ITeamService TeamService
+@inject ISprintService SprintService
+@inject IJiraAuthService JiraAuth
+@inject IJiraSprintReportService ReportService
+@inject IWindowsAuthService WindowsAuth
+@inject IDialogService DialogService
+@inject IModalDialogService ModalDialogService
+@inject NavigationManager Navigation
+@inject IOptions<JiraSettings> JiraOptions
+
+@inherits LocalTimeComponentBase
+@implements IDisposable
+
+@using System.Globalization
+@using Serilog
+@using Estimation.Core.Administration.Models
+@using Estimation.Core.JiraIntegration.Client
+@using Estimation.Core.JiraIntegration.Reports
+@using Estimation.Core.JiraIntegration.Services
+@using Estimation.Core.PlanningIncrement.Models
+@using Estimation.Core.PlanningIncrement.Services
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+@using Microsoft.Extensions.Options
+
+<PageTitle>Sprint report @(_sprint?.Name ?? "") - @(_team?.Name ?? "Team")</PageTitle>
+
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_sprint is null)
+        {
+            <div class="d-flex align-center gap-2 mb-3">
+                @if (BackUrl is not null)
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                                   OnClick="@(() => Navigation.NavigateTo(BackUrl))" />
+                }
+                <MudText Typo="Typo.h6">Sprint report</MudText>
+            </div>
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">Sprint not found.</MudAlert>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+                @if (BackUrl is not null)
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small"
+                                   OnClick="@(() => Navigation.NavigateTo(BackUrl))" />
+                }
+                <MudText Typo="Typo.h6">@_sprint.Name - @(_team?.Name)</MudText>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">
+                    Dev @_sprint.StartDate.ToString("yyyy-MM-dd") — @_sprint.EndDate.ToString("yyyy-MM-dd")
+                </MudChip>
+                @if (_sprint.Pi is not null)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined">@_sprint.Pi.Name</MudChip>
+                }
+                @if (_sprint.IsIpSprint == true)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined">IP</MudChip>
+                }
+                @if (Report is { } header)
+                {
+                    @switch (header.Window.State)
+                    {
+                        case SprintReportState.Future:
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">Not started</MudChip>
+                            break;
+                        case SprintReportState.Active:
+                            <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Outlined">
+                                Active · day @header.WorkingDaysElapsed of @header.WorkingDays
+                            </MudChip>
+                            break;
+                        case SprintReportState.Closed:
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default" Variant="Variant.Filled">
+                                Closed@(header.Window.CompletedAt is { } completed ? " " + UserTime.Format(completed.UtcDateTime, "yyyy-MM-dd") : "")
+                            </MudChip>
+                            break;
+                    }
+                    @if (!header.Window.DatesFromJira)
+                    {
+                        <MudTooltip Text="Jira did not return this sprint's own dates, so the team sprint's dates in this app define the window.">
+                            <MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" Class="mud-text-secondary" />
+                        </MudTooltip>
+                    }
+                }
+                <MudSpacer />
+                @if (UserPageAccess.ContainsKey("TeamPlanningSprints"))
+                {
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.ListAlt" Href="@SprintIssuesUrl">
+                        Sprint issues
+                    </MudButton>
+                }
+                @if (_jiraConnected)
+                {
+                    <MudTooltip Text="Read the sprint again from Jira">
+                        <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small"
+                                       OnClick="@(() => LoadReportAsync(true))" Disabled="_loadingReport" />
+                    </MudTooltip>
+                }
+                <MudTooltip Text="How is this report calculated?">
+                    <MudIconButton Icon="@Icons.Material.Filled.HelpOutline" Size="Size.Small" OnClick="ShowHelpAsync" />
+                </MudTooltip>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(Report?.Window.Goal))
+            {
+                <MudText Typo="Typo.body2" Class="mb-2"><b>Sprint goal:</b> @Report.Window.Goal</MudText>
+            }
+
+            @if (!JiraAuth.IsConfigured)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                    Jira integration is not configured; sprint reports cannot be built.
+                </MudAlert>
+            }
+            else if (!_jiraConnected)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Class="mb-3">
+                    Connect to Jira to build the report of this sprint.
+                </MudAlert>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectJiraAsync">
+                    Connect to Jira
+                </MudButton>
+            }
+            else if (_loadingReport)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" />
+                <MudText Typo="Typo.caption" Class="mud-text-secondary">Reading the sprint and its history from Jira…</MudText>
+            }
+            else if (_result is not null)
+            {
+                @switch (_result.Status)
+                {
+                    case SprintLookupStatus.NotFound:
+                        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">
+                            Sprint '@_sprint.Name' was not found on the Jira server.
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.AmbiguousName:
+                        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">
+                            The name '@_sprint.Name' matches several sprints on the Jira server. @_result.ErrorMessage
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.Error:
+                        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">
+                            Failed to build the sprint report: @_result.ErrorMessage
+                        </MudAlert>
+                        break;
+                    case SprintLookupStatus.Found when _result.Report is { } r:
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-2">
+                            @r.ScopeIssues issue(s) read from Jira at @UserTime.Format(_result.LoadedAt.UtcDateTime)@(r.Window.State == SprintReportState.Closed ? $", measured at the sprint's completion ({UserTime.Format(r.AsOf.UtcDateTime)})" : "")@(r.RemovedIssues > 0 ? $"; {r.RemovedIssues} issue(s) left the sprint after it started" : "")
+                        </MudText>
+                        @if (!_result.StatusCategoriesKnown)
+                        {
+                            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true" Class="mb-2">
+                                Jira did not say which statuses count as done, so completed work may be understated.
+                            </MudAlert>
+                        }
+                        @if (r.ScopeIssues == 0 && r.CommittedIssues == 0)
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                                The sprint exists on Jira, but no issues were found in the configured Jira projects.
+                            </MudAlert>
+                        }
+                        else
+                        {
+                            <div class="sr-kpis mb-3">
+                                <SprintReportKpi Label="Committed"
+                                                 Value="@MainValue(r.CommittedPoints, r.CommittedIssues, r.HasEstimates)"
+                                                 Sub="@Sub(r.CommittedPoints, r.CommittedIssues, r.HasEstimates)"
+                                                 Help="Issues in the sprint when it started, with the story points they had at that moment." />
+                                <SprintReportKpi Label="Completed"
+                                                 Value="@MainValue(r.CompletedPoints, r.CompletedIssues, r.HasEstimates)"
+                                                 Sub="@($"{Sub(r.CompletedPoints, r.CompletedIssues, r.HasEstimates)} · {Pct(r.ScopeCompletion)} of scope")"
+                                                 Help="Issues whose status is in Jira's Done category at the end of the sprint, or now while it runs." />
+                                <SprintReportKpi Label="Commitment met"
+                                                 Value="@(r.Window.State == SprintReportState.Future ? "—" : Pct(r.CommitmentCompletion))"
+                                                 Sub="@(r.Window.State == SprintReportState.Future ? "sprint not started" : CommitmentSub(r))"
+                                                 Help="Completed share of what was committed at sprint start: story points when the issues are estimated, issues otherwise. 80% and above is green, 50–80% amber, below 50% red."
+                                                 Css="@RatioCss(r)" />
+                                <SprintReportKpi Label="Added"
+                                                 Value="@("+" + MainValue(r.AddedPoints, r.AddedIssues, r.HasEstimates))"
+                                                 Sub="@($"{Sub(r.AddedPoints, r.AddedIssues, r.HasEstimates)} · {Pct(r.ScopeChange)} scope change")"
+                                                 Help="Issues pulled into the sprint after it started, including issues created in it. Scope change = added ÷ committed."
+                                                 Css="@(r.ScopeChange > 0.2 ? "warn" : "")" />
+                                <SprintReportKpi Label="@(r.Window.State == SprintReportState.Closed ? "Carried over" : "Not completed")"
+                                                 Value="@MainValue(r.NotCompletedPoints, r.NotCompletedIssues, r.HasEstimates)"
+                                                 Sub="@Sub(r.NotCompletedPoints, r.NotCompletedIssues, r.HasEstimates)"
+                                                 Help="Issues still open at the end of the sprint; in a closed sprint they usually rolled into the next one."
+                                                 Css="@(r.Window.State == SprintReportState.Closed && r.NotCompletedIssues > 0 ? "warn" : "")" />
+                                <SprintReportKpi Label="Unestimated"
+                                                 Value="@r.UnestimatedIssues.ToString(CultureInfo.InvariantCulture)"
+                                                 Sub="issue(s) without story points"
+                                                 Help="Issues in the sprint without story points. They count as 0 in every story-point measure."
+                                                 Css="@(r.UnestimatedIssues > 0 ? "warn" : "")" />
+                                @if (r.BlockedIssues > 0)
+                                {
+                                    <SprintReportKpi Label="Blocked"
+                                                     Value="@r.BlockedIssues.ToString(CultureInfo.InvariantCulture)"
+                                                     Sub="open issue(s) in a blocked status"
+                                                     Help="Open issues whose status contains the word block."
+                                                     Css="bad" />
+                                }
+                                @if (_result.Capacity is { } capacity)
+                                {
+                                    <SprintReportKpi Label="Capacity"
+                                                     Value="@($"{capacity.Points.ToString("0", CultureInfo.InvariantCulture)} SP")"
+                                                     Sub="@($"{capacity.AvailableDays.ToString("0.#", CultureInfo.InvariantCulture)} person-days · load {Pct(Load(r, capacity))}")"
+                                                     Help="Working days of the team's active members in the sprint window minus their holidays, times the team's story points per day. Coefficients are not applied. Load = committed ÷ capacity."
+                                                     Css="@(Load(r, capacity) > 1.1 ? "warn" : "")" />
+                                }
+                            </div>
+
+                            <div class="sr-section">
+                                <div class="d-flex align-center gap-3 flex-wrap mb-1">
+                                    <span class="sr-section-title mb-0">Status</span>
+                                    <span class="sr-legend"><i class="sr-swatch todo"></i>To do @r.IssuesInCategory(SprintReport.ToDoCategory)</span>
+                                    <span class="sr-legend"><i class="sr-swatch progress"></i>In progress @r.IssuesInCategory(SprintReport.InProgressCategory)</span>
+                                    <span class="sr-legend"><i class="sr-swatch done"></i>Done @r.IssuesInCategory(SprintReport.DoneCategory)</span>
+                                    @if (UncategorisedIssues(r) > 0)
+                                    {
+                                        <span class="sr-legend"><i class="sr-swatch other"></i>Unknown @UncategorisedIssues(r)</span>
+                                    }
+                                </div>
+                                <div class="sr-cat-bar mb-2">
+                                    <span class="todo" style="width:@Share(r.IssuesInCategory(SprintReport.ToDoCategory), r.ScopeIssues)" title="To do"></span>
+                                    <span class="progress" style="width:@Share(r.IssuesInCategory(SprintReport.InProgressCategory), r.ScopeIssues)" title="In progress"></span>
+                                    <span class="done" style="width:@Share(r.IssuesInCategory(SprintReport.DoneCategory), r.ScopeIssues)" title="Done"></span>
+                                </div>
+                                <div class="d-flex align-center gap-1 flex-wrap">
+                                    @foreach (var status in r.ByStatus)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="@JiraStatusHelper.StatusColor(status.Status)" Variant="Variant.Filled">
+                                            @status.Status: @status.Issues@(r.HasEstimates ? $" ({status.Points} SP)" : "")
+                                        </MudChip>
+                                    }
+                                </div>
+                            </div>
+
+                            @if (r.Window.State != SprintReportState.Future && r.Burndown.Count > 1)
+                            {
+                                <div class="sr-section">
+                                    <div class="d-flex align-center gap-2 flex-wrap mb-1">
+                                        <span class="sr-section-title mb-0">Burndown</span>
+                                        <MudSpacer />
+                                        @if (r.HasEstimates)
+                                        {
+                                            <MudToggleGroup T="bool" @bind-Value="_burndownIssues"
+                                                            SelectionMode="SelectionMode.SingleSelection"
+                                                            Color="Color.Primary" Size="Size.Small" CheckMark="false">
+                                                <MudToggleItem Value="false">Story points</MudToggleItem>
+                                                <MudToggleItem Value="true">Issues</MudToggleItem>
+                                            </MudToggleGroup>
+                                        }
+                                    </div>
+                                    <SprintBurndownChart Points="r.Burndown" ShowIssues="@(_burndownIssues || !r.HasEstimates)" />
+                                </div>
+                            }
+
+                            <div class="sr-columns">
+                                <div class="sr-section">
+                                    <div class="sr-section-title">By assignee</div>
+                                    <div style="overflow-x:auto">
+                                        <table class="sr-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Assignee</th>
+                                                    <th class="num">Issues</th>
+                                                    <th class="num">Done</th>
+                                                    @if (r.HasEstimates)
+                                                    {
+                                                        <th class="num" title="Story points committed at sprint start">Committed</th>
+                                                        <th class="num" title="Story points added after the start">Added</th>
+                                                        <th class="num" title="Story points of open issues">Open</th>
+                                                        <th class="num" title="Story points of done issues">Done SP</th>
+                                                    }
+                                                    <th style="width:110px">Progress</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var group in r.ByAssignee)
+                                                {
+                                                    <tr @key="group.Name">
+                                                        <td>
+                                                            <div class="d-flex align-center gap-2">
+                                                                @if (!string.IsNullOrEmpty(group.AvatarUrl))
+                                                                {
+                                                                    <MudAvatar Size="Size.Small">
+                                                                        <MudImage Src="@group.AvatarUrl" Alt="@group.Name" />
+                                                                    </MudAvatar>
+                                                                }
+                                                                else if (group.Name == JiraIssueFilter.UnassignedLabel)
+                                                                {
+                                                                    <MudAvatar Size="Size.Small" Color="Color.Default">
+                                                                        <MudIcon Icon="@Icons.Material.Filled.PersonOff" Size="Size.Small" />
+                                                                    </MudAvatar>
+                                                                }
+                                                                else
+                                                                {
+                                                                    <PersonAvatar Name="@group.Name" Size="Size.Small" InitialCount="1" />
+                                                                }
+                                                                <span>@group.Name</span>
+                                                            </div>
+                                                        </td>
+                                                        <td class="num">@group.Issues</td>
+                                                        <td class="num">@group.CompletedIssues</td>
+                                                        @if (r.HasEstimates)
+                                                        {
+                                                            <td class="num">@group.CommittedPoints</td>
+                                                            <td class="num">@group.AddedPoints</td>
+                                                            <td class="num">@group.OpenPoints</td>
+                                                            <td class="num">@group.CompletedPoints</td>
+                                                        }
+                                                        <td>
+                                                            <div class="sr-bar" title="@Pct(group.Completion)"><span style="width:@BarWidth(group.Completion)"></span></div>
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    @if (_membersWithoutIssues.Count > 0)
+                                    {
+                                        <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2 mb-1">Team members without issues in this sprint</MudText>
+                                        <div class="d-flex align-center gap-1 flex-wrap">
+                                            @foreach (var name in _membersWithoutIssues)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@name</MudChip>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+
+                                <div class="sr-section">
+                                    <div class="sr-section-title">Feature progress</div>
+                                    <div style="overflow-x:auto">
+                                        <table class="sr-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Feature</th>
+                                                    <th class="num">Issues</th>
+                                                    <th class="num">Done</th>
+                                                    @if (r.HasEstimates)
+                                                    {
+                                                        <th class="num">SP</th>
+                                                        <th class="num">Done SP</th>
+                                                    }
+                                                    <th style="width:110px">Progress</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var group in r.ByFeature)
+                                                {
+                                                    <tr @key="group.Name">
+                                                        <td>
+                                                            @if (group.Name == JiraIssueFilter.NoFeatureLinkLabel)
+                                                            {
+                                                                <span class="mud-text-secondary">@group.Name</span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <MudLink Href="@BrowseUrl(group.Name)" Target="_blank">@group.Name</MudLink>
+                                                                @if (!string.IsNullOrWhiteSpace(group.Title))
+                                                                {
+                                                                    <span class="ml-1">@group.Title</span>
+                                                                }
+                                                            }
+                                                        </td>
+                                                        <td class="num">@group.Issues</td>
+                                                        <td class="num">@group.CompletedIssues</td>
+                                                        @if (r.HasEstimates)
+                                                        {
+                                                            <td class="num">@group.ScopePoints</td>
+                                                            <td class="num">@group.CompletedPoints</td>
+                                                        }
+                                                        <td>
+                                                            <div class="sr-bar" title="@Pct(group.Completion)"><span style="width:@BarWidth(group.Completion)"></span></div>
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+
+                                    <div class="sr-section-title mt-4">By issue type</div>
+                                    <div style="overflow-x:auto">
+                                        <table class="sr-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Type</th>
+                                                    <th class="num">Issues</th>
+                                                    <th class="num">Done</th>
+                                                    @if (r.HasEstimates)
+                                                    {
+                                                        <th class="num">SP</th>
+                                                        <th class="num">Done SP</th>
+                                                    }
+                                                    <th class="num">Share</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var group in r.ByType)
+                                                {
+                                                    <tr @key="group.Name">
+                                                        <td>
+                                                            <MudChip T="string" Size="Size.Small" Color="@JiraIssueTypeHelper.IssueTypeColor(group.Name)">@group.Name</MudChip>
+                                                        </td>
+                                                        <td class="num">@group.Issues</td>
+                                                        <td class="num">@group.CompletedIssues</td>
+                                                        @if (r.HasEstimates)
+                                                        {
+                                                            <td class="num">@group.ScopePoints</td>
+                                                            <td class="num">@group.CompletedPoints</td>
+                                                        }
+                                                        <td class="num">@Share(group.Issues, r.ScopeIssues)</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="sr-section">
+                                <MudTabs Elevation="0" Rounded="true" ApplyEffectsToContainer="true" TabPanelsClass="pt-2">
+                                    <MudTabPanel Text="@($"{(r.Window.State == SprintReportState.Closed ? "Carried over" : "Not completed")} ({r.NotCompletedIssues})")">
+                                        <SprintReportIssueTable Issues="NotCompleted(r)" JiraUrl="@JiraOptions.Value.Url" EmptyText="Every issue of the sprint is done." />
+                                    </MudTabPanel>
+                                    <MudTabPanel Text="@($"Added during the sprint ({r.AddedIssues})")">
+                                        <SprintReportIssueTable Issues="Added(r)" Mode="SprintReportIssueTable.IssueTableMode.Added" JiraUrl="@JiraOptions.Value.Url" EmptyText="Nothing was added after the sprint started." />
+                                    </MudTabPanel>
+                                    <MudTabPanel Text="@($"Completed ({r.CompletedIssues})")">
+                                        <SprintReportIssueTable Issues="Completed(r)" Mode="SprintReportIssueTable.IssueTableMode.Completed" JiraUrl="@JiraOptions.Value.Url" EmptyText="Nothing is done yet." />
+                                    </MudTabPanel>
+                                    <MudTabPanel Text="@($"All issues ({r.ScopeIssues})")">
+                                        <SprintReportIssueTable Issues="Scope(r)" JiraUrl="@JiraOptions.Value.Url" />
+                                    </MudTabPanel>
+                                </MudTabs>
+                            </div>
+                        }
+
+                        <div class="sr-section">
+                            <div class="d-flex align-center gap-2 flex-wrap mb-1">
+                                <span class="sr-section-title mb-0">Velocity</span>
+                                @if (_loadingHistory)
+                                {
+                                    <MudProgressCircular Size="Size.Small" Indeterminate Color="Color.Primary" />
+                                    <span class="mud-text-secondary" style="font-size:.85rem">Loading previous sprints (@_historyLoaded of @_historyTotal)…</span>
+                                }
+                            </div>
+                            @if (_history.Count <= 1 && !_loadingHistory)
+                            {
+                                <MudText Typo="Typo.body2" Class="mud-text-secondary">No previous sprints of this team to compare with.</MudText>
+                            }
+                            else
+                            {
+                                <SprintVelocityChart Items="VelocityItems" />
+                                <div style="overflow-x:auto" class="mt-2">
+                                    <table class="sr-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Sprint</th>
+                                                <th>Dates</th>
+                                                <th>State</th>
+                                                <th class="num">Committed</th>
+                                                <th class="num">Added</th>
+                                                <th class="num">Completed</th>
+                                                <th class="num">Commitment met</th>
+                                                <th class="num">Not completed</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var item in _history)
+                                            {
+                                                <tr @key="item.Sprint.Id" class="@(item.IsCurrent ? "current" : "")">
+                                                    <td style="white-space:nowrap">
+                                                        @if (item.IsCurrent)
+                                                        {
+                                                            <span class="font-weight-bold">@item.Sprint.Name</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <MudLink Href="@ReportUrl(item.Sprint)">@item.Sprint.Name</MudLink>
+                                                        }
+                                                    </td>
+                                                    <td class="mud-text-secondary" style="white-space:nowrap">@item.Sprint.StartDate.ToString("dd MMM") – @item.Sprint.EndDate.ToString("dd MMM yyyy")</td>
+                                                    @if (item.Result?.Report is { } h)
+                                                    {
+                                                        <td>@StateText(h)</td>
+                                                        <td class="num">@h.CommittedPoints</td>
+                                                        <td class="num">@h.AddedPoints</td>
+                                                        <td class="num">@h.CompletedPoints</td>
+                                                        <td class="num">@(h.Window.State == SprintReportState.Future ? "—" : Pct(h.CommitmentCompletion))</td>
+                                                        <td class="num">@h.NotCompletedPoints</td>
+                                                    }
+                                                    else if (item.Result is not null)
+                                                    {
+                                                        <td colspan="6" style="color:var(--mud-palette-error)">@ErrorText(item.Result)</td>
+                                                    }
+                                                    else
+                                                    {
+                                                        <td colspan="6" class="mud-text-secondary">…</td>
+                                                    }
+                                                </tr>
+                                            }
+                                        </tbody>
+                                        @if (ClosedHistory.Count > 0)
+                                        {
+                                            <tfoot>
+                                                <tr>
+                                                    <td colspan="3">Average of @ClosedHistory.Count closed sprint(s)</td>
+                                                    <td class="num">@Avg(ClosedHistory.Select(h => h.CommittedPoints))</td>
+                                                    <td class="num">@Avg(ClosedHistory.Select(h => h.AddedPoints))</td>
+                                                    <td class="num">@Avg(ClosedHistory.Select(h => h.CompletedPoints))</td>
+                                                    <td class="num">@Pct(AverageRatio(ClosedHistory.Select(h => h.CommitmentCompletion)))</td>
+                                                    <td class="num">@Avg(ClosedHistory.Select(h => h.NotCompletedPoints))</td>
+                                                </tr>
+                                            </tfoot>
+                                        }
+                                    </table>
+                                </div>
+                            }
+                        </div>
+                        break;
+                }
+            }
+        }
+    </MudPaper>
+</div>
+
+@code {
+    private const int HistoryLength = 5;
+
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public int SprintId { get; set; }
+
+    [Parameter] public string? BackUrl { get; set; }
+
+    [CascadingParameter(Name = "UserPageAccess")]
+    private Dictionary<string, AccessLevel> UserPageAccess { get; set; } = new();
+
+    private sealed class HistoryItem
+    {
+        public required Sprint Sprint { get; init; }
+
+        public SprintReportResult? Result { get; set; }
+
+        public bool IsCurrent { get; init; }
+    }
+
+    private bool _loading = true;
+    private Sprint? _sprint;
+    private Team? _team;
+    private string? _userName;
+    private bool _jiraConnected;
+    private bool _loadingReport;
+    private SprintReportResult? _result;
+    private bool _burndownIssues;
+    private List<string> _membersWithoutIssues = new();
+
+    private List<HistoryItem> _history = new();
+    private bool _loadingHistory;
+    private int _historyLoaded;
+    private int _historyTotal;
+    private CancellationTokenSource? _historyCts;
+
+    private SprintReport? Report => _result?.Report;
+
+    private string SprintIssuesUrl => $"{RoutingPath.TeamPlanningSprints}/{TeamId}/{SprintId}";
+
+    private List<SprintReport> ClosedHistory =>
+        _history.Where(h => !h.IsCurrent || h.Result?.Report?.Window.State == SprintReportState.Closed)
+            .Select(h => h.Result?.Report)
+            .Where(r => r is not null && r.Window.State == SprintReportState.Closed)
+            .Select(r => r!)
+            .ToList();
+
+    private List<SprintVelocityChart.Item> VelocityItems =>
+        _history
+            .Where(h => h.Result?.Report is not null)
+            .Select(h => new SprintVelocityChart.Item(
+                h.Sprint.Name,
+                h.Result!.Report!.CommittedPoints,
+                h.Result.Report.CompletedPoints,
+                h.IsCurrent,
+                h.Result.Report.Window.State == SprintReportState.Closed))
+            .ToList();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        CancelHistory();
+        _loading = true;
+        _result = null;
+        _history = new();
+        _membersWithoutIssues = new();
+
+        _sprint = await SprintService.GetByIdAsync(SprintId);
+        if (_sprint is not null && _sprint.TeamId != TeamId)
+        {
+            _sprint = null;
+        }
+
+        if (_sprint is not null)
+        {
+            _team = await TeamService.GetByIdAsync(TeamId);
+            if (JiraAuth.IsConfigured)
+            {
+                _userName = await WindowsAuth.GetUserName();
+                _jiraConnected = _userName is not null && await JiraAuth.IsAuthenticatedAsync(_userName);
+            }
+        }
+
+        _loading = false;
+
+        if (_sprint is not null && _jiraConnected)
+        {
+            await LoadReportAsync(false);
+        }
+    }
+
+    private async Task LoadReportAsync(bool refresh)
+    {
+        if (_sprint is null || _userName is null)
+        {
+            return;
+        }
+
+        CancelHistory();
+        _loadingReport = true;
+        StateHasChanged();
+        try
+        {
+            _result = await ReportService.GetReportAsync(_userName, _sprint, refresh);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to build the sprint report for sprint {SprintName}", _sprint.Name);
+            _result = new SprintReportResult { Status = SprintLookupStatus.Error, ErrorMessage = ex.Message };
+        }
+        BuildMembersWithoutIssues();
+        _loadingReport = false;
+        StateHasChanged();
+
+        if (_result.Status == SprintLookupStatus.Found)
+        {
+            await LoadHistoryAsync(refresh);
+        }
+    }
+
+    private async Task LoadHistoryAsync(bool refresh)
+    {
+        if (_sprint is null || _userName is null)
+        {
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _historyCts = cts;
+        var token = cts.Token;
+
+        List<Sprint> previous;
+        try
+        {
+            previous = (await SprintService.GetForTeamAsync(TeamId))
+                .Where(s => s.Id != _sprint.Id && s.StartDate < _sprint.StartDate)
+                .OrderByDescending(s => s.StartDate)
+                .Take(HistoryLength)
+                .OrderBy(s => s.StartDate)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the previous sprints of team {TeamId}", TeamId);
+            return;
+        }
+
+        if (token.IsCancellationRequested)
+        {
+            return;
+        }
+
+        _history = previous.Select(s => new HistoryItem { Sprint = s }).ToList();
+        _history.Add(new HistoryItem { Sprint = _sprint, Result = _result, IsCurrent = true });
+        _historyTotal = previous.Count;
+        _historyLoaded = 0;
+        _loadingHistory = previous.Count > 0;
+        StateHasChanged();
+
+        foreach (var item in _history.Where(h => !h.IsCurrent))
+        {
+            if (token.IsCancellationRequested)
+            {
+                return;
+            }
+            try
+            {
+                item.Result = await ReportService.GetReportAsync(_userName, item.Sprint, refresh, token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to build the sprint report for sprint {SprintName}", item.Sprint.Name);
+                item.Result = new SprintReportResult { Status = SprintLookupStatus.Error, ErrorMessage = ex.Message };
+            }
+            _historyLoaded++;
+            StateHasChanged();
+        }
+
+        if (!token.IsCancellationRequested)
+        {
+            _loadingHistory = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CancelHistory()
+    {
+        _historyCts?.Cancel();
+        _historyCts?.Dispose();
+        _historyCts = null;
+        _loadingHistory = false;
+    }
+
+    private void BuildMembersWithoutIssues()
+    {
+        _membersWithoutIssues = new();
+        if (Report is not { } report)
+        {
+            return;
+        }
+
+        var members = (_team?.TeamMembers ?? [])
+            .Select(m => m.HumanResource)
+            .Where(hr => hr is not null)
+            .DistinctBy(hr => hr.Id)
+            .ToList();
+        var assignedIds = report.Issues
+            .Where(i => i.InSprintAtEnd)
+            .Select(i => JiraPersonMatcher.FindAssignee(i.Issue, members)?.Id)
+            .OfType<int>()
+            .ToHashSet();
+        _membersWithoutIssues = members
+            .Where(hr => !assignedIds.Contains(hr.Id))
+            .Select(hr => hr.EmployeeName)
+            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task ConnectJiraAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialogRef = await DialogService.ShowAsync<JiraLoginDialog>("Jira Authentication", options);
+        var result = await dialogRef.Result;
+
+        if (result?.Data is bool connected)
+        {
+            _jiraConnected = connected;
+        }
+        else if (_userName is not null)
+        {
+            _jiraConnected = await JiraAuth.IsAuthenticatedAsync(_userName);
+        }
+
+        if (_jiraConnected)
+        {
+            await LoadReportAsync(false);
+        }
+    }
+
+    private async Task ShowHelpAsync()
+    {
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true };
+        await ModalDialogService.Component<SprintReportHelpDialog>("How the sprint report is calculated", new Dictionary<string, object?>(), options);
+    }
+
+    private static List<SprintReportIssue> Scope(SprintReport report) =>
+        report.Issues.Where(i => i.InSprintAtEnd)
+            .OrderBy(i => SprintReportCalculator.CategoryOrder(i.StatusCategory))
+            .ThenBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<SprintReportIssue> NotCompleted(SprintReport report) =>
+        report.Issues.Where(i => i.IsNotCompleted)
+            .OrderBy(i => SprintReportCalculator.CategoryOrder(i.StatusCategory))
+            .ThenBy(i => i.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private static List<SprintReportIssue> Added(SprintReport report) =>
+        report.Issues.Where(i => i.IsAdded).OrderBy(i => i.AddedAt).ThenBy(i => i.Key, StringComparer.OrdinalIgnoreCase).ToList();
+
+    private static List<SprintReportIssue> Completed(SprintReport report) =>
+        report.Issues.Where(i => i.IsCompleted).OrderByDescending(i => i.DoneAt).ThenBy(i => i.Key, StringComparer.OrdinalIgnoreCase).ToList();
+
+    private static int UncategorisedIssues(SprintReport report) =>
+        report.ScopeIssues
+        - report.IssuesInCategory(SprintReport.ToDoCategory)
+        - report.IssuesInCategory(SprintReport.InProgressCategory)
+        - report.IssuesInCategory(SprintReport.DoneCategory);
+
+    private static string MainValue(int points, int issues, bool hasEstimates) =>
+        hasEstimates ? $"{points.ToString(CultureInfo.InvariantCulture)} SP" : issues.ToString(CultureInfo.InvariantCulture);
+
+    private static string Sub(int points, int issues, bool hasEstimates) =>
+        hasEstimates ? $"{issues.ToString(CultureInfo.InvariantCulture)} issue(s)" : "issue(s)";
+
+    private static string CommitmentSub(SprintReport report) =>
+        report.HasEstimates
+            ? $"{report.CompletedCommittedPoints} of {report.CommittedPoints} committed SP done"
+            : $"{report.CompletedCommittedIssues} of {report.CommittedIssues} committed issue(s) done";
+
+    private static string RatioCss(SprintReport report)
+    {
+        if (report.Window.State == SprintReportState.Future || report.CommitmentCompletion is not { } ratio)
+        {
+            return string.Empty;
+        }
+        if (report.Window.State == SprintReportState.Active && ratio < 0.5)
+        {
+            return string.Empty;
+        }
+        return ratio >= 0.8 ? "good" : ratio >= 0.5 ? "warn" : "bad";
+    }
+
+    private static double? Load(SprintReport report, SprintCapacity capacity) =>
+        capacity.Points > 0 ? report.CommittedPoints / capacity.Points : null;
+
+    private static string StateText(SprintReport report) => report.Window.State switch
+    {
+        SprintReportState.Future => "Not started",
+        SprintReportState.Active => $"Active, day {report.WorkingDaysElapsed} of {report.WorkingDays}",
+        _ => "Closed",
+    };
+
+    private static string ErrorText(SprintReportResult result) => result.Status switch
+    {
+        SprintLookupStatus.NotFound => "Not found on Jira",
+        SprintLookupStatus.AmbiguousName => "Several Jira sprints have this name",
+        _ => result.ErrorMessage ?? "Failed",
+    };
+
+    private static string Pct(double? value) =>
+        value is null ? "—" : (value.Value * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static string Share(int part, int total) =>
+        total <= 0 ? "0%" : ((double)part / total * 100).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+
+    private static string BarWidth(double? ratio) =>
+        ratio is null ? "0%" : Math.Clamp(ratio.Value * 100, 0, 100).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+
+    private static string Avg(IEnumerable<int> values)
+    {
+        var list = values.ToList();
+        return list.Count == 0 ? "—" : list.Average().ToString("0.#", CultureInfo.InvariantCulture);
+    }
+
+    private static double? AverageRatio(IEnumerable<double?> ratios)
+    {
+        var list = ratios.OfType<double>().ToList();
+        return list.Count == 0 ? null : list.Average();
+    }
+
+    private string ReportUrl(Sprint sprint) =>
+        $"{RoutingPath.TeamPlanningSprintReports}/{sprint.TeamId}/{sprint.Id}";
+
+    private string BrowseUrl(string issueKey) =>
+        $"{JiraOptions.Value.Url.TrimEnd('/')}/browse/{Uri.EscapeDataString(issueKey)}";
+
+    public void Dispose()
+    {
+        CancelHistory();
+    }
+}

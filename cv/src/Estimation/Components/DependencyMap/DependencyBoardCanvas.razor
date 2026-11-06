@@ -1,0 +1,498 @@
+@implements IAsyncDisposable
+
+@inject IJSRuntime JS
+
+@using System.Globalization
+@using Estimation.Core.Features.DependencyMap.Services
+@using Estimation.Core.JiraIntegration.Models
+@using Serilog
+
+<div class="@(FullHeight ? "dm-root dm-full" : "dm-root")" style="--dm-zoom:@ZoomValue" data-lines="@(Lines == DependencyLineMode.Risks ? "risks" : "all")" @ref="_root">
+    <div class="dm-scroll" tabindex="-1" data-dm-focus>
+        <div class="dm-content" style="--dm-ncols:@Board.Columns.Count">
+            <div class="dm-under"></div>
+            <div class="dm-over"></div>
+            <div class="dm-header">
+                <div class="dm-corner">Team</div>
+                <div class="dm-colheads">
+                    @foreach (var column in Board.Columns)
+                    {
+                        @ColumnHead(column)
+                    }
+                </div>
+            </div>
+            @foreach (var lane in Board.Lanes)
+            {
+                <div class="dm-lane" @key="lane.Lane.LaneId">
+                    @LaneHead(lane)
+                    <div class="dm-lanegrid">
+                        @foreach (var card in lane.Cards)
+                        {
+                            <div class="@CardClass(card)"
+                                 @key="card.NodeId"
+                                 role="button"
+                                 tabindex="0"
+                                 data-node="@card.NodeId"
+                                 aria-label="@AriaLabel(card)"
+                                 style="@CardStyle(card)">
+                                @CardBody(card)
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<style>
+    .dm-root { position: relative; --dm-zoom: 1; }
+    .dm-root.dm-full { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+    .dm-scroll { overflow: auto; scroll-padding: calc(64px * var(--dm-zoom)) 0 0 calc(188px * var(--dm-zoom)); max-height: calc(100vh - 300px); min-height: 360px; border: 1px solid var(--mud-palette-lines-default); border-radius: 8px; background: var(--mud-palette-surface); outline: none; }
+    .dm-scroll:focus-visible { box-shadow: inset 0 0 0 2px rgba(var(--mud-palette-primary-rgb), .45); }
+    .dm-root.dm-full .dm-scroll { flex: 1 1 auto; min-height: 0; max-height: none; overscroll-behavior: contain; }
+    .dm-content { position: relative; width: max-content; min-width: 100%; }
+    .dm-under { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+    .dm-over { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+    .dm-header { display: flex; width: max-content; min-width: 100%; position: sticky; top: 0; z-index: 5; background: var(--mud-palette-surface); border-bottom: 1px solid var(--mud-palette-lines-default); }
+    .dm-corner { width: calc(180px * var(--dm-zoom)); min-width: calc(180px * var(--dm-zoom)); position: sticky; left: 0; z-index: 6; background: var(--mud-palette-surface); padding: calc(8px * var(--dm-zoom)) calc(10px * var(--dm-zoom)); font-weight: 600; font-size: calc(.8rem * var(--dm-zoom)); border-right: 1px solid var(--mud-palette-lines-default); }
+    .dm-colheads, .dm-lanegrid { display: grid; grid-template-columns: repeat(var(--dm-ncols), calc(200px * var(--dm-zoom))); column-gap: calc(28px * var(--dm-zoom)); padding: 0 calc(28px * var(--dm-zoom)) 0 calc(14px * var(--dm-zoom)); }
+    .dm-colheads { padding-block: calc(6px * var(--dm-zoom)); }
+    .dm-colhead { padding: calc(4px * var(--dm-zoom)) calc(8px * var(--dm-zoom)); font-size: calc(.78rem * var(--dm-zoom)); border-radius: 6px; min-width: 0; }
+    .dm-colhead.ip { background: var(--mud-palette-action-default-hover); }
+    .dm-colhead .dm-colname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .dm-colhead .dm-coldates { color: var(--mud-palette-text-secondary); font-size: calc(.72rem * var(--dm-zoom)); white-space: nowrap; }
+    .dm-colhead .dm-iptag { font-size: calc(.65rem * var(--dm-zoom)); font-weight: 700; padding: 0 calc(4px * var(--dm-zoom)); margin-left: calc(4px * var(--dm-zoom)); border-radius: 4px; border: 1px solid var(--mud-palette-lines-default); color: var(--mud-palette-text-secondary); }
+    .dm-lane { display: flex; width: max-content; min-width: 100%; border-top: 1px solid var(--mud-palette-lines-default); }
+    .dm-lanehead { width: calc(180px * var(--dm-zoom)); min-width: calc(180px * var(--dm-zoom)); position: sticky; left: 0; z-index: 4; background: var(--mud-palette-surface); padding: calc(8px * var(--dm-zoom)) calc(10px * var(--dm-zoom)); display: flex; flex-direction: column; gap: calc(2px * var(--dm-zoom)); font-size: calc(.75rem * var(--dm-zoom)); border-right: 1px solid var(--mud-palette-lines-default); }
+    .dm-lanehead .dm-lanetop { display: flex; align-items: center; gap: 2px; min-width: 0; }
+    .dm-lanehead .dm-lanename { font-weight: 600; font-size: calc(.85rem * var(--dm-zoom)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+    .dm-lanehead .dm-lanetag, .dm-lanehead .dm-lanemeta { color: var(--mud-palette-text-secondary); }
+    .dm-lanegrid { grid-auto-rows: minmax(calc(58px * var(--dm-zoom)), auto); row-gap: calc(8px * var(--dm-zoom)); padding-block: calc(8px * var(--dm-zoom)); background: var(--mud-palette-background-gray); min-height: calc(74px * var(--dm-zoom)); flex: 1 0 auto; }
+    .dm-card { position: relative; z-index: 2; min-width: 0; min-height: calc(58px * var(--dm-zoom)); box-sizing: border-box; display: flex; flex-direction: column; gap: calc(2px * var(--dm-zoom)); border: 1px solid var(--mud-palette-lines-default); border-left: 4px solid var(--dm-c, var(--mud-palette-lines-default)); border-radius: 8px; background: var(--mud-palette-surface); padding: calc(6px * var(--dm-zoom)) calc(8px * var(--dm-zoom)) calc(6px * var(--dm-zoom)) calc(10px * var(--dm-zoom)); font-size: calc(.8rem * var(--dm-zoom)); cursor: pointer; transition: opacity .15s, box-shadow .15s; }
+    .dm-card.r-late { --dm-c: var(--mud-palette-error); }
+    .dm-card.r-risk { --dm-c: var(--mud-palette-warning); }
+    .dm-card.dm-outside, .dm-card.dm-context, .dm-card.dm-added { border-style: dashed; border-left-style: solid; }
+    .dm-card.dm-context, .dm-card.dm-added { opacity: .6; }
+    .dm-card.dm-dimmed { opacity: .35; }
+    .dm-card.dm-chain { box-shadow: 0 0 0 1px var(--mud-palette-primary); }
+    .dm-card.dm-focus { box-shadow: 0 0 0 2px var(--mud-palette-primary); opacity: 1; }
+    .dm-card:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
+    .dm-card.dm-hot { box-shadow: var(--mud-elevation-4); opacity: 1; }
+    .dm-card.dm-hot-n { opacity: 1; }
+    .dm-root.dm-hovering .dm-card:not(.dm-hot):not(.dm-hot-n) { opacity: .35; }
+    .dm-card.dm-pulse { animation: dm-pulse 1.2s ease-out; }
+    @@keyframes dm-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(var(--mud-palette-primary-rgb), .6); }
+        100% { box-shadow: 0 0 0 14px rgba(var(--mud-palette-primary-rgb), 0); }
+    }
+    .dm-card .dm-l1 { display: flex; align-items: center; gap: calc(6px * var(--dm-zoom)); min-width: 0; white-space: nowrap; }
+    .dm-card .dm-key { font-weight: 600; color: var(--mud-palette-primary); text-decoration: none; }
+    .dm-card .dm-key:hover { text-decoration: underline; }
+    .dm-card .dm-nokey { color: var(--mud-palette-text-secondary); font-style: italic; }
+    .dm-card .dm-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .dm-card .dm-glyph-bad { color: var(--mud-palette-error); font-weight: 700; }
+    .dm-card .dm-sprint { margin-left: auto; padding-left: calc(4px * var(--dm-zoom)); color: var(--mud-palette-text-secondary); font-size: calc(.72rem * var(--dm-zoom)); }
+    .dm-card .dm-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--mud-palette-text-primary); }
+    .dm-card .dm-badges { display: flex; flex-wrap: wrap; gap: calc(4px * var(--dm-zoom)); }
+    .dm-root .dm-badge { font-size: calc(.68rem * var(--dm-zoom)); padding: 0 calc(5px * var(--dm-zoom)); border-radius: calc(8px * var(--dm-zoom)); }
+    .dm-root .dm-badge svg { width: calc(12px * var(--dm-zoom)); height: calc(12px * var(--dm-zoom)); }
+    .dm-root .dm-dot { width: calc(8px * var(--dm-zoom)); height: calc(8px * var(--dm-zoom)); margin-right: calc(4px * var(--dm-zoom)); }
+    .dm-line { --dm-c: var(--mud-palette-text-secondary); color: var(--dm-c); }
+    .dm-line .dm-path { fill: none; stroke: var(--dm-c); stroke-width: 1.5px; }
+    .dm-line.r-late { --dm-c: var(--mud-palette-error); }
+    .dm-line.r-late .dm-path { stroke-width: 2.5px; }
+    .dm-line.r-risk { --dm-c: var(--mud-palette-warning); }
+    .dm-line.r-risk .dm-path { stroke-width: 2px; }
+    .dm-line.r-ok { --dm-c: var(--mud-palette-success); opacity: .55; }
+    .dm-line.r-ok .dm-path { stroke-width: 1.25px; }
+    .dm-line.r-none { --dm-c: var(--mud-palette-lines-inputs); }
+    .dm-line.r-none .dm-path { stroke-dasharray: 5 4; }
+    .dm-line.dm-undirected .dm-path { stroke-dasharray: 2 4; }
+    .dm-line .dm-hit { fill: none; stroke: transparent; stroke-width: 12px; pointer-events: stroke; cursor: pointer; }
+    .dm-line:hover, .dm-line.dm-hot, .dm-line.dm-in-focus { opacity: 1; }
+    .dm-line:hover .dm-path, .dm-line.dm-hot .dm-path, .dm-line.dm-in-focus .dm-path { stroke-width: 3px; }
+    .dm-root.dm-hovering .dm-under .dm-line:not(.dm-hot) { opacity: .1; }
+    .dm-root.dm-focusing .dm-under .dm-line:not(.dm-in-focus) { opacity: .12; }
+    .dm-root[data-lines="risks"] .dm-under .dm-line.r-ok, .dm-root[data-lines="risks"] .dm-under .dm-line.r-none { display: none; }
+    .dm-mk-late { fill: var(--mud-palette-error); }
+    .dm-mk-risk { fill: var(--mud-palette-warning); }
+    .dm-mk-ok { fill: var(--mud-palette-success); }
+    .dm-mk-none { fill: var(--mud-palette-lines-inputs); }
+    .dm-bang circle { fill: var(--mud-palette-error); }
+    .dm-bang text { fill: var(--mud-palette-error-text); font: 700 10px sans-serif; }
+    .dm-count rect { fill: var(--mud-palette-surface); stroke: var(--mud-palette-lines-default); }
+    .dm-count text { fill: var(--mud-palette-text-primary); font: 600 10px sans-serif; }
+</style>
+
+@code {
+    private const string NotPlannedTitle = "No sprint chosen in this PI";
+    private const string StatusProblemSuffix = ": dependencies on it cannot be met";
+
+    [Parameter, EditorRequired] public BoardLayout Board { get; set; } = null!;
+
+    [Parameter] public DependencyLineMode Lines { get; set; }
+
+    [Parameter] public IReadOnlySet<string> FocusNodeIds { get; set; } = new HashSet<string>();
+
+    [Parameter] public IReadOnlySet<string> FocusLineKeys { get; set; } = new HashSet<string>();
+
+    [Parameter] public string? ScrollToNodeId { get; set; }
+
+    [Parameter] public int ScrollRequest { get; set; }
+
+    [Parameter] public string? JiraTaskUrl { get; set; }
+
+    [Parameter] public EventCallback<string> NodeActivated { get; set; }
+
+    [Parameter] public EventCallback<string> LineActivated { get; set; }
+
+    [Parameter] public EventCallback<string> TeamFocused { get; set; }
+
+    [Parameter] public int Zoom { get; set; } = 100;
+
+    [Parameter] public bool FullHeight { get; set; }
+
+    private ElementReference _root;
+    private IJSObjectReference? _module;
+    private DotNetObjectReference<DependencyBoardCanvas>? _dotNetRef;
+    private readonly string _instanceId = Guid.NewGuid().ToString("N");
+    private bool _initializing;
+    private bool _disposed;
+    private BoardLayout? _sentBoard;
+    private string? _sentLines;
+    private string? _sentFocus;
+    private (string? NodeId, int Request) _sentScroll;
+
+    private sealed record LineDto(string k, string a, string b, bool d, bool w, string r, int n, string t);
+
+    private string ZoomValue => (Zoom / 100d).ToString("0.00", CultureInfo.InvariantCulture);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_module is null)
+            {
+                if (_initializing)
+                {
+                    return;
+                }
+
+                _initializing = true;
+
+                try
+                {
+                    _dotNetRef ??= DotNetObjectReference.Create(this);
+                    var imported = await JS.InvokeAsync<IJSObjectReference>("import", "./js/dependencyMap.min.js");
+
+                    if (_disposed)
+                    {
+                        await ReleaseAsync(imported, callDispose: false);
+                        return;
+                    }
+
+                    await imported.InvokeVoidAsync("init", _root, _dotNetRef, _instanceId);
+
+                    if (_disposed)
+                    {
+                        await ReleaseAsync(imported, callDispose: true);
+                        return;
+                    }
+
+                    _module = imported;
+                }
+                finally
+                {
+                    _initializing = false;
+                }
+            }
+
+            if (!ReferenceEquals(Board, _sentBoard))
+            {
+                _sentBoard = Board;
+                var signature = LinesSignature(Board);
+
+                if (signature != _sentLines)
+                {
+                    _sentLines = signature;
+                    await CallAsync("setLines", Board.Lines.Select(ToDto).ToList());
+                }
+            }
+
+            var focus = FocusSignature();
+
+            if (focus != _sentFocus)
+            {
+                _sentFocus = focus;
+                await CallAsync("setFocus", FocusNodeIds, FocusLineKeys);
+            }
+
+            await CallAsync("redraw");
+
+            if ((ScrollToNodeId, ScrollRequest) != _sentScroll)
+            {
+                _sentScroll = (ScrollToNodeId, ScrollRequest);
+
+                if (ScrollToNodeId is not null && FocusNodeIds.Contains(ScrollToNodeId))
+                {
+                    await CallAsync("scrollToNode", ScrollToNodeId);
+                }
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (JSException ex)
+        {
+            Log.Error(ex, "Failed to draw the dependency map lines");
+        }
+    }
+
+    [JSInvokable]
+    public Task OnJsActivate(string nodeId) => NodeActivated.InvokeAsync(nodeId);
+
+    [JSInvokable]
+    public Task OnJsLine(string lineKey) => LineActivated.InvokeAsync(lineKey);
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        var module = _module;
+        _module = null;
+
+        if (module is not null)
+        {
+            await ReleaseAsync(module, callDispose: true);
+        }
+
+        _dotNetRef?.Dispose();
+        _dotNetRef = null;
+    }
+
+    private async Task CallAsync(string identifier, params object?[] args)
+    {
+        if (_disposed || _module is not { } module)
+        {
+            return;
+        }
+
+        await module.InvokeVoidAsync(identifier, args);
+    }
+
+    private async Task ReleaseAsync(IJSObjectReference module, bool callDispose)
+    {
+        try
+        {
+            if (callDispose)
+            {
+                await module.InvokeVoidAsync("dispose", _instanceId);
+            }
+
+            await module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (JSException ex)
+        {
+            Log.Warning(ex, "Failed to release the dependency map script");
+        }
+    }
+
+    private static string LinesSignature(BoardLayout board)
+    {
+        var titles = new HashCode();
+
+        foreach (var line in board.Lines)
+        {
+            titles.Add(line.Title, StringComparer.Ordinal);
+        }
+
+        return $"{board.LinesVersion}:{titles.ToHashCode()}";
+    }
+
+    private string FocusSignature() =>
+        string.Join(",", FocusNodeIds.Order(StringComparer.Ordinal))
+        + "|"
+        + string.Join(",", FocusLineKeys.Order(StringComparer.Ordinal));
+
+    private static LineDto ToDto(BoardLine line) =>
+        new(
+            line.Key,
+            line.FromNodeId,
+            line.ToNodeId,
+            line.Directed,
+            line.BothWays,
+            DependencyRiskDisplay.JsToken(line.Risk),
+            line.LinkCount,
+            line.Title);
+
+    private static bool IsTeamLane(DependencyLane lane) =>
+        lane.Kind is DependencyLaneKind.ArtTeam or DependencyLaneKind.OtherTeam;
+
+    private static string Day(DateTime date) => date.ToString("dd MMM", CultureInfo.InvariantCulture);
+
+    private static string CardClass(BoardCard card)
+    {
+        var classes = new List<string> { "dm-card", DependencyRiskDisplay.CssClass(card.WorstRisk) };
+
+        if (card.Kind != DependencyEndKind.InScope)
+        {
+            classes.Add("dm-outside");
+        }
+
+        classes.Add(card.State switch
+        {
+            CardState.Context => "dm-context",
+            CardState.Focus => "dm-focus",
+            CardState.Chain => "dm-chain",
+            CardState.Dimmed => "dm-dimmed",
+            _ => "dm-normal"
+        });
+
+        if (card.AddedByFocus && card.State != CardState.Focus)
+        {
+            classes.Add("dm-added");
+        }
+
+        return string.Join(" ", classes);
+    }
+
+    private static string CardStyle(BoardCard card) =>
+        $"grid-column:{card.ColumnStart} / {card.ColumnEnd}; grid-row:{card.Row}";
+
+    private static string AriaLabel(BoardCard card)
+    {
+        var risk = card.Needs + card.NeededBy + card.Related == 0
+            ? "no links shown"
+            : DependencyRiskRule.Label(card.WorstRisk);
+        return $"{card.JiraId ?? "(no Jira key)"} {card.Title}, {risk}";
+    }
+
+    private static string Plural(int count, string one, string many) => count == 1 ? $"1 {one}" : $"{count} {many}";
+
+    private RenderFragment ColumnHead(BoardColumn column) =>
+        @<div class="dm-colhead @(column.IsIp ? "ip" : null)"
+              title="@(column.Kind == BoardColumnKind.NotPlanned ? NotPlannedTitle : null)">
+            <div class="dm-colname">
+                @column.Name
+                @if (column.IsIp)
+                {
+                    <span class="dm-iptag">IP</span>
+                }
+            </div>
+            @if (column.Start is DateTime start && column.End is DateTime end)
+            {
+                <div class="dm-coldates">@Day(start) &ndash; @Day(end)</div>
+            }
+        </div>;
+
+    private RenderFragment LaneHead(BoardLaneView view) =>
+        @<div class="dm-lanehead">
+            <div class="dm-lanetop">
+                <span class="dm-lanename" title="@(view.Lane.Tooltip ?? view.Lane.Name)">@view.Lane.Name</span>
+                @if (IsTeamLane(view.Lane))
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong"
+                                   Size="Size.Small"
+                                   title="Show this team's dependencies"
+                                   aria-label="Show this team's dependencies"
+                                   OnClick="@(() => TeamFocused.InvokeAsync(view.Lane.LaneId))" />
+                }
+            </div>
+            @if (!string.IsNullOrEmpty(view.Lane.Tag))
+            {
+                <span class="dm-lanetag">@view.Lane.Tag</span>
+            }
+            <span class="dm-lanemeta">@Plural(view.Cards.Count, "feature", "features")</span>
+            @if (view.NeedsAtRisk > 0)
+            {
+                <span class="dm-tone-error">needs: @view.NeedsAtRisk at risk</span>
+            }
+            @if (view.AtRiskForOthers > 0)
+            {
+                <span class="dm-tone-warning">at risk for others: @view.AtRiskForOthers</span>
+            }
+        </div>;
+
+    private RenderFragment CardBody(BoardCard card) =>
+        @<text>
+            <div class="dm-l1">
+                @if (card.JiraId is not null)
+                {
+                    <a class="dm-key" href="@(JiraTaskUrl + card.JiraId)" target="_blank" rel="noopener">@card.JiraId</a>
+                }
+                else
+                {
+                    <span class="dm-nokey">(no Jira key)</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(card.Status))
+                {
+                    <span class="dm-status @DependencyRiskDisplay.ToneClass(FeatureStatusColors.ForStatus(card.Status))"><span class="dm-dot"></span>@card.Status</span>
+                }
+                @if (card.StatusProblem)
+                {
+                    <span class="dm-glyph-bad" title="@(card.Status + StatusProblemSuffix)">!</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(card.RagStatus))
+                {
+                    <span class="dm-dot @DependencyRiskDisplay.ToneClass(RagStatusColors.For(card.RagStatus))" title="@RagStatuses.Label(card.RagStatus)"></span>
+                }
+                <span class="dm-sprint" title="@card.SprintTooltip">@card.SprintText@(card.Approximate ? " ≈" : null)</span>
+            </div>
+            <div class="dm-title" title="@card.Title">@card.Title</div>
+            <div class="dm-badges">
+                @if (card.Needs > 0)
+                {
+                    <span class="dm-badge">needs @card.Needs</span>
+                }
+                @if (card.NeededBy > 0)
+                {
+                    <span class="dm-badge">needed by @card.NeededBy</span>
+                }
+                @if (card.Related > 0)
+                {
+                    <span class="dm-badge" title="Related links, no order">~@card.Related</span>
+                }
+                @if (card.ExtraTeams > 0)
+                {
+                    <span class="dm-badge" title="@card.TeamsText">+@Plural(card.ExtraTeams, "team", "teams")</span>
+                }
+                @if (card.OtherLinks > 0)
+                {
+                    <span class="dm-badge" title="Links to issues that are not features in this map">+@Plural(card.OtherLinks, "other link", "other links")</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(card.FreeText))
+                {
+                    <span class="dm-badge" title="@card.FreeText"><svg viewBox="0 0 24 24" aria-hidden="true">@((MarkupString)Icons.Material.Outlined.Info)</svg></span>
+                }
+                @if (card.ExternalDependencies)
+                {
+                    <span class="dm-badge" title="@PlanningDisplayNames.ExternalDependencies">ext</span>
+                }
+                @if (card.ScopeText is not null)
+                {
+                    <span class="dm-badge dm-scope">@card.ScopeText</span>
+                }
+                @if (card.BelowLine)
+                {
+                    <span class="dm-badge dm-tone-warning">below line</span>
+                }
+            </div>
+        </text>;
+}

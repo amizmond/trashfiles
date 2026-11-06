@@ -1,0 +1,36 @@
+@attribute [Route(RoutingPath.TeamPlanningSprintReportDetail)]
+
+@inject ISolutionTrainResolver TrainResolver
+@inject IPermissionGuard PermissionGuard
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+@using Estimation.Core.Shared.Services
+
+<AccessGuard PageKey="SprintReports">
+@if (_trainAccessChecked)
+{
+    <SprintReportView TeamId="TeamId" SprintId="SprintId" BackUrl="@RoutingPath.TeamPlanningSprintReports" />
+}
+</AccessGuard>
+
+@code {
+    [Parameter] public int TeamId { get; set; }
+
+    [Parameter] public int SprintId { get; set; }
+
+    private bool _trainAccessChecked;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _trainAccessChecked = false;
+        var trainScope = await TrainResolver.ResolveForTeamAsync(TeamId);
+        if (!await PermissionGuard.CanViewAsync("SprintReports", trainScope))
+        {
+            Snackbar.Add("You don't have access to this team's Solution Train.", Severity.Warning);
+            Navigation.NavigateTo(RoutingPath.TeamPlanningSprintReports);
+            return;
+        }
+        _trainAccessChecked = true;
+    }
+}

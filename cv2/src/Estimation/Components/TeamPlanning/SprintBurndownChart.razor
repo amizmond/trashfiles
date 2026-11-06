@@ -1,0 +1,171 @@
+@using System.Globalization
+@using Estimation.Core.JiraIntegration.Reports
+
+@if (Points.Count > 1)
+{
+    <div class="bd-wrap">
+        <svg class="bd-svg" viewBox="0 0 @F(Width) @F(Height)" role="img" aria-label="Sprint burndown">
+            @foreach (var band in _bands)
+            {
+                <rect class="bd-weekend" x="@F(band.X)" y="@F(PlotTop)" width="@F(band.Width)" height="@F(PlotHeight)" />
+            }
+            @foreach (var tick in _ticks)
+            {
+                <g>
+                    <line class="bd-grid" x1="@F(PlotLeft)" x2="@F(PlotRight)" y1="@F(tick.Y)" y2="@F(tick.Y)" />
+                    <text class="bd-tick" x="@F(PlotLeft - 6)" y="@F(tick.Y + 3.5)" text-anchor="end">@tick.Label</text>
+                </g>
+            }
+            <line class="bd-axis" x1="@F(PlotLeft)" x2="@F(PlotRight)" y1="@F(PlotBottom)" y2="@F(PlotBottom)" />
+            @foreach (var label in _labels)
+            {
+                <g>
+                    <text class="bd-tick" x="@F(label.X)" y="@F(PlotBottom + 16)" text-anchor="middle">@label.Text</text>
+                </g>
+            }
+            @if (_scope.Length > 0)
+            {
+                <polyline class="bd-scope" points="@_scope" />
+            }
+            <polyline class="bd-ideal" points="@_ideal" />
+            @if (_remaining.Length > 0)
+            {
+                <polyline class="bd-remaining" points="@_remaining" />
+            }
+            @foreach (var dot in _dots)
+            {
+                <circle class="bd-dot" cx="@F(dot.X)" cy="@F(dot.Y)" r="3.5"><title>@dot.Title</title></circle>
+            }
+            @if (_todayX is { } todayX)
+            {
+                <g>
+                    <line class="bd-today" x1="@F(todayX)" x2="@F(todayX)" y1="@F(PlotTop)" y2="@F(PlotBottom)" />
+                    <text class="bd-today-text" x="@F(todayX + 4)" y="@F(PlotTop + 10)">today</text>
+                </g>
+            }
+        </svg>
+        <div class="bd-legend">
+            <span><i class="bd-swatch remaining"></i>Remaining @Unit</span>
+            <span><i class="bd-swatch ideal"></i>Ideal</span>
+            <span><i class="bd-swatch scope"></i>Scope</span>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<SprintBurndownPoint> Points { get; set; } = [];
+
+    [Parameter] public bool ShowIssues { get; set; }
+
+    private const double Width = 900;
+    private const double Height = 300;
+    private const double PlotLeft = 46;
+    private const double PlotRight = 884;
+    private const double PlotTop = 18;
+    private const double PlotBottom = 262;
+    private const double PlotHeight = PlotBottom - PlotTop;
+
+    private sealed record Tick(double Y, string Label);
+
+    private sealed record XLabel(double X, string Text);
+
+    private sealed record Band(double X, double Width);
+
+    private sealed record Dot(double X, double Y, string Title);
+
+    private List<Band> _bands = new();
+    private List<Tick> _ticks = new();
+    private List<XLabel> _labels = new();
+    private List<Dot> _dots = new();
+    private string _scope = string.Empty;
+    private string _ideal = string.Empty;
+    private string _remaining = string.Empty;
+    private double? _todayX;
+
+    private string Unit => ShowIssues ? "issues" : "story points";
+
+    protected override void OnParametersSet()
+    {
+        _bands = new();
+        _ticks = new();
+        _labels = new();
+        _dots = new();
+        _scope = _ideal = _remaining = string.Empty;
+        _todayX = null;
+
+        var count = Points.Count;
+        if (count < 2)
+        {
+            return;
+        }
+
+        var max = Points.Select(Ideal)
+            .Concat(Points.Where(p => p.HasActual).SelectMany(p => new[] { Remaining(p), Scope(p) }))
+            .DefaultIfEmpty(0)
+            .Max();
+        var top = NiceCeiling(Math.Max(max, 1));
+        var step = (PlotRight - PlotLeft) / (count - 1);
+
+        double X(int index) => PlotLeft + index * step;
+        double Y(double value) => PlotBottom - value / top * PlotHeight;
+
+        for (var k = 0; k <= 4; k++)
+        {
+            var value = top * k / 4;
+            _ticks.Add(new Tick(Y(value), value.ToString("0.#", CultureInfo.InvariantCulture)));
+        }
+
+        var every = Math.Max(1, (int)Math.Ceiling((count - 1) / 14.0));
+        for (var i = 1; i < count; i++)
+        {
+            if (!Points[i].IsWorkingDay)
+            {
+                var x0 = Math.Max(PlotLeft, X(i) - step / 2);
+                var x1 = Math.Min(PlotRight, X(i) + step / 2);
+                _bands.Add(new Band(x0, x1 - x0));
+            }
+            if ((i - 1) % every == 0)
+            {
+                _labels.Add(new XLabel(X(i), Points[i].Date.ToString("dd MMM", CultureInfo.InvariantCulture)));
+            }
+        }
+
+        _ideal = string.Join(" ", Points.Select((p, i) => $"{F(X(i))},{F(Y(Ideal(p)))}"));
+
+        var actual = Points.Select((p, i) => (Point: p, Index: i)).Where(t => t.Point.HasActual).ToList();
+        _remaining = string.Join(" ", actual.Select(t => $"{F(X(t.Index))},{F(Y(Remaining(t.Point)))}"));
+        _scope = string.Join(" ", actual.Select(t => $"{F(X(t.Index))},{F(Y(Scope(t.Point)))}"));
+        foreach (var (point, index) in actual)
+        {
+            var when = point.IsStart ? "Sprint start" : point.Date.ToString("ddd dd MMM", CultureInfo.InvariantCulture);
+            _dots.Add(new Dot(X(index), Y(Remaining(point)),
+                $"{when}: {F(Remaining(point))} of {F(Scope(point))} {Unit} remaining (ideal {F(Ideal(point))})"));
+        }
+
+        if (actual.Count > 0 && actual.Count < count)
+        {
+            _todayX = X(actual[^1].Index);
+        }
+    }
+
+    private double Remaining(SprintBurndownPoint point) => ShowIssues ? point.RemainingIssues : point.RemainingPoints;
+
+    private double Scope(SprintBurndownPoint point) => ShowIssues ? point.ScopeIssues : point.ScopePoints;
+
+    private double Ideal(SprintBurndownPoint point) => ShowIssues ? point.IdealIssues : point.IdealPoints;
+
+    private static double NiceCeiling(double value)
+    {
+        var magnitude = Math.Pow(10, Math.Floor(Math.Log10(value)));
+        foreach (var multiplier in new[] { 1, 2, 2.5, 5, 10 })
+        {
+            if (multiplier * magnitude >= value)
+            {
+                return multiplier * magnitude;
+            }
+        }
+        return 10 * magnitude;
+    }
+
+    private static string F(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
+}

@@ -1,0 +1,53 @@
+@using MudBlazor
+
+<div class="d-flex flex-column">
+    <div class="pa-3" style="max-height:70vh; overflow-y:auto">
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The report reads the sprint's issues from Jira together with their change history, so every number is
+            taken at a point in time rather than from today's values. Story points are used where issues are
+            estimated; otherwise the same measures are shown as issue counts.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Sprint window</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            Start, end and completion come from the Jira sprint when Jira returns them; otherwise the team sprint's dates
+            in this app are used (start of the first day, end of the last day). A running sprint is measured now, a closed
+            sprint at the moment it was completed in Jira.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Measures</MudText>
+        <table class="sr-table mb-3">
+            <tbody>
+                <tr><td style="width:170px"><b>Committed</b></td><td>Issues in the sprint when it started, with the story points they had at that moment.</td></tr>
+                <tr><td><b>Added</b></td><td>Issues pulled into the sprint after it started, including issues created in it. Scope change = added ÷ committed.</td></tr>
+                <tr><td><b>Completed</b></td><td>Issues whose status belongs to Jira's <i>Done</i> category at the end of the sprint (or now, while it runs).</td></tr>
+                <tr><td><b>Commitment met</b></td><td>Completed share of the commitment: completed committed story points ÷ committed story points. 80 % and above is green, 50–80 % amber, below 50 % red.</td></tr>
+                <tr><td><b>Not completed</b></td><td>Issues still open at the end of the sprint. In a closed sprint these are the issues carried over.</td></tr>
+                <tr><td><b>Unestimated</b></td><td>Issues in the sprint without story points. They count as 0 in every story-point measure.</td></tr>
+                <tr><td><b>Blocked</b></td><td>Open issues whose status contains "block".</td></tr>
+                <tr><td><b>Capacity</b></td><td>Working days of the team's active members in the sprint window minus their holidays, times the team's story points per day. Coefficients are not applied. Load = committed ÷ capacity.</td></tr>
+            </tbody>
+        </table>
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Burndown</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            For every day of the sprint the chart shows the story points (or issues) of the issues that were in the sprint
+            and not done at the end of that day. <i>Scope</i> is everything in the sprint that day, so a growing gap between
+            the two lines means work was added. <i>Ideal</i> runs from the commitment to zero over the working days
+            (Monday to Friday) of the planned sprint.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Velocity</MudText>
+        <MudText Typo="Typo.body2" Class="mb-3">
+            The previous sprints of the team are loaded the same way. The average velocity counts the completed story points
+            of closed sprints only.
+        </MudText>
+
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Limits</MudText>
+        <MudText Typo="Typo.body2">
+            Issues removed from a running sprint no longer match the sprint in Jira, so they are not listed; Jira's own sprint
+            report shows them. Sub-tasks appear only when they are in the sprint themselves. Reports are cached for ten minutes
+            (an hour for closed sprints); Refresh reads Jira again.
+        </MudText>
+    </div>
+</div>

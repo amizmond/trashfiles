@@ -1,0 +1,138 @@
+@using System.Globalization
+@using Estimation.Core.Features.DependencyMap.Services
+
+<MudDataGrid T="DependencyRow"
+             Items="Rows"
+             Dense="true"
+             Hover="true"
+             FixedHeader="true"
+             Height="@(FullHeight ? "100%" : "calc(100vh - 360px)")"
+             Class="dm-table"
+             Style="@($"--dm-zoom:{ZoomValue}")"
+             Elevation="0"
+             SortMode="SortMode.Multiple"
+             RowClassFunc="RowClass"
+             RowClick="OnRowClickAsync">
+    <Columns>
+        <TemplateColumn Title="Risk" Sortable="true" SortBy="@(r => (int)r.Dependency.Verdict.Risk)">
+            <CellTemplate>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Filled"
+                         Color="@DependencyRiskDisplay.ColorOf(context.Item.Dependency.Verdict.Risk)">
+                    @DependencyRiskRule.Label(context.Item.Dependency.Verdict.Risk)
+                </MudChip>
+            </CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Why" Sortable="false" CellStyle="min-width:260px; max-width:420px; white-space:normal;">
+            <CellTemplate>@context.Item.Dependency.Verdict.Text</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Consumer" Sortable="true" SortBy="@(r => r.Dependency.Consumer.Key)" CellStyle="min-width:200px; max-width:320px;">
+            <CellTemplate>@EndCell(context.Item.Dependency.Consumer, null)</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Consumer teams" Sortable="true" SortBy="@(r => r.ConsumerTeams)">
+            <CellTemplate>@context.Item.ConsumerTeams</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Consumer plan" Sortable="true" SortBy="@(r => r.ConsumerPlanSort)">
+            <CellTemplate>@context.Item.ConsumerPlan</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Relation" Sortable="true" SortBy="@(r => r.Relation)">
+            <CellTemplate>@context.Item.Relation</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Provider" Sortable="true" SortBy="@(r => r.Dependency.Provider.Key)" CellStyle="min-width:200px; max-width:320px;">
+            <CellTemplate>@EndCell(context.Item.Dependency.Provider, context.Item.ProviderScope)</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Provider teams" Sortable="true" SortBy="@(r => r.ProviderTeams)">
+            <CellTemplate>@context.Item.ProviderTeams</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Provider plan" Sortable="true" SortBy="@(r => r.ProviderPlanSort)">
+            <CellTemplate>@context.Item.ProviderPlan</CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="Statuses" Sortable="false">
+            <CellTemplate>
+                <div class="d-flex flex-column">
+                    @StatusLine(StatusOf(context.Item.Dependency.Consumer))
+                    @StatusLine(StatusOf(context.Item.Dependency.Provider))
+                </div>
+            </CellTemplate>
+        </TemplateColumn>
+
+        <TemplateColumn Title="@PlanningDisplayNames.Actions" Sortable="false" Filterable="false" StickyRight="true">
+            <CellTemplate>
+                <span @onclick:stopPropagation="true">
+                    <MudIconButton Icon="@Icons.Material.Filled.MyLocation"
+                                   Size="Size.Small"
+                                   Color="Color.Primary"
+                                   title="Show it on the board"
+                                   aria-label="Show it on the board"
+                                   OnClick="@(() => Locate.InvokeAsync(context.Item))" />
+                </span>
+            </CellTemplate>
+        </TemplateColumn>
+    </Columns>
+    <NoRecordsContent>
+        <MudText Class="pa-6 mud-text-secondary">No dependency matches the filters.</MudText>
+    </NoRecordsContent>
+</MudDataGrid>
+
+<style>
+    .dm-table .mud-table-root { zoom: var(--dm-zoom, 1); }
+    .dm-table-row { cursor: pointer; }
+    .dm-table-row.dm-row-sel > td { background: rgba(var(--mud-palette-primary-rgb), .1); }
+    .dm-table-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .dm-table-end .dm-table-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<DependencyRow> Rows { get; set; } = [];
+
+    [Parameter] public string? JiraTaskUrl { get; set; }
+
+    [Parameter] public string? SelectedDependencyId { get; set; }
+
+    [Parameter] public EventCallback<DependencyRow> RowSelected { get; set; }
+
+    [Parameter] public EventCallback<DependencyRow> Locate { get; set; }
+
+    [Parameter] public int Zoom { get; set; } = 100;
+
+    [Parameter] public bool FullHeight { get; set; }
+
+    private string ZoomValue => (Zoom / 100d).ToString("0.00", CultureInfo.InvariantCulture);
+
+    private string RowClass(DependencyRow row, int index) =>
+        row.Dependency.Id == SelectedDependencyId ? "dm-table-row dm-row-sel" : "dm-table-row";
+
+    private Task OnRowClickAsync(DataGridRowClickEventArgs<DependencyRow> args) => RowSelected.InvokeAsync(args.Item);
+
+    private static string? StatusOf(DependencyNode node) => node.Feature?.Status ?? node.Stub?.Status;
+
+    private RenderFragment StatusLine(string? status) =>
+        @<span class="dm-status @DependencyRiskDisplay.ToneClass(FeatureStatusColors.ForStatus(status))">
+            <span class="dm-dot"></span>@(string.IsNullOrWhiteSpace(status) ? "—" : status)
+        </span>;
+
+    private RenderFragment EndCell(DependencyNode node, string? scope) =>
+        @<div>
+            <div class="dm-table-end">
+                @if (!string.IsNullOrEmpty(node.Key))
+                {
+                    <a href="@(JiraTaskUrl + node.Key)" target="_blank" rel="noopener" style="text-decoration:none" @onclick:stopPropagation="true">
+                        <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" Style="cursor:pointer">@node.Key</MudChip>
+                    </a>
+                }
+                <span class="dm-table-title" title="@(node.Feature?.Title ?? node.Stub?.Summary)">@(node.Feature?.Title ?? node.Stub?.Summary)</span>
+            </div>
+            @if (scope is not null)
+            {
+                <div class="mud-text-secondary" style="font-size:.75rem">@scope</div>
+            }
+        </div>;
+}
