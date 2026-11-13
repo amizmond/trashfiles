@@ -1,0 +1,111 @@
+<MudDrawer Open="Open" OpenChanged="OpenChanged" Anchor="Anchor.End" Elevation="2"
+           Variant="DrawerVariant.Temporary" Width="400px"
+           Style="background: var(--mud-palette-surface)">
+    <MudDrawerHeader>
+        <div class="d-flex align-center justify-space-between" style="width:100%">
+            <MudText Typo="Typo.h6">KPIs &amp; columns</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => OpenChanged.InvokeAsync(false)" />
+        </div>
+    </MudDrawerHeader>
+    @if (Open)
+    {
+        <div class="px-4 pb-4" style="overflow-y:auto">
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Columns</MudText>
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mb-1">
+                Each column shows both snapshots. Total counts everyone, also the domains switched off here.
+            </MudText>
+            <div class="d-flex flex-column gap-1">
+                <MudSwitch T="bool" Value="@Layout.IsColumnShown(null)"
+                           ValueChanged="@((bool on) => SetColumnAsync(null, on))"
+                           Label="Total (everyone)" Color="Color.Primary" Size="Size.Small" />
+                @foreach (var domain in Domains)
+                {
+                    var current = domain;
+                    <MudSwitch T="bool" Value="@Layout.IsColumnShown(current)"
+                               ValueChanged="@((bool on) => SetColumnAsync(current, on))"
+                               Label="@HeadcountMetrics.Display(current)" Color="Color.Primary" Size="Size.Small" />
+                }
+            </div>
+
+            <MudDivider Class="my-3" />
+
+            <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Key performance indicators</MudText>
+            <div class="d-flex gap-1 mb-1">
+                <MudButton Variant="Variant.Text" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.SelectAll" OnClick="ShowAllAsync">
+                    Select all
+                </MudButton>
+                <MudButton Variant="Variant.Text" Color="Color.Primary" Size="Size.Small"
+                           StartIcon="@Icons.Material.Filled.RestartAlt" Disabled="Layout.IsDefaultKpiSet"
+                           OnClick="ResetAsync">
+                    Default
+                </MudButton>
+            </div>
+            @foreach (var category in OrgHealthKpis.Categories)
+            {
+                var items = Kpis.Where(k => k.Category == category).ToList();
+                if (items.Count == 0)
+                {
+                    continue;
+                }
+
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2 mb-1">@category</MudText>
+                <div class="d-flex flex-column gap-1">
+                    @foreach (var kpi in items)
+                    {
+                        var current = kpi;
+                        <div title="@current.Definition">
+                            <MudSwitch T="bool" Value="@Layout.IsShown(current)"
+                                       ValueChanged="@((bool on) => SetKpiAsync(current, on))"
+                                       Label="@current.Label" Color="Color.Primary" Size="Size.Small" />
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+</MudDrawer>
+
+@code {
+    [Parameter]
+    public bool Open { get; set; }
+
+    [Parameter]
+    public EventCallback<bool> OpenChanged { get; set; }
+
+    [Parameter, EditorRequired]
+    public OrgHealthLayout Layout { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<OrgHealthKpi> Kpis { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<string> Domains { get; set; } = [];
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    private Task SetColumnAsync(string? domain, bool on)
+    {
+        Layout.SetColumnShown(domain, on);
+        return OnChanged.InvokeAsync();
+    }
+
+    private Task SetKpiAsync(OrgHealthKpi kpi, bool on)
+    {
+        Layout.SetShown(kpi, on);
+        return OnChanged.InvokeAsync();
+    }
+
+    private Task ShowAllAsync()
+    {
+        Layout.ShowAll(Kpis);
+        return OnChanged.InvokeAsync();
+    }
+
+    private Task ResetAsync()
+    {
+        Layout.ResetKpis();
+        return OnChanged.InvokeAsync();
+    }
+}

@@ -1,0 +1,581 @@
+@attribute [Route(HrReportingRoutes.OrgHealth)]
+@inherits HrReportingPageBase
+
+@inject IHeadcountSnapshotService Snapshots
+@inject ITeamsAnalysisExclusionService Exclusions
+@inject IOrgHealthTargetService TargetService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject IBrowserDownloadService Downloads
+@inject IDialogService DialogService
+@inject IWindowsAuthService WindowsAuth
+@inject IJSRuntime JS
+
+@using System.Globalization
+@using Serilog
+
+<PageTitle>Organization Health</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.OrgHealthPageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudText Typo="Typo.h6" Class="mr-2">Organization Health</MudText>
+
+            @if (_uploads.Count > 0)
+            {
+                <div style="width:280px">
+                    <MudSelect T="int" Value="@(_newer?.Id ?? 0)" ValueChanged="OnNewerChanged"
+                               Label="As of" Dense Variant="Variant.Outlined" Disabled="_loading"
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var upload in _uploads)
+                        {
+                            <MudSelectItem T="int" Value="@upload.Id">@UploadLabel(upload, _uploads)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+                <div style="width:280px">
+                    <MudSelect T="int" Value="@(_older?.Id ?? 0)" ValueChanged="OnOlderChanged"
+                               Label="Compared with" Dense Variant="Variant.Outlined" Disabled="_loading"
+                               AnchorOrigin="Origin.BottomCenter">
+                        <MudSelectItem T="int" Value="0">No comparison</MudSelectItem>
+                        @foreach (var upload in OlderThan(_newer))
+                        {
+                            <MudSelectItem T="int" Value="@upload.Id">@UploadLabel(upload, _uploads)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+            }
+
+            <MudSpacer />
+
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.ViewColumn"
+                       Disabled="@(_newerSnapshot is null)"
+                       OnClick="@(() => _layoutOpen = true)">
+                KPIs &amp; columns
+            </MudButton>
+
+            @if (CanEdit)
+            {
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Flag"
+                           Disabled="@(_newerSnapshot is null || _busy)"
+                           OnClick="EditTargetsAsync">
+                    Targets
+                </MudButton>
+            }
+
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.Download"
+                       Disabled="@(_newerSnapshot is null || _exporting || _table.Lines.Count == 0 || _table.Scopes.Count == 0)"
+                       OnClick="ExportAsync">
+                Export
+            </MudButton>
+        </div>
+
+        @if (_loading || _busy)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+
+        @if (_missingRequested)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mx-2 mb-2">
+                A requested upload no longer exists, so the default snapshots are shown.
+            </MudAlert>
+        }
+
+        @if (!_initialLoadDone)
+        {
+        }
+        else if (_newer is null || _newerSnapshot is null)
+        {
+            <MudAlert Severity="Severity.Info" Class="ma-3">
+                No headcount has been uploaded yet. Upload the Workday export on the Headcount page first.
+            </MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="px-2 mud-text-secondary">
+                Data as of <b>@ShortLabel(_newer)</b>@if (_older is not null)
+                {
+                    <text> compared with <b>@ShortLabel(_older)</b></text>
+                }.
+                Only people whose @HeadcountColumns.OperationalStatus.Header is @HeadcountRules.Operational are counted
+                (@Count(NonOperational(_newerSnapshot)) others in @ShortLabel(_newer)@if (_older is not null && _olderSnapshot is not null)
+                {
+                    <text>, @Count(NonOperational(_olderSnapshot)) in @ShortLabel(_older)</text>
+                }).
+            </MudText>
+            <MudText Typo="Typo.caption" Class="px-2 pb-3 mud-text-secondary d-block">
+                Total counts everyone in the snapshot, every @HeadcountColumns.ImhL07.Header value, also the ones switched off.
+                Team KPIs follow <MudLink Href="@HrReportingRoutes.TeamsAnalysis" Typo="Typo.caption">Teams Analysis</MudLink>:
+                operational ART people with a train@(HiddenEntries > 0 ? $", without the {HiddenEntries} trains and teams hidden there" : string.Empty).
+                Agile roles come from @HeadcountColumns.TargetAgileRole.Header, or the Workday @HeadcountColumns.Job.Header when it is empty; “in WD” counts the Workday @HeadcountColumns.Job.Header.
+            </MudText>
+
+            @if (_table.Lines.Count == 0 || _table.Scopes.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Class="ma-2">
+                    Switch on at least one KPI and one column under KPIs &amp; columns.
+                </MudAlert>
+            }
+            else
+            {
+                <div class="org-health-scroll">
+                    <table class="org-health-table">
+                        <thead>
+                            <tr>
+                                <th class="oh-category" rowspan="2" scope="col"><span>Category</span></th>
+                                <th class="oh-kpi" rowspan="2" scope="col">Key performance indicator</th>
+                                <th class="oh-target" rowspan="2" scope="col">Target</th>
+                                @foreach (var scope in _table.Scopes)
+                                {
+                                    <th class="oh-scope oh-group-start" colspan="@(_table.Compared ? 2 : 1)" scope="colgroup"
+                                        title="@ScopeHint(scope)">@ScopeTitle(scope)</th>
+                                }
+                            </tr>
+                            <tr>
+                                @foreach (var scope in _table.Scopes)
+                                {
+                                    @if (_table.Compared)
+                                    {
+                                        <th class="oh-date oh-date-older oh-group-start" scope="col">@ShortLabel(_older!)</th>
+                                    }
+                                    <th class="@(_table.Compared ? "oh-date" : "oh-date oh-group-start")" scope="col">@ShortLabel(_newer)</th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var group in _groups)
+                            {
+                                for (var i = 0; i < group.Lines.Count; i++)
+                                {
+                                    var line = group.Lines[i];
+                                    <tr @key="line.Kpi.Key" class="@(i == 0 ? "oh-first" : null)">
+                                        @if (i == 0)
+                                        {
+                                            <th class="oh-category" rowspan="@group.Lines.Count" scope="rowgroup" title="@group.Category">
+                                                <span style="@($"max-height:{group.Lines.Count * 34 - 10}px")">@group.Category</span>
+                                            </th>
+                                        }
+                                        <td class="oh-kpi" title="@line.Kpi.Definition">@line.Kpi.Label</td>
+                                        <td class="oh-target" title="@TargetHint(line)">@line.Target.Display(line.Kpi, Culture)</td>
+                                        @for (var c = 0; c < line.Cells.Count; c++)
+                                        {
+                                            var cell = line.Cells[c];
+                                            var scope = _table.Scopes[c];
+                                            @if (_table.Compared)
+                                            {
+                                                <td class="oh-value oh-older oh-group-start" title="@OlderHint(cell, scope)">@Text(cell.Older)</td>
+                                            }
+                                            <td class="@NewerClass(cell)" title="@NewerHint(line, cell, scope)">
+                                                @Text(cell.Newer)@if (cell.Trend != OrgHealthTrend.Same)
+                                                {
+                                                    <span class="@ArrowClass(cell)">@(cell.Trend == OrgHealthTrend.Up ? "↑" : "↓")</span>
+                                                }
+                                            </td>
+                                        }
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <MudText Typo="Typo.caption" Class="px-2 pt-2 mud-text-secondary d-block">
+                    @if (_table.Compared)
+                    {
+                        <span>↑ ↓ change since @ShortLabel(_older!): <span class="oh-good">green</span> = better, <span class="oh-bad">red</span> = worse, grey = neither is better. </span>
+                    }
+                    <span class="oh-missed-sample">Red cell</span> = the target is missed. Point at a cell for the counts behind it.
+                </MudText>
+            }
+
+            <MudExpansionPanels Class="mt-4" Outlined="true" Elevation="0">
+                <MudExpansionPanel Text="How each KPI is counted">
+                    <ChildContent>
+                        <MudSimpleTable Dense="true" Elevation="0">
+                            <tbody>
+                                @foreach (var kpi in _kpis)
+                                {
+                                    <tr @key="kpi.Key">
+                                        <td style="white-space:nowrap; vertical-align:top" class="mud-text-secondary">@kpi.Category</td>
+                                        <td style="vertical-align:top; min-width:240px"><b>@kpi.Label</b></td>
+                                        <td>@kpi.Definition</td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </MudSimpleTable>
+                    </ChildContent>
+                </MudExpansionPanel>
+            </MudExpansionPanels>
+        }
+    </MudPaper>
+</div>
+
+<OrgHealthLayoutDrawer @bind-Open="_layoutOpen"
+                       Layout="_layout"
+                       Kpis="_kpis"
+                       Domains="_domains"
+                       OnChanged="OnLayoutChangedAsync" />
+</AccessGuard>
+
+@code {
+    [SupplyParameterFromQuery(Name = "b")]
+    public int? NewerId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "a")]
+    public int? OlderId { get; set; }
+
+    private List<HeadcountUpload> _uploads = [];
+    private List<TeamsAnalysisExclusion> _exclusions = [];
+    private List<OrgHealthTarget> _storedTargets = [];
+    private OrgHealthLayout _layout = new();
+    private HeadcountUpload? _newer;
+    private HeadcountUpload? _older;
+    private OrgHealthSnapshot? _newerSnapshot;
+    private OrgHealthSnapshot? _olderSnapshot;
+    private IReadOnlyList<OrgHealthKpi> _kpis = [];
+    private IReadOnlyList<string> _domains = [];
+    private IReadOnlyDictionary<string, OrgHealthTargetRule> _targets = new Dictionary<string, OrgHealthTargetRule>();
+    private OrgHealthTable _table = OrgHealthTable.Empty;
+    private List<LineGroup> _groups = [];
+    private bool _loading = true;
+    private bool _initialLoadDone;
+    private bool _missingRequested;
+    private bool _layoutOpen;
+    private bool _busy;
+    private bool _exporting;
+
+    protected override string PageKey => HrReportingRoutes.OrgHealthPageKey;
+
+    private static CultureInfo Culture => CultureInfo.CurrentCulture;
+
+    private int HiddenEntries => _newerSnapshot?.HiddenTeamEntries ?? 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _layout = OrgHealthLayout.Parse(await ReadLayoutAsync());
+        try
+        {
+            _uploads = await Snapshots.GetUploadsAsync();
+            _exclusions = await Exclusions.GetAllAsync();
+            _storedTargets = await TargetService.GetAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the Organization Health page");
+            Snackbar.Add("The headcount could not be loaded.", Severity.Error);
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        try
+        {
+            var requestedNewer = Find(NewerId);
+            var newer = requestedNewer ?? _uploads.FirstOrDefault();
+            var requestedOlder = OlderId is > 0 ? Find(OlderId) : null;
+            _missingRequested = (NewerId is not null && requestedNewer is null) || (OlderId is > 0 && requestedOlder is null);
+
+            HeadcountUpload? older = null;
+            if (newer is not null && OlderId != 0)
+            {
+                older = requestedOlder is not null && IsOlder(requestedOlder, newer)
+                    ? requestedOlder
+                    : OlderThan(newer).FirstOrDefault();
+            }
+
+            if (newer is null)
+            {
+                _newerSnapshot = null;
+                _olderSnapshot = null;
+            }
+            else
+            {
+                if (_newerSnapshot is null || _newer?.Id != newer.Id)
+                {
+                    _newerSnapshot = OrgHealthReport.Build(await Snapshots.GetRowsAsync(newer.Id), _exclusions);
+                }
+
+                if (older is null)
+                {
+                    _olderSnapshot = null;
+                }
+                else if (_olderSnapshot is null || _older?.Id != older.Id)
+                {
+                    _olderSnapshot = OrgHealthReport.Build(await Snapshots.GetRowsAsync(older.Id), _exclusions);
+                }
+            }
+
+            _newer = newer;
+            _older = older;
+            Recompute();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to build the Organization Health report");
+            Snackbar.Add("The headcount could not be loaded.", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            _initialLoadDone = true;
+        }
+    }
+
+    private void Recompute()
+    {
+        if (_newerSnapshot is null)
+        {
+            _kpis = [];
+            _domains = [];
+            _table = OrgHealthTable.Empty;
+            _groups = [];
+            return;
+        }
+
+        _kpis = OrgHealthKpis.Catalog(OrgHealthReport.Countries(_newerSnapshot, _olderSnapshot));
+        _domains = OrgHealthReport.Domains(_newerSnapshot, _olderSnapshot);
+        _targets = OrgHealthKpis.Targets(_kpis, _storedTargets);
+
+        var scopes = new List<string?>();
+        if (_layout.IsColumnShown(null))
+        {
+            scopes.Add(null);
+        }
+
+        scopes.AddRange(_domains.Where(d => _layout.IsColumnShown(d)));
+
+        _table = OrgHealthReport.Compare(_newerSnapshot, _olderSnapshot, _kpis.Where(_layout.IsShown).ToList(), scopes, _targets);
+        _groups = OrgHealthKpis.Categories
+            .Select(c => new LineGroup(c, _table.Lines.Where(l => l.Kpi.Category == c).ToList()))
+            .Where(g => g.Lines.Count > 0)
+            .ToList();
+    }
+
+    private async Task OnLayoutChangedAsync()
+    {
+        Recompute();
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", OrgHealthLayout.StorageKey, _layout.Serialize());
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Saving the Organization Health layout failed");
+        }
+    }
+
+    private async Task<string?> ReadLayoutAsync()
+    {
+        try
+        {
+            return await JS.InvokeAsync<string?>("localStorage.getItem", OrgHealthLayout.StorageKey);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Reading the Organization Health layout failed");
+            return null;
+        }
+    }
+
+    private void OnNewerChanged(int id)
+    {
+        var newer = Find(id);
+        if (newer is null)
+        {
+            return;
+        }
+
+        int? older = _older is null
+            ? (_newer is not null && OlderThan(_newer).Any() ? 0 : null)
+            : IsOlder(_older, newer) ? _older.Id : null;
+        Go(newer, older);
+    }
+
+    private void OnOlderChanged(int id)
+    {
+        if (_newer is not null)
+        {
+            Go(_newer, id);
+        }
+    }
+
+    private void Go(HeadcountUpload newer, int? olderId)
+    {
+        int? b = _uploads.Count > 0 && _uploads[0].Id == newer.Id ? null : newer.Id;
+        var defaultOlder = OlderThan(newer).FirstOrDefault()?.Id;
+        int? a = olderId is null || olderId == defaultOlder || (olderId == 0 && defaultOlder is null) ? null : olderId;
+        Navigation.NavigateTo(HrReportingRoutes.OrgHealthUrl(b, a));
+    }
+
+    private async Task EditTargetsAsync()
+    {
+        if (!CanEdit || _newerSnapshot is null)
+        {
+            return;
+        }
+
+        var parameters = new DialogParameters<OrgHealthTargetsDialog>
+        {
+            { d => d.Kpis, _kpis },
+            { d => d.Targets, _targets }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = true };
+        var dialog = await DialogService.ShowAsync<OrgHealthTargetsDialog>("Targets", parameters, options);
+        var result = await dialog.Result;
+        if (result is null || result.Canceled || result.Data is not IReadOnlyDictionary<string, OrgHealthTargetRule> targets)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var user = await WindowsAuth.GetUserName();
+            var changes = await TargetService.SaveAsync(targets, user);
+            _storedTargets = await TargetService.GetAllAsync();
+            Recompute();
+            Snackbar.Add(
+                changes == 0 ? "No target changed." : "The targets are saved for everyone.",
+                changes == 0 ? Severity.Info : Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Saving Organization Health targets failed");
+            Snackbar.Add("The targets could not be saved.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_newer is null || _newerSnapshot is null)
+        {
+            return;
+        }
+
+        _exporting = true;
+        try
+        {
+            var table = _table;
+            var titles = table.Scopes.Select(ScopeTitle).ToList();
+            var olderLabel = _older is null ? null : ShortLabel(_older);
+            var newerLabel = ShortLabel(_newer);
+            var caption = olderLabel is null
+                ? $"Organization Health · data as of {newerLabel}"
+                : $"Organization Health · data as of {newerLabel} compared with {olderLabel}";
+            var culture = Culture;
+            var bytes = await Task.Run(() => HrReportExcelExport.BuildOrgHealth(table, titles, olderLabel, newerLabel, caption, culture));
+            await Downloads.DownloadAsync(bytes, $"HR_Organization_Health_{_newer.DataDate.ToString(HeadcountColumn.DateFormat)}.xlsx");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Organization Health export failed");
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private HeadcountUpload? Find(int? id) => id is int value ? _uploads.FirstOrDefault(u => u.Id == value) : null;
+
+    private int Index(HeadcountUpload upload) => _uploads.FindIndex(u => u.Id == upload.Id);
+
+    private bool IsOlder(HeadcountUpload candidate, HeadcountUpload than) => Index(candidate) > Index(than);
+
+    private IEnumerable<HeadcountUpload> OlderThan(HeadcountUpload? upload) =>
+        upload is null ? [] : _uploads.Skip(Index(upload) + 1);
+
+    private string ShortLabel(HeadcountUpload upload)
+    {
+        var date = upload.DataDate.ToString(HeadcountColumn.DateFormat);
+        return _uploads.Count(u => u.DataDate == upload.DataDate) > 1
+            ? $"{date} ({UserTime.Format(upload.UploadedAt, "HH:mm")})"
+            : date;
+    }
+
+    private static int NonOperational(OrgHealthSnapshot snapshot) => snapshot.Total.People - snapshot.Total.Operational;
+
+    private static string ScopeTitle(string? scope) => scope is null ? "Total" : HeadcountMetrics.Display(scope);
+
+    private static string ScopeHint(string? scope) => scope is null
+        ? $"Everyone in the snapshot, every {HeadcountColumns.ImhL07.Header} value"
+        : $"{HeadcountColumns.ImhL07.Header}: {HeadcountMetrics.Display(scope)}";
+
+    private static string Text(OrgHealthValue? value) => value?.Format(Culture) ?? "—";
+
+    private static string Describe(OrgHealthValue? value)
+    {
+        if (value is null)
+        {
+            return "no data";
+        }
+
+        var text = value.Format(Culture);
+        return value.Describe(Culture) is { } detail ? $"{text} ({detail})" : text;
+    }
+
+    private string NewerClass(OrgHealthCell cell)
+    {
+        var css = _table.Compared ? "oh-value oh-newer" : "oh-value oh-newer oh-group-start";
+        return cell.TargetMet == false ? $"{css} oh-missed" : css;
+    }
+
+    private static string ArrowClass(OrgHealthCell cell) => cell.Tone switch
+    {
+        OrgHealthTone.Good => "oh-arrow oh-good",
+        OrgHealthTone.Bad => "oh-arrow oh-bad",
+        _ => "oh-arrow oh-neutral"
+    };
+
+    private string OlderHint(OrgHealthCell cell, string? scope) =>
+        _older is null ? string.Empty : $"{ScopeTitle(scope)} · {ShortLabel(_older)}: {Describe(cell.Older)}";
+
+    private string NewerHint(OrgHealthLine line, OrgHealthCell cell, string? scope)
+    {
+        var parts = new List<string> { $"{ScopeTitle(scope)} · {ShortLabel(_newer!)}: {Describe(cell.Newer)}" };
+        if (_older is not null && Change(line.Kpi, cell) is { } change)
+        {
+            parts.Add($"Change since {ShortLabel(_older)}: {change}");
+        }
+
+        if (cell.TargetMet is bool met)
+        {
+            parts.Add($"Target {line.Target.RuleText(line.Kpi, Culture)}: {(met ? "met" : "missed")}");
+        }
+
+        return string.Join(Environment.NewLine, parts);
+    }
+
+    private static string TargetHint(OrgHealthLine line) => line.Target.HasRule
+        ? $"Cells are red when the value is not {line.Target.RuleText(line.Kpi, Culture)}"
+        : "No rule, so no cell is marked";
+
+    private static string? Change(OrgHealthKpi kpi, OrgHealthCell cell)
+    {
+        if (cell.Older is null || cell.Newer is null || kpi.Kind == OrgHealthValueKind.Counts)
+        {
+            return null;
+        }
+
+        var delta = cell.Newer.Shown - cell.Older.Shown;
+        return kpi.Kind switch
+        {
+            OrgHealthValueKind.Percent or OrgHealthValueKind.Split => $"{delta.ToString("+0;-0;0", Culture)} pp",
+            OrgHealthValueKind.Average => delta.ToString("+0.0;-0.0;0.0", Culture),
+            _ => delta.ToString("+#,0;-#,0;0", Culture)
+        };
+    }
+
+    private sealed record LineGroup(string Category, List<OrgHealthLine> Lines);
+}

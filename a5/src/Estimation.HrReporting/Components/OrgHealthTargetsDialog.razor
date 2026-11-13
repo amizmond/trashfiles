@@ -1,0 +1,156 @@
+@using System.Globalization
+
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body2" Class="mud-text-secondary mb-3">
+            Targets are shared by everyone. <b>Shown as</b> is the text of the Target column; when it is empty the rule is shown.
+            The <b>rule</b> marks the newer snapshot's cell red when the shown value misses it (for split values the first part,
+            for "a | b" values the first number). Percentages are whole numbers, as shown in the table.
+        </MudText>
+        <div style="overflow-x:auto">
+            <MudSimpleTable Dense="true" Bordered="true" Elevation="0">
+                <thead>
+                    <tr>
+                        <th style="min-width:260px">Key performance indicator</th>
+                        <th style="min-width:170px">Shown as</th>
+                        <th style="min-width:130px">Rule</th>
+                        <th style="min-width:120px">Value</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var edit in _edits)
+                    {
+                        var current = edit;
+                        <tr @key="current.Kpi.Key">
+                            <td title="@current.Kpi.Definition">
+                                <div>@current.Kpi.Label</div>
+                                <MudText Typo="Typo.caption" Class="mud-text-secondary">@current.Kpi.Category</MudText>
+                            </td>
+                            <td>
+                                <MudTextField T="string" @bind-Value="current.Text" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                              MaxLength="OrgHealthTarget.TextMaxLength"
+                                              Placeholder="@Placeholder(current)" Immediate="true" />
+                            </td>
+                            <td>
+                                <MudSelect T="int" @bind-Value="current.Rule" Variant="Variant.Outlined"
+                                           Margin="Margin.Dense" Dense="true" AnchorOrigin="Origin.BottomCenter">
+                                    <MudSelectItem T="int" Value="0">none</MudSelectItem>
+                                    @foreach (var comparison in Enum.GetValues<OrgHealthComparison>())
+                                    {
+                                        <MudSelectItem T="int" Value="@((int)comparison)">@Name(comparison)</MudSelectItem>
+                                    }
+                                </MudSelect>
+                            </td>
+                            <td>
+                                <MudNumericField T="decimal?" @bind-Value="current.Value" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                 Disabled="@(current.Comparison is null)" HideSpinButtons="true"
+                                                 Adornment="@(current.Kpi.IsPercent ? Adornment.End : Adornment.None)"
+                                                 AdornmentText="%" Immediate="true" />
+                            </td>
+                            <td style="white-space:nowrap">
+                                @if (!current.IsDefault)
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.RestartAlt" Size="Size.Small" Color="Color.Primary"
+                                                   title="Back to the default target" OnClick="@(() => current.Reset())" />
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </div>
+        @if (_invalid is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mt-3">@_invalid</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Save">Save targets</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<OrgHealthKpi> Kpis { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public IReadOnlyDictionary<string, OrgHealthTargetRule> Targets { get; set; } = new Dictionary<string, OrgHealthTargetRule>();
+
+    private List<TargetEdit> _edits = [];
+    private string? _invalid;
+
+    protected override void OnInitialized() =>
+        _edits = Kpis
+            .Select(k => new TargetEdit(k, Targets.TryGetValue(k.Key, out var rule) ? rule : OrgHealthKpis.DefaultTarget(k.Key)))
+            .ToList();
+
+    private void Save()
+    {
+        var incomplete = _edits.FirstOrDefault(e => e.Comparison is not null && e.Value is null);
+        if (incomplete is not null)
+        {
+            _invalid = $"Enter a value for the rule of “{incomplete.Kpi.Label}”, or set its rule to none.";
+            return;
+        }
+
+        var result = _edits.ToDictionary(e => e.Kpi.Key, e => e.ToRule(), StringComparer.OrdinalIgnoreCase);
+        MudDialog.Close(DialogResult.Ok(result));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private static string Placeholder(TargetEdit edit)
+    {
+        var rule = OrgHealthTargetRule.Create(null, edit.Comparison, edit.Value);
+        return rule.HasRule ? rule.RuleText(edit.Kpi, CultureInfo.CurrentCulture) : "n/a";
+    }
+
+    private static string Name(OrgHealthComparison comparison) => comparison switch
+    {
+        OrgHealthComparison.Above => "> above",
+        OrgHealthComparison.AtLeast => "≥ at least",
+        OrgHealthComparison.Below => "< below",
+        _ => "≤ at most"
+    };
+
+    private sealed class TargetEdit
+    {
+        public TargetEdit(OrgHealthKpi kpi, OrgHealthTargetRule rule)
+        {
+            Kpi = kpi;
+            Load(rule);
+        }
+
+        public OrgHealthKpi Kpi { get; }
+
+        public string? Text { get; set; }
+
+        public OrgHealthComparison? Comparison { get; set; }
+
+        public int Rule
+        {
+            get => (int?)Comparison ?? 0;
+            set => Comparison = Enum.IsDefined(typeof(OrgHealthComparison), value) ? (OrgHealthComparison)value : null;
+        }
+
+        public decimal? Value { get; set; }
+
+        public bool IsDefault => ToRule() == OrgHealthKpis.DefaultTarget(Kpi.Key);
+
+        public OrgHealthTargetRule ToRule() => OrgHealthTargetRule.Create(Text, Comparison, Value);
+
+        public void Reset() => Load(OrgHealthKpis.DefaultTarget(Kpi.Key));
+
+        private void Load(OrgHealthTargetRule rule)
+        {
+            Text = rule.Text;
+            Comparison = rule.Comparison;
+            Value = rule.Value;
+        }
+    }
+}

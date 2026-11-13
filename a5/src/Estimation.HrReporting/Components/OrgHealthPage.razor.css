@@ -1,0 +1,159 @@
+.org-health-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 4px;
+}
+
+.org-health-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.875rem;
+}
+
+.org-health-table th,
+.org-health-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--mud-palette-table-lines);
+    background-color: var(--mud-palette-surface);
+}
+
+.org-health-table thead th {
+    background-color: var(--mud-palette-primary);
+    color: var(--mud-palette-primary-text);
+    font-weight: 600;
+    text-align: center;
+    border-bottom-color: rgba(255, 255, 255, 0.25);
+}
+
+.org-health-table thead .oh-date {
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.org-health-table thead .oh-date-older {
+    opacity: 0.8;
+}
+
+.org-health-table .oh-category {
+    width: 36px;
+    min-width: 36px;
+    max-width: 36px;
+    padding: 6px 4px;
+    background-color: var(--mud-palette-primary);
+    color: var(--mud-palette-primary-text);
+    text-align: center;
+    vertical-align: middle;
+    border-bottom-color: rgba(255, 255, 255, 0.35);
+}
+
+.org-health-table .oh-category span {
+    display: inline-block;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.org-health-table .oh-kpi {
+    min-width: 240px;
+    text-align: left;
+}
+
+.org-health-table tbody .oh-kpi {
+    cursor: help;
+}
+
+.org-health-table .oh-target {
+    text-align: center;
+    white-space: nowrap;
+    background-color: var(--mud-palette-background-gray);
+}
+
+.org-health-table thead .oh-target {
+    background-color: var(--mud-palette-primary);
+}
+
+.org-health-table .oh-value {
+    text-align: center;
+    white-space: nowrap;
+    min-width: 84px;
+}
+
+.org-health-table .oh-older {
+    color: var(--mud-palette-text-secondary);
+}
+
+.org-health-table .oh-newer {
+    font-weight: 600;
+}
+
+.org-health-table .oh-group-start {
+    border-left: 2px solid var(--mud-palette-lines-default);
+}
+
+.org-health-table thead .oh-group-start {
+    border-left-color: rgba(255, 255, 255, 0.35);
+}
+
+.org-health-table tbody tr.oh-first > * {
+    border-top: 2px solid var(--mud-palette-lines-default);
+}
+
+.org-health-table tbody tr.oh-first > .oh-category {
+    border-top-color: rgba(255, 255, 255, 0.35);
+}
+
+.org-health-table td.oh-missed {
+    background-color: rgba(var(--mud-palette-error-rgb), 0.2);
+}
+
+.oh-arrow {
+    margin-left: 3px;
+    font-weight: 700;
+}
+
+.oh-good {
+    color: var(--mud-palette-success);
+}
+
+.oh-bad {
+    color: var(--mud-palette-error);
+}
+
+.oh-neutral {
+    color: var(--mud-palette-text-secondary);
+}
+
+.oh-missed-sample {
+    padding: 0 4px;
+    border-radius: 2px;
+    background-color: rgba(var(--mud-palette-error-rgb), 0.2);
+}
+
+@media (min-width: 601px) {
+    .org-health-table .oh-category {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+    }
+
+    .org-health-table .oh-kpi {
+        position: sticky;
+        left: 36px;
+        z-index: 1;
+        box-shadow: 1px 0 0 var(--mud-palette-lines-default);
+    }
+
+    .org-health-table thead .oh-kpi {
+        z-index: 3;
+        background-color: var(--mud-palette-primary);
+    }
+
+    .org-health-table thead .oh-category {
+        z-index: 4;
+    }
+}
