@@ -1,0 +1,220 @@
+@namespace Estimation.Components.Resources
+@using System.Globalization
+@using Serilog
+@using Estimation.Core.Calendar.Models
+@using Estimation.Core.Calendar.Services
+@using Estimation.Core.Resources.Services
+
+@inject ICapacityCalendarService CalendarService
+
+<MudPaper Elevation="2" Class="rounded-lg" Style="height:100%">
+    <MudToolBar Dense Class="gap-1">
+        <MudIcon Icon="@Icons.Material.Filled.BeachAccess" Color="Color.Primary" Class="mr-1" />
+        <MudText Typo="Typo.h6">Vacations</MudText>
+        <MudSpacer />
+        <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" Size="Size.Small"
+                       aria-label="Previous year" title="Previous year"
+                       OnClick="@(() => ChangeYearAsync(-1))" Disabled="_loading" />
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold" Style="min-width:44px; text-align:center">@_year</MudText>
+        <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small"
+                       aria-label="Next year" title="Next year"
+                       OnClick="@(() => ChangeYearAsync(1))" Disabled="_loading" />
+        @if (_plannerTeams.Count == 1)
+        {
+            <MudIconButton Icon="@Icons.Material.Filled.CalendarMonth" Size="Size.Small" Color="Color.Primary"
+                           Href="@PlannerUrl(_plannerTeams[0].TeamId)"
+                           aria-label="Open holiday planner" title="@($"Open the holiday planner of {_plannerTeams[0].TeamName}")" />
+        }
+        else if (_plannerTeams.Count > 1)
+        {
+            <MudMenu Icon="@Icons.Material.Filled.CalendarMonth" Size="Size.Small" Color="Color.Primary"
+                     AriaLabel="Open holiday planner" title="Open a team's holiday planner"
+                     AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                <MudText Typo="Typo.caption" Class="px-4 pt-2 mud-text-secondary">Holiday planner of</MudText>
+                @foreach (var team in _plannerTeams)
+                {
+                    <MudMenuItem Href="@PlannerUrl(team.TeamId)">@team.TeamName</MudMenuItem>
+                }
+            </MudMenu>
+        }
+    </MudToolBar>
+    <MudDivider />
+
+    @if (_loading && _summary is null)
+    {
+        <MudProgressLinear Indeterminate Color="Color.Primary" />
+    }
+    else if (_summary is not null)
+    {
+        <div class="pa-4">
+            <div class="hrv-stats">
+                <div class="hrv-stat">
+                    <div class="hrv-stat-value">@(_summary.Entitlement?.ToString() ?? "—")</div>
+                    <div class="hrv-stat-label">Entitlement</div>
+                </div>
+                <div class="hrv-stat">
+                    <div class="hrv-stat-value">@Days(_summary.TakenDays)</div>
+                    <div class="hrv-stat-label">Taken</div>
+                </div>
+                <div class="hrv-stat">
+                    <div class="hrv-stat-value">@Days(_summary.PlannedDays)</div>
+                    <div class="hrv-stat-label">Planned</div>
+                </div>
+                <div class="hrv-stat @(_summary.RemainingDays < 0 ? "hrv-stat-over" : "")">
+                    <div class="hrv-stat-value">@(_summary.RemainingDays is { } left ? Days(left) : "—")</div>
+                    <div class="hrv-stat-label">@(_summary.RemainingDays < 0 ? "Over entitlement" : "Left")</div>
+                </div>
+            </div>
+
+            @if (_summary.Entitlement is int entitlement && entitlement > 0)
+            {
+                <MudProgressLinear Color="@(_summary.RemainingDays < 0 ? Color.Error : Color.Primary)"
+                                   Value="@Percent(_summary.TakenDays, entitlement)"
+                                   BufferValue="@Percent(_summary.UsedDays, entitlement)" Buffer="true"
+                                   Rounded Size="Size.Medium" Class="mt-3"
+                                   aria-label="@($"{Days(_summary.UsedDays)} of {entitlement} annual leave days used")" />
+            }
+
+            <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-2">
+                @if (_summary.Entitlement is null)
+                {
+                    <span>No annual leave entitlement set. </span>
+                }
+                Days are working days in @_year, without weekends and public holidays. Only annual leave counts towards the entitlement.
+            </MudText>
+        </div>
+        <MudDivider />
+
+        @if (_summary.Entries.Count == 0)
+        {
+            <div class="pa-4 d-flex align-center gap-2 mud-text-secondary">
+                <MudIcon Icon="@Icons.Material.Outlined.EventBusy" Size="Size.Small" />
+                <MudText Typo="Typo.body2">No vacations recorded in @_year.</MudText>
+            </div>
+        }
+        else
+        {
+            <div class="hrv-list">
+                @foreach (var entry in _summary.Entries)
+                {
+                    var status = StatusOf(entry);
+                    <div class="hrv-entry @(status == EntryStatus.Past ? "hrv-entry-past" : "")" @key="entry.Id">
+                        <span class="hrv-dot" style="@($"background-color:{entry.ColorHex}")"></span>
+                        <div class="hrv-entry-main">
+                            <div class="hrv-entry-title">
+                                <span class="font-weight-bold">@entry.TypeName</span>
+                                @if (!entry.IsAnnualLeave)
+                                {
+                                    <span class="mud-text-secondary" title="Does not count towards the annual leave entitlement"> · not counted</span>
+                                }
+                            </div>
+                            <div class="mud-text-secondary hrv-entry-dates">@DateRange(entry)</div>
+                            @if (!string.IsNullOrWhiteSpace(entry.Comment))
+                            {
+                                <div class="mud-text-secondary hrv-entry-comment" title="@entry.Comment">@entry.Comment</div>
+                            }
+                        </div>
+                        <div class="hrv-entry-side">
+                            <span class="font-weight-bold">@Days(entry.Days) d</span>
+                            @switch (status)
+                            {
+                                case EntryStatus.Now:
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Success" Variant="Variant.Filled" Class="ma-0">Now</MudChip>
+                                    break;
+                                case EntryStatus.Upcoming:
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Outlined" Class="ma-0">Upcoming</MudChip>
+                                    break;
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    }
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public int HumanResourceId { get; set; }
+    [Parameter] public IReadOnlyList<HrMembership> Memberships { get; set; } = [];
+    [Parameter] public Func<HrMembership, bool>? CanOpenPlanner { get; set; }
+
+    private enum EntryStatus { Past, Now, Upcoming }
+
+    private int _year = DateTime.Today.Year;
+    private int? _loadedFor;
+    private PersonLeaveSummary? _summary;
+    private bool _loading;
+    private List<HrMembership> _plannerTeams = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _plannerTeams = Memberships.Where(m => CanOpenPlanner?.Invoke(m) == true).ToList();
+        if (_loadedFor != HumanResourceId)
+        {
+            _loadedFor = HumanResourceId;
+            _year = DateTime.Today.Year;
+            await LoadAsync();
+        }
+    }
+
+    public Task ReloadAsync() => LoadAsync();
+
+    private async Task ChangeYearAsync(int delta)
+    {
+        _year += delta;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var year = _year;
+            var summary = await CalendarService.GetPersonLeaveAsync(HumanResourceId, year, DateTime.Today);
+            if (year == _year)
+            {
+                _summary = summary;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load vacations of person {HumanResourceId}", HumanResourceId);
+            _summary = new PersonLeaveSummary(_year, null, 0, 0, []);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static EntryStatus StatusOf(PersonLeaveEntry entry)
+    {
+        var today = DateTime.Today;
+        if (entry.EndDate < today)
+        {
+            return EntryStatus.Past;
+        }
+        return entry.StartDate > today ? EntryStatus.Upcoming : EntryStatus.Now;
+    }
+
+    private static string DateRange(PersonLeaveEntry entry)
+    {
+        if (entry.StartDate == entry.EndDate)
+        {
+            var day = Day(entry.StartDate, false);
+            return entry.HalfDay == HalfDayPortion.None ? day : $"{day} ({entry.HalfDay})";
+        }
+        var withYear = entry.StartDate.Year != entry.EndDate.Year;
+        return $"{Day(entry.StartDate, withYear)} – {Day(entry.EndDate, withYear)}";
+    }
+
+    private static string Day(DateTime date, bool withYear) =>
+        date.ToString(withYear ? "ddd dd MMM yyyy" : "ddd dd MMM", CultureInfo.InvariantCulture);
+
+    private static string Days(double days) => days.ToString("0.#", CultureInfo.InvariantCulture);
+
+    private static double Percent(double days, int entitlement) => Math.Clamp(days / entitlement * 100, 0, 100);
+
+    private static string PlannerUrl(int teamId) => $"{RoutingPath.Teams}/{teamId}/holidays";
+}

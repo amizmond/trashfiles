@@ -1,0 +1,170 @@
+@namespace Estimation.Components.Resources
+@using Estimation.Core.Resources.Services
+
+<MudPaper Elevation="2" Class="rounded-lg" Style="height:100%">
+    <MudToolBar Dense Class="gap-2">
+        <MudIcon Icon="@Icons.Material.Filled.Groups" Color="Color.Primary" />
+        <MudText Typo="Typo.h6">Teams &amp; ARTs</MudText>
+        <MudSpacer />
+        @if (Memberships.Count > 0)
+        {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Class="ma-0">
+                @Memberships.Count team@(Memberships.Count == 1 ? "" : "s")
+            </MudChip>
+        }
+    </MudToolBar>
+    <MudDivider />
+
+    @if (Memberships.Count == 0)
+    {
+        <div class="pa-4 d-flex align-center gap-2 mud-text-secondary">
+            <MudIcon Icon="@Icons.Material.Outlined.GroupOff" Size="Size.Small" />
+            <MudText Typo="Typo.body2">Not a member of any team yet. People are added to teams on the team's page.</MudText>
+        </div>
+    }
+    else
+    {
+        <div class="hrm-summary pa-4">
+            <div class="hrm-summary-label">
+                <MudIcon Icon="@Icons.Material.Outlined.Business" Size="Size.Small" />
+                <span>Department@(_departments.Count == 1 ? "" : "s")</span>
+            </div>
+            <div class="d-flex flex-wrap gap-1">
+                @if (_departments.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">No department set on their ARTs</MudText>
+                }
+                @foreach (var department in _departments)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Text" Class="ma-0">@department</MudChip>
+                }
+            </div>
+
+            <div class="hrm-summary-label">
+                <MudIcon Icon="@Icons.Material.Outlined.Train" Size="Size.Small" />
+                <span>ART@(_arts.Count == 1 ? "" : "s")</span>
+            </div>
+            <div class="d-flex flex-wrap gap-1">
+                @if (_arts.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">Their teams are not on any ART</MudText>
+                }
+                @foreach (var art in _arts)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Text" Class="ma-0"
+                             Href="@(CanOpenArt?.Invoke(art.Id) == true ? ArtUrl(art.Id) : null)">
+                        @art.Name
+                    </MudChip>
+                }
+            </div>
+        </div>
+        <MudDivider />
+
+        <MudTable T="HrMembership" Items="Memberships" Dense Hover Elevation="0" Breakpoint="Breakpoint.Sm" Class="rounded-0">
+            <HeaderContent>
+                <MudTh>Team</MudTh>
+                <MudTh>Team role</MudTh>
+                <MudTh>ART · Department</MudTh>
+                <MudTh>Technology stacks</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="Team">
+                    @if (CanOpenTeam?.Invoke(context) == true)
+                    {
+                        <MudLink Href="@TeamUrl(context.TeamId)" Typo="Typo.body2" Class="font-weight-bold">@context.TeamName</MudLink>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Class="font-weight-bold">@context.TeamName</MudText>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Team role">
+                    @if (context.TeamRoleName is { } role)
+                    {
+                        <MudText Typo="Typo.body2">@role</MudText>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">—</MudText>
+                    }
+                </MudTd>
+                <MudTd DataLabel="ART · Department">
+                    @if (context.Arts.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">No ART</MudText>
+                    }
+                    else
+                    {
+                        <div>
+                            @foreach (var art in context.Arts)
+                            {
+                                <div class="hrm-art">
+                                    <span>@art.Name</span>
+                                    @if (!string.IsNullOrWhiteSpace(art.DepartmentName))
+                                    {
+                                        <span class="mud-text-secondary"> · @art.DepartmentName</span>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Technology stacks">
+                    @if (context.Stacks.Count == 0)
+                    {
+                        <MudText Typo="Typo.body2" Class="mud-text-secondary">Not on a stack</MudText>
+                    }
+                    else
+                    {
+                        <div class="d-flex flex-wrap gap-1">
+                            @foreach (var stack in context.Stacks)
+                            {
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ma-0"
+                                         Icon="@Icons.Material.Outlined.Layers"
+                                         Href="@(CanOpenStacks ? StackUrl(stack.Id) : null)">
+                                    @stack.Name
+                                </MudChip>
+                            }
+                        </div>
+                    }
+                </MudTd>
+            </RowTemplate>
+        </MudTable>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public IReadOnlyList<HrMembership> Memberships { get; set; } = [];
+    [Parameter] public Func<HrMembership, bool>? CanOpenTeam { get; set; }
+    [Parameter] public Func<int, bool>? CanOpenArt { get; set; }
+    [Parameter] public bool CanOpenStacks { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
+
+    private List<HrMembershipArt> _arts = [];
+    private List<string> _departments = [];
+
+    protected override void OnParametersSet()
+    {
+        _arts = Memberships
+            .SelectMany(m => m.Arts)
+            .DistinctBy(a => a.Id)
+            .OrderBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _departments = _arts
+            .Select(a => a.DepartmentName)
+            .OfType<string>()
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(d => d, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private string TeamUrl(int teamId) => WithReturnUrl($"{RoutingPath.Teams}/{teamId}");
+
+    private string ArtUrl(int artId) => WithReturnUrl($"{RoutingPath.CapitalProjects}/{artId}");
+
+    private static string StackUrl(int stackId) => $"{RoutingPath.TechnologyStacks}/{stackId}";
+
+    private string WithReturnUrl(string url) =>
+        string.IsNullOrEmpty(ReturnUrl) ? url : $"{url}?returnUrl={Uri.EscapeDataString(ReturnUrl)}";
+}

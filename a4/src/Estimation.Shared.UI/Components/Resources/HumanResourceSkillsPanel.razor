@@ -1,0 +1,359 @@
+@namespace Estimation.Components.Resources
+@using Serilog
+@using Estimation.Components.Shared
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+
+@inject IHumanResourceService HrService
+@inject ISnackbar Snackbar
+
+<MudPaper Elevation="2" Class="rounded-lg">
+    <MudToolBar Dense Class="gap-2 flex-wrap py-2" Style="height:auto; min-height:56px">
+        <MudIcon Icon="@Icons.Material.Filled.Psychology" Color="Color.Primary" />
+        <MudText Typo="Typo.h6">Skills</MudText>
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Class="ma-0">
+            @AssignedCount of @AllSkills.Count
+        </MudChip>
+        <MudSpacer />
+        @if (!ReadOnly)
+        {
+            <div style="flex:0 1 320px; min-width:200px">
+                <SearchableDropdown T="int"
+                                    MultiSelect="true"
+                                    Items="SkillIdsByName"
+                                    Values="AssignedIds"
+                                    ValuesChanged="OnPickedSkillsChanged"
+                                    ToStringFunc="@SkillName"
+                                    Label="Search skills"
+                                    SearchPlaceholder="Search skills..."
+                                    NoItemsText="No skills found"
+                                    Clearable="false"
+                                    Margin="Margin.Dense">
+                    <ItemTemplate Context="skillId">
+                        <div style="min-width:0">
+                            <div class="d-flex align-center gap-1">
+                                <span>@SkillName(skillId)</span>
+                                @if (SuggestedBy.ContainsKey(skillId))
+                                {
+                                    <MudIcon Icon="@Icons.Material.Outlined.Layers" Size="Size.Small" Color="Color.Primary"
+                                             title="@SuggestionTitle(skillId)" />
+                                }
+                            </div>
+                            @if (SkillDescription(skillId) is { Length: > 0 } description)
+                            {
+                                <div class="mud-text-secondary" style="font-size:0.75rem">@description</div>
+                            }
+                        </div>
+                    </ItemTemplate>
+                </SearchableDropdown>
+            </div>
+        }
+    </MudToolBar>
+    <MudDivider />
+
+    @if (AllSkills.Count == 0)
+    {
+        <MudText Class="pa-4 mud-text-secondary" Typo="Typo.body2">No skills available in the system.</MudText>
+    }
+    else
+    {
+        var assigned = AssignedSkills().ToList();
+        var available = AvailableSkills().ToList();
+        var suggested = available.Where(s => SuggestedBy.ContainsKey(s.Id)).ToList();
+        var others = available.Where(s => !SuggestedBy.ContainsKey(s.Id)).ToList();
+
+        <div class="pa-4">
+            <div class="d-flex align-baseline flex-wrap gap-2 mb-2">
+                <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Assigned</MudText>
+                @if (!ReadOnly)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Click a level to set it, click it again to clear it.</MudText>
+                }
+            </div>
+
+            @if (AssignedCount == 0)
+            {
+                <div class="hrs-empty">
+                    <MudIcon Icon="@Icons.Material.Outlined.Lightbulb" Size="Size.Small" />
+                    <span>@(ReadOnly ? "No skills assigned." : "No skills yet. Pick skills from the list below.")</span>
+                </div>
+            }
+            else
+            {
+                <div class="hrs-grid">
+                    @foreach (var (skill, assignment) in assigned)
+                    {
+                        var busy = _busy.Contains(skill.Id);
+                        var levels = OrderedLevels(skill);
+                        <div class="hrs-card @(skill.Id == _lastAddedSkillId ? "hrs-card-new" : "") @(busy ? "hrs-card-busy" : "")" @key="skill.Id">
+                            <div class="d-flex align-start gap-1">
+                                <div class="hrs-card-head">
+                                    <div class="hrs-card-name">@skill.Name</div>
+                                    @if (!string.IsNullOrWhiteSpace(skill.Description))
+                                    {
+                                        <div class="hrs-card-desc" title="@skill.Description">@skill.Description</div>
+                                    }
+                                </div>
+                                @if (!ReadOnly)
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Disabled="busy"
+                                                   aria-label="@($"Remove {skill.Name}")" title="Remove skill"
+                                                   OnClick="@(() => RemoveAsync(skill, assignment))" />
+                                }
+                            </div>
+                            @if (levels.Count == 0)
+                            {
+                                <div class="hrs-card-note">This skill has no levels.</div>
+                            }
+                            else
+                            {
+                                <div class="hrs-levels" role="group" aria-label="@($"{skill.Name} level")">
+                                    @foreach (var level in levels)
+                                    {
+                                        var selected = assignment.SkillLevelId == level.Id;
+                                        <MudChip T="int" Size="Size.Small" Class="ma-0" Disabled="busy"
+                                                 Variant="@(selected ? Variant.Filled : Variant.Outlined)"
+                                                 Color="@(selected ? Color.Primary : Color.Default)"
+                                                 Icon="@(selected ? Icons.Material.Filled.Check : null)"
+                                                 aria-pressed="@(ReadOnly ? null : selected ? "true" : "false")"
+                                                 title="@(string.IsNullOrWhiteSpace(level.Description) ? level.Name : level.Description)"
+                                                 OnClick="@(ReadOnly ? default : EventCallback.Factory.Create<MouseEventArgs>(this, () => SetLevelAsync(skill, assignment, level.Id)))">
+                                            @level.Name
+                                        </MudChip>
+                                    }
+                                </div>
+                                @if (assignment.SkillLevelId is null)
+                                {
+                                    <div class="hrs-card-note">Level not set</div>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @if (!ReadOnly)
+            {
+                <MudDivider Class="my-4" />
+
+                <MudText Typo="Typo.subtitle1" Class="font-weight-bold mb-2">Add a skill</MudText>
+
+                @if (available.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">Every skill is assigned.</MudText>
+                }
+                else
+                {
+                    @if (suggested.Count > 0)
+                    {
+                        <div class="hrs-add-group">
+                            <div class="hrs-add-label">
+                                <MudIcon Icon="@Icons.Material.Outlined.Layers" Size="Size.Small" />
+                                <span>From their technology stacks</span>
+                            </div>
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var skill in suggested)
+                                {
+                                    <MudChip T="int" Size="Size.Small" Class="ma-0" Color="Color.Primary" Variant="Variant.Outlined"
+                                             Icon="@Icons.Material.Filled.Add" Disabled="_busy.Contains(skill.Id)"
+                                             title="@SuggestionTitle(skill.Id)"
+                                             OnClick="@(() => AddAsync(skill))">
+                                        @skill.Name
+                                    </MudChip>
+                                }
+                            </div>
+                        </div>
+                    }
+                    @if (others.Count > 0)
+                    {
+                        <div class="hrs-add-group">
+                            @if (suggested.Count > 0)
+                            {
+                                <div class="hrs-add-label">
+                                    <MudIcon Icon="@Icons.Material.Outlined.Apps" Size="Size.Small" />
+                                    <span>Other skills</span>
+                                </div>
+                            }
+                            <div class="d-flex flex-wrap gap-1">
+                                @foreach (var skill in others)
+                                {
+                                    <MudChip T="int" Size="Size.Small" Class="ma-0" Variant="Variant.Outlined"
+                                             Icon="@Icons.Material.Filled.Add" Disabled="_busy.Contains(skill.Id)"
+                                             title="@(string.IsNullOrWhiteSpace(skill.Description) ? skill.Name : skill.Description)"
+                                             OnClick="@(() => AddAsync(skill))">
+                                        @skill.Name
+                                    </MudChip>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+
+                <MudText Typo="Typo.caption" Class="mud-text-secondary d-block mt-4">
+                    @(HumanResourceId is null
+                        ? "Skills are saved when you create the person."
+                        : "Skill changes are saved straight away.")
+                </MudText>
+            }
+        </div>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public int? HumanResourceId { get; set; }
+    [Parameter] public IReadOnlyList<Skill> AllSkills { get; set; } = [];
+    [Parameter, EditorRequired] public List<HumanResourceSkill> Assignments { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<int, IReadOnlyList<string>> SuggestedBy { get; set; } = new Dictionary<int, IReadOnlyList<string>>();
+    [Parameter] public bool ReadOnly { get; set; }
+
+    private int? _lastAddedSkillId;
+    private readonly HashSet<int> _busy = [];
+
+    private int AssignedCount => Assignments.Count(a => AllSkills.Any(s => s.Id == a.SkillId));
+
+    private IEnumerable<int> SkillIdsByName =>
+        AllSkills.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).Select(s => s.Id);
+
+    private IReadOnlyCollection<int> AssignedIds =>
+        Assignments
+            .Select(a => a.SkillId)
+            .OrderBy(SkillName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private string SkillName(int skillId) => AllSkills.FirstOrDefault(s => s.Id == skillId)?.Name ?? string.Empty;
+
+    private string? SkillDescription(int skillId) => AllSkills.FirstOrDefault(s => s.Id == skillId)?.Description;
+
+    private IEnumerable<(Skill Skill, HumanResourceSkill Assignment)> AssignedSkills() =>
+        Assignments
+            .Select(a => (Skill: AllSkills.FirstOrDefault(s => s.Id == a.SkillId), Assignment: a))
+            .Where(x => x.Skill is not null)
+            .Select(x => (x.Skill!, x.Assignment))
+            .OrderBy(x => x.Item1.Name, StringComparer.OrdinalIgnoreCase);
+
+    private IEnumerable<Skill> AvailableSkills() =>
+        AllSkills
+            .Where(s => Assignments.All(a => a.SkillId != s.Id))
+            .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase);
+
+    private static List<SkillLevel> OrderedLevels(Skill skill) =>
+        skill.Levels
+            .OrderBy(l => l.Value ?? int.MaxValue)
+            .ThenBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private string SuggestionTitle(int skillId) =>
+        SuggestedBy.TryGetValue(skillId, out var stacks)
+            ? $"Part of {string.Join(", ", stacks)}"
+            : SkillName(skillId);
+
+    private async Task OnPickedSkillsChanged(IReadOnlyCollection<int> picked)
+    {
+        var assigned = Assignments.Select(a => a.SkillId).ToHashSet();
+        foreach (var skill in AllSkills.Where(s => picked.Contains(s.Id) && !assigned.Contains(s.Id)).ToList())
+        {
+            await AddAsync(skill);
+        }
+        foreach (var assignment in Assignments.Where(a => !picked.Contains(a.SkillId)).ToList())
+        {
+            if (AllSkills.FirstOrDefault(s => s.Id == assignment.SkillId) is { } skill)
+            {
+                await RemoveAsync(skill, assignment);
+            }
+        }
+    }
+
+    private async Task AddAsync(Skill skill, int? levelId = null)
+    {
+        if (Assignments.Any(a => a.SkillId == skill.Id) || !_busy.Add(skill.Id))
+        {
+            return;
+        }
+        try
+        {
+            if (HumanResourceId is int hrId)
+            {
+                await HrService.SetSkillAsync(hrId, skill.Id, levelId);
+            }
+            Assignments.Add(new HumanResourceSkill
+            {
+                HumanResourceId = HumanResourceId ?? 0,
+                SkillId = skill.Id,
+                SkillLevelId = levelId,
+            });
+            _lastAddedSkillId = skill.Id;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to add skill {SkillId} to person {HumanResourceId}", skill.Id, HumanResourceId);
+            Snackbar.Add($"Could not add {skill.Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy.Remove(skill.Id);
+        }
+    }
+
+    private async Task RemoveAsync(Skill skill, HumanResourceSkill assignment)
+    {
+        if (!_busy.Add(skill.Id))
+        {
+            return;
+        }
+        try
+        {
+            if (HumanResourceId is int hrId)
+            {
+                await HrService.RemoveSkillAsync(hrId, skill.Id);
+            }
+            Assignments.RemoveAll(a => a.SkillId == skill.Id);
+            var levelId = assignment.SkillLevelId;
+            Snackbar.Add($"{skill.Name} removed.", Severity.Normal, config =>
+            {
+                config.Action = "Undo";
+                config.ActionColor = Color.Primary;
+                config.OnClick = _ => InvokeAsync(async () =>
+                {
+                    await AddAsync(skill, levelId);
+                    StateHasChanged();
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to remove skill {SkillId} from person {HumanResourceId}", skill.Id, HumanResourceId);
+            Snackbar.Add($"Could not remove {skill.Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy.Remove(skill.Id);
+        }
+    }
+
+    private async Task SetLevelAsync(Skill skill, HumanResourceSkill assignment, int levelId)
+    {
+        int? newLevelId = assignment.SkillLevelId == levelId ? null : levelId;
+        if (!_busy.Add(skill.Id))
+        {
+            return;
+        }
+        try
+        {
+            if (HumanResourceId is int hrId)
+            {
+                await HrService.SetSkillAsync(hrId, skill.Id, newLevelId);
+            }
+            assignment.SkillLevelId = newLevelId;
+            assignment.SkillLevel = null;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to set the level of skill {SkillId} for person {HumanResourceId}", skill.Id, HumanResourceId);
+            Snackbar.Add($"Could not update {skill.Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy.Remove(skill.Id);
+        }
+    }
+}

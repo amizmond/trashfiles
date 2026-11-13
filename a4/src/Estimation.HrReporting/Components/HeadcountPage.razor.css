@@ -1,0 +1,67 @@
+::deep .sticky-left,
+::deep .sticky-left-header,
+::deep .sticky-right,
+::deep .sticky-right-header {
+    position: sticky;
+    z-index: 2;
+    background-color: var(--mud-palette-surface, #fff);
+}
+
+::deep .sticky-left,
+::deep .sticky-left-header {
+    left: 0;
+    box-shadow: 2px 0 4px rgba(0, 0, 0, 0.1);
+}
+
+::deep .sticky-right,
+::deep .sticky-right-header {
+    right: 0;
+    box-shadow: -2px 0 4px rgba(0, 0, 0, 0.1);
+}
+
+::deep .sticky-left-header,
+::deep .sticky-right-header {
+    z-index: 3;
+}
+
+::deep .mud-table-striped .mud-table-row:nth-of-type(odd) .sticky-left,
+::deep .mud-table-striped .mud-table-row:nth-of-type(odd) .sticky-right {
+    background: linear-gradient(var(--mud-palette-table-striped), var(--mud-palette-table-striped)), var(--mud-palette-surface);
+}
+
+::deep .mud-table-hover .mud-table-row:hover .sticky-left,
+::deep .mud-table-hover .mud-table-row:hover .sticky-right {
+    background: linear-gradient(var(--mud-palette-table-hover), var(--mud-palette-table-hover)), var(--mud-palette-surface);
+}
+
+@media (min-width: 601px) {
+    ::deep .headcount-table td,
+    ::deep .headcount-table th {
+        white-space: nowrap;
+    }
+
+    ::deep .headcount-table td {
+        max-width: 360px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    ::deep .headcount-table .headcount-details-cell {
+        width: 1%;
+        padding: 0 6px;
+        text-align: center;
+    }
+}
+
+::deep .headcount-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+::deep .headcount-name > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

@@ -1,0 +1,264 @@
+@attribute [Route(HrReportingRoutes.Person)]
+@inherits HrReportingPageBase
+
+@inject IHeadcountSnapshotService Snapshots
+@inject HeadcountListState ListState
+@inject IHumanResourceService HrService
+@inject ISkillService SkillService
+
+@using Serilog
+@using Estimation.Components.Resources
+@using Estimation.Core.Resources.Models
+@using Estimation.Core.Resources.Services
+
+<PageTitle>@(_row?.EmployeeName ?? "Headcount")</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.PageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-3 mb-4 flex-wrap">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" Href="@BackUrl"
+                           aria-label="Back to Headcount" title="Back to Headcount" />
+            @if (_row is not null)
+            {
+                <PersonAvatar Name="@DisplayName" EmployeeNumber="@_row.Brid" />
+                <div>
+                    <MudText Typo="Typo.h6" Style="line-height:1.25">@DisplayName</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">BRID @_row.Brid</MudText>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(_row.OperationalStatus))
+                {
+                    <MudChip T="string" Size="Size.Small" Class="ma-0"
+                             Color="@(IsOperational ? Color.Success : Color.Default)"
+                             Variant="@(IsOperational ? Variant.Text : Variant.Outlined)">
+                        @_row.OperationalStatus
+                    </MudChip>
+                }
+            }
+            else
+            {
+                <MudText Typo="Typo.h6">Headcount</MudText>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" />
+        }
+        else if (_loadFailed)
+        {
+            <MudAlert Severity="Severity.Error">This person could not be loaded.</MudAlert>
+        }
+        else if (_upload is null)
+        {
+            <MudAlert Severity="Severity.Warning">
+                @(UploadId is null ? "No headcount has been uploaded yet." : "That upload no longer exists.")
+            </MudAlert>
+        }
+        else if (_row is null)
+        {
+            <MudAlert Severity="Severity.Warning">
+                Nobody with BRID <b>@Brid</b> is in the upload with data as of @_upload.DataDate.ToString(HeadcountColumn.DateFormat).
+            </MudAlert>
+        }
+        else
+        {
+            <MudPaper Elevation="2" Class="pa-6 rounded-lg">
+                <div class="d-flex align-center flex-wrap gap-2 mb-4">
+                    <MudIcon Icon="@Icons.Material.Filled.Badge" Color="Color.Primary" />
+                    <MudText Typo="Typo.h6">Headcount details</MudText>
+                    <MudSpacer />
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                        Workday data as of <b>@_upload.DataDate.ToString(HeadcountColumn.DateFormat)</b>
+                    </MudText>
+                    @if (!_isLatest)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined" Class="ma-0">Older upload</MudChip>
+                    }
+                </div>
+
+                @foreach (var section in HeadcountDetailSections.All)
+                {
+                    <MudText Typo="Typo.subtitle1" Class="@(section == HeadcountDetailSections.All[0] ? "font-weight-bold mb-3" : "font-weight-bold mt-6 mb-3")">
+                        @section.Title
+                    </MudText>
+                    <MudGrid Spacing="3">
+                        @foreach (var column in section.Columns)
+                        {
+                            var value = column.Format(_row);
+                            if (HeadcountDetailSections.Wide.Contains(column))
+                            {
+                                <MudItem xs="12">
+                                    <MudTextField T="string" Value="@value" Label="@column.Header"
+                                                  ReadOnly="true" Variant="Variant.Outlined"
+                                                  ShrinkLabel="true" Placeholder="—"
+                                                  Lines="1" MaxLines="12" Sizing="InputSizing.Auto" />
+                                </MudItem>
+                            }
+                            else
+                            {
+                                <MudItem xs="12" sm="6" lg="4">
+                                    <MudTextField T="string" Value="@value" Label="@column.Header"
+                                                  ReadOnly="true" Variant="Variant.Outlined"
+                                                  ShrinkLabel="true" Placeholder="—"
+                                                  title="@(value is { Length: > 30 } ? value : null)" />
+                                </MudItem>
+                            }
+                        }
+                    </MudGrid>
+                }
+            </MudPaper>
+
+            <div class="d-flex align-center flex-wrap gap-2 mt-6 mb-1 px-1">
+                <MudIcon Icon="@Icons.Material.Filled.Link" Color="Color.Primary" />
+                <MudText Typo="Typo.h6">Resources</MudText>
+                @if (_person is not null)
+                {
+                    <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                        BRID @_row.Brid matches <b>@_person.EmployeeName</b>
+                    </MudText>
+                    @if (!_person.IsActive)
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Class="ma-0">Inactive</MudChip>
+                    }
+                }
+            </div>
+
+            @if (_hrLoading)
+            {
+                <MudProgressLinear Indeterminate Color="Color.Primary" Class="mt-2" />
+            }
+            else if (_hrFailed)
+            {
+                <MudAlert Severity="Severity.Error" Class="mt-2">Teams, vacations and skills could not be loaded.</MudAlert>
+            }
+            else if (_person is null)
+            {
+                <MudAlert Severity="Severity.Info" Class="mt-2">
+                    Nobody in Resources has BRID <b>@_row.Brid</b>, so there are no teams, vacations or skills to show.
+                </MudAlert>
+            }
+            else
+            {
+                <div class="mt-3">
+                    <HumanResourceMembershipPanel Memberships="_memberships" />
+                </div>
+                <div class="mt-4">
+                    <HumanResourceVacationsPanel HumanResourceId="_person.Id" Memberships="_memberships" />
+                </div>
+                <div class="mt-4">
+                    <HumanResourceSkillsPanel HumanResourceId="_person.Id"
+                                              AllSkills="_allSkills"
+                                              Assignments="_assignments"
+                                              ReadOnly="true" />
+                </div>
+            }
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    [SupplyParameterFromQuery(Name = "upload")]
+    public int? UploadId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "brid")]
+    public string? Brid { get; set; }
+
+    private HeadcountUpload? _upload;
+    private HeadcountRow? _row;
+    private bool _isLatest;
+    private bool _loading = true;
+    private bool _loadFailed;
+    private string? _loadedKey;
+
+    private HumanResource? _person;
+    private List<HrMembership> _memberships = [];
+    private List<Skill> _allSkills = [];
+    private List<HumanResourceSkill> _assignments = [];
+    private bool _hrLoading;
+    private bool _hrFailed;
+
+    private string BackUrl => HrReportingRoutes.HeadcountUrl(UploadId);
+
+    private string DisplayName => string.IsNullOrWhiteSpace(_row?.EmployeeName) ? _row?.Brid ?? string.Empty : _row.EmployeeName;
+
+    private bool IsOperational =>
+        string.Equals(_row?.OperationalStatus?.Trim(), HeadcountRules.Operational, StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnInitialized() => ListState.ReturnPending = true;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = $"{UploadId}|{Brid}";
+        if (key == _loadedKey)
+        {
+            return;
+        }
+
+        _loadedKey = key;
+        _loading = true;
+        _loadFailed = false;
+        _upload = null;
+        _row = null;
+        _person = null;
+
+        try
+        {
+            var uploads = await Snapshots.GetUploadsAsync();
+            _upload = UploadId is int id ? uploads.FirstOrDefault(u => u.Id == id) : uploads.FirstOrDefault();
+            _isLatest = _upload is not null && uploads[0].Id == _upload.Id;
+
+            var brid = Brid?.Trim();
+            if (_upload is not null && !string.IsNullOrEmpty(brid))
+            {
+                var rows = await Snapshots.GetRowsAsync(_upload.Id);
+                _row = rows.FirstOrDefault(r => string.Equals(r.Brid, brid, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load headcount person {Brid} from upload {UploadId}", Brid, UploadId);
+            _loadFailed = true;
+        }
+        finally
+        {
+            _loading = false;
+        }
+
+        if (_row is not null)
+        {
+            await LoadResourcesAsync(_row.Brid);
+        }
+    }
+
+    private async Task LoadResourcesAsync(string brid)
+    {
+        _hrLoading = true;
+        _hrFailed = false;
+        StateHasChanged();
+
+        try
+        {
+            _person = await HrService.GetByEmployeeNumberAsync(brid);
+            if (_person is not null)
+            {
+                var memberships = HrService.GetMembershipsAsync(_person.Id);
+                var skills = SkillService.GetAllAsync();
+                _memberships = await memberships;
+                _allSkills = await skills;
+                _assignments = _person.HumanResourceSkills.ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the Resources person with BRID {Brid}", brid);
+            _person = null;
+            _hrFailed = true;
+        }
+        finally
+        {
+            _hrLoading = false;
+        }
+    }
+}

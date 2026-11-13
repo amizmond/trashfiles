@@ -1,0 +1,41 @@
+@namespace Estimation.Components.Shared
+@using Estimation.Services.Shared
+@inject IProfilePhotoUrls PhotoUrls
+
+<MudAvatar Color="Color" Size="Size" Class="@Class" Style="@Style" title="@Name">
+    @(Initials ?? InitialsOf(Name, InitialCount))
+    @if (PhotoUrls.For(EmployeeNumber) is { } photoUrl)
+    {
+        <img @key="photoUrl" src="@photoUrl" alt="" loading="lazy" decoding="async"
+             class="person-avatar-photo" onerror="this.style.display='none'" />
+    }
+</MudAvatar>
+
+@code {
+    private static readonly char[] NameSeparators = [' ', '\t', '.', ','];
+
+    [Parameter, EditorRequired] public string? Name { get; set; }
+
+    [Parameter] public string? EmployeeNumber { get; set; }
+
+    [Parameter] public Size Size { get; set; } = Size.Medium;
+
+    [Parameter] public Color Color { get; set; } = Color.Primary;
+
+    [Parameter] public int InitialCount { get; set; } = 2;
+
+    [Parameter] public string? Initials { get; set; }
+
+    [Parameter] public string? Class { get; set; }
+
+    [Parameter] public string? Style { get; set; }
+
+    public static string InitialsOf(string? name, int count)
+    {
+        var initials = string.Concat((name ?? string.Empty)
+            .Split(NameSeparators, StringSplitOptions.RemoveEmptyEntries)
+            .Take(Math.Max(count, 1))
+            .Select(part => char.ToUpperInvariant(part[0])));
+        return initials.Length == 0 ? "?" : initials;
+    }
+}

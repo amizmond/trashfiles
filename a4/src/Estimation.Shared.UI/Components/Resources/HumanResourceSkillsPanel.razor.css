@@ -1,0 +1,95 @@
+.hrs-empty {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px dashed var(--mud-palette-divider);
+    border-radius: 8px;
+    color: var(--mud-palette-text-secondary);
+    font-size: 0.875rem;
+}
+
+.hrs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+}
+
+.hrs-card {
+    border: 1px solid var(--mud-palette-divider);
+    border-left: 3px solid var(--mud-palette-primary);
+    border-radius: 8px;
+    padding: 8px 6px 10px 12px;
+    background: var(--mud-palette-surface);
+    transition: opacity 0.15s ease;
+}
+
+.hrs-card-busy {
+    opacity: 0.6;
+}
+
+.hrs-card-new {
+    animation: hrs-flash 1.6s ease-out;
+}
+
+@keyframes hrs-flash {
+    from {
+        background: rgba(var(--mud-palette-primary-rgb), 0.18);
+    }
+
+    to {
+        background: var(--mud-palette-surface);
+    }
+}
+
+.hrs-card-head {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-top: 4px;
+}
+
+.hrs-card-name {
+    font-weight: 600;
+    font-size: 0.9375rem;
+}
+
+.hrs-card-desc {
+    font-size: 0.75rem;
+    color: var(--mud-palette-text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.hrs-levels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+    padding-right: 6px;
+}
+
+.hrs-card-note {
+    margin-top: 6px;
+    font-size: 0.75rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+.hrs-add-group + .hrs-add-group {
+    margin-top: 12px;
+}
+
+.hrs-add-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 0.8125rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hrs-card-new {
+        animation: none;
+    }
+}

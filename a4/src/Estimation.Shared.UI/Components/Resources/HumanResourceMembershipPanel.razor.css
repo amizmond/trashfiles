@@ -1,0 +1,31 @@
+.hrm-summary {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: 16px;
+    row-gap: 10px;
+    align-items: center;
+}
+
+.hrm-summary-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--mud-palette-text-secondary);
+    font-size: 0.875rem;
+}
+
+.hrm-art {
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+@media (max-width: 599.98px) {
+    .hrm-summary {
+        grid-template-columns: 1fr;
+        row-gap: 4px;
+    }
+
+    .hrm-summary-label {
+        margin-top: 6px;
+    }
+}
