@@ -1,0 +1,48 @@
+@if (CanEdit)
+{
+    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Default"
+             title="@Tooltip" OnClose="@(_ => OnRemove.InvokeAsync(Hidden.Exclusion))">
+        @Text
+    </MudChip>
+}
+else
+{
+    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Default" title="@Tooltip">
+        @Text
+    </MudChip>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public TeamsAnalysisHidden Hidden { get; set; } = null!;
+
+    [Parameter]
+    public bool CanEdit { get; set; }
+
+    [Parameter]
+    public bool ShowDomain { get; set; }
+
+    [Parameter]
+    public EventCallback<TeamsAnalysisExclusion> OnRemove { get; set; }
+
+    private string Value => Hidden.Exclusion.Value.Length == 0 ? HeadcountMetrics.Blank : Hidden.Exclusion.Value;
+
+    private string Text
+    {
+        get
+        {
+            var text = $"{Hidden.Exclusion.Kind}: {Value}";
+            if (ShowDomain)
+            {
+                text += $" in {HeadcountMetrics.Display(Hidden.Exclusion.Domain)}";
+            }
+
+            return Hidden.People > 0 ? $"{text} ({Hidden.People:N0})" : text;
+        }
+    }
+
+    private string Tooltip =>
+        $"Hidden by {Hidden.Exclusion.CreatedBy ?? "unknown"}"
+        + (Hidden.People > 0 ? $"; {Hidden.People:N0} people in the current view" : string.Empty)
+        + (CanEdit ? ". Click × to show it again." : ".");
+}

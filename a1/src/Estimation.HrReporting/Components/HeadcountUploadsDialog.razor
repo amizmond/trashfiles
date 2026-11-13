@@ -1,0 +1,168 @@
+@inject IHeadcountSnapshotService Snapshots
+@inject IUserTimeZoneService UserTime
+@inject IDialogService DialogService
+@inject IBrowserDownloadService Downloads
+@inject ISnackbar Snackbar
+
+@using Serilog
+
+<MudDialog>
+    <DialogContent>
+        @if (_busy)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+        }
+        <MudTable T="HeadcountUpload" Items="_uploads" Dense Hover Striped Bordered="true" Elevation="0"
+                  HorizontalScrollbar RowsPerPage="10">
+            <HeaderContent>
+                <MudTh>Data as of</MudTh>
+                <MudTh Style="text-align:right">People</MudTh>
+                <MudTh Style="text-align:right">HC</MudTh>
+                <MudTh Style="text-align:right">FTE</MudTh>
+                <MudTh>Uploaded</MudTh>
+                <MudTh>By</MudTh>
+                <MudTh>File</MudTh>
+                <MudTh>Comment</MudTh>
+                <MudTh Style="text-align:right">Actions</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd Style="white-space:nowrap">
+                    @context.DataDate.ToString(HeadcountColumn.DateFormat)
+                    @if (context.Id == CurrentId)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" Class="ml-1">shown</MudChip>
+                    }
+                </MudTd>
+                <MudTd Style="text-align:right">@context.RowCount.ToString("N0")</MudTd>
+                <MudTd Style="text-align:right">@context.TotalHc.ToString("#,0.##")</MudTd>
+                <MudTd Style="text-align:right">@context.TotalFte.ToString("#,0.##")</MudTd>
+                <MudTd Style="white-space:nowrap">@UserTime.Format(context.UploadedAt)</MudTd>
+                <MudTd>@context.UploadedBy</MudTd>
+                <MudTd Style="max-width:240px; overflow-wrap:anywhere">@context.FileName</MudTd>
+                <MudTd Style="max-width:280px; white-space:pre-wrap">@context.Comment</MudTd>
+                <MudTd Style="text-align:right; white-space:nowrap">
+                    <MudIconButton Icon="@Icons.Material.Filled.Visibility" Size="Size.Small" Color="Color.Primary"
+                                   title="Show this upload on the Headcount page"
+                                   OnClick="@(() => View(context))" />
+                    @if (Older(context) is { } older)
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.CompareArrows" Size="Size.Small" Color="Color.Primary"
+                                       title="@($"Compare with the upload before it ({older.DataDate.ToString(HeadcountColumn.DateFormat)})")"
+                                       OnClick="@(() => Compare(older, context))" />
+                    }
+                    <MudIconButton Icon="@Icons.Material.Filled.FileDownload" Size="Size.Small" Color="Color.Primary"
+                                   title="Export every person in this upload"
+                                   Disabled="_busy"
+                                   OnClick="@(() => ExportAsync(context))" />
+                    @if (CanDelete)
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.DeleteForever" Size="Size.Small" Color="Color.Error"
+                                       title="Delete this upload"
+                                       Disabled="_busy"
+                                       OnClick="@(() => DeleteAsync(context))" />
+                    }
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText Class="pa-4 mud-text-secondary">No uploads yet.</MudText>
+            </NoRecordsContent>
+            <PagerContent>
+                <MudTablePager PageSizeOptions="new[] { 10, 25, 50 }" />
+            </PagerContent>
+        </MudTable>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = null!;
+
+    [Parameter, EditorRequired]
+    public List<HeadcountUpload> Uploads { get; set; } = [];
+
+    [Parameter]
+    public int? CurrentId { get; set; }
+
+    [Parameter]
+    public bool CanDelete { get; set; }
+
+    private List<HeadcountUpload> _uploads = [];
+    private bool _deleted;
+    private bool _busy;
+
+    protected override void OnInitialized() => _uploads = Uploads.ToList();
+
+    private HeadcountUpload? Older(HeadcountUpload upload)
+    {
+        var index = _uploads.IndexOf(upload);
+        return index >= 0 && index + 1 < _uploads.Count ? _uploads[index + 1] : null;
+    }
+
+    private void View(HeadcountUpload upload) =>
+        MudDialog.Close(DialogResult.Ok(new Outcome(_deleted, upload.Id, null)));
+
+    private void Compare(HeadcountUpload older, HeadcountUpload newer) =>
+        MudDialog.Close(DialogResult.Ok(new Outcome(_deleted, null, HrReportingRoutes.CompareUrl(older.Id, newer.Id))));
+
+    private void Close() => MudDialog.Close(DialogResult.Ok(new Outcome(_deleted, null, null)));
+
+    private async Task ExportAsync(HeadcountUpload upload)
+    {
+        _busy = true;
+        try
+        {
+            var rows = await Snapshots.GetRowsAsync(upload.Id);
+            var sorted = HeadcountQuery.Sort(rows, null, false).ToList();
+            var bytes = await Task.Run(() => HeadcountExcelExport.BuildHeadcount(sorted));
+            await Downloads.DownloadAsync(bytes, $"Headcount_{upload.DataDate.ToString(HeadcountColumn.DateFormat)}.xlsx");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Export of headcount upload {UploadId} failed", upload.Id);
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync(HeadcountUpload upload)
+    {
+        var confirmed = await DialogService.ShowMessageBoxAsync(
+            "Delete upload",
+            $"Delete the upload with data as of {upload.DataDate.ToString(HeadcountColumn.DateFormat)} "
+            + $"({upload.RowCount:N0} people, uploaded {UserTime.Format(upload.UploadedAt)})? "
+            + "Its snapshot is removed for good and can no longer be viewed or compared.",
+            yesText: "Delete", cancelText: "Cancel");
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var removed = await Snapshots.DeleteAsync(upload.Id);
+            _uploads.Remove(upload);
+            _deleted = true;
+            Snackbar.Add(removed ? "Upload deleted." : "That upload was already deleted.",
+                removed ? Severity.Success : Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Delete of headcount upload {UploadId} failed", upload.Id);
+            Snackbar.Add("The upload could not be deleted.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    public sealed record Outcome(bool Deleted, int? ViewId, string? NavigateTo);
+}

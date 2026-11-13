@@ -1,0 +1,154 @@
+<div class="d-flex flex-column gap-3 pa-4">
+    <MudTextField T="string"
+                  Value="@Filter.Search"
+                  ValueChanged="OnSearchChanged"
+                  Label="Search"
+                  Placeholder="Name, BRID, email or position ID"
+                  Adornment="Adornment.Start"
+                  AdornmentIcon="@Icons.Material.Filled.Search"
+                  Clearable
+                  Immediate
+                  DebounceInterval="400"
+                  Variant="Variant.Outlined" />
+
+    <MudExpansionPanels MultiExpansion="true" Elevation="0" Outlined="true">
+        @foreach (var group in HeadcountColumns.FilterGroupOrder)
+        {
+            var columns = HeadcountColumns.Filterable.Where(c => c.FilterGroup == group).ToList();
+            var active = columns.Count(c => Filter.Columns.TryGetValue(c, out var f) && f.IsActive);
+            <MudExpansionPanel @key="group" Expanded="@IsExpanded(group)" ExpandedChanged="@((bool open) => SetExpanded(group, open))">
+                <TitleContent>
+                    <div class="d-flex align-center gap-2">
+                        <MudText Typo="Typo.subtitle2">@HeadcountColumns.GroupTitle(group)</MudText>
+                        @if (active > 0)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Filled">@active</MudChip>
+                        }
+                    </div>
+                </TitleContent>
+                <ChildContent>
+                    <div class="d-flex flex-column gap-3">
+                        @foreach (var column in columns)
+                        {
+                            var current = column;
+                            var options = OptionsFor(current);
+                            <div @key="current.Key" class="d-flex align-end gap-2">
+                                <SearchableDropdown T="string"
+                                                    Items="options"
+                                                    Values="SelectedFor(current)"
+                                                    ValuesChanged="@((IReadOnlyCollection<string> values) => OnValuesChanged(current, values))"
+                                                    MultiSelect="true"
+                                                    ShowSearch="@(options.Count > 8)"
+                                                    Label="@current.Header"
+                                                    NoItemsText="No values"
+                                                    ItemTemplate="@(value => CountTemplate(current, value))"
+                                                    Style="flex:1" />
+                                <MudTooltip Text="@($"Not: people with no {current.Header}, or exclude the selected values")">
+                                    <MudCheckBox T="bool"
+                                                 Value="@IsNot(current)"
+                                                 ValueChanged="@((bool value) => OnNotChanged(current, value))"
+                                                 Label="Not"
+                                                 Dense
+                                                 Color="Color.Secondary" />
+                                </MudTooltip>
+                            </div>
+                        }
+                    </div>
+                </ChildContent>
+            </MudExpansionPanel>
+        }
+    </MudExpansionPanels>
+
+    <MudButton Variant="Variant.Outlined" Color="Color.Secondary"
+               StartIcon="@Icons.Material.Filled.ClearAll"
+               FullWidth
+               Disabled="@(Filter.ActiveCount == 0)"
+               OnClick="ClearAsync">
+        Clear filters
+    </MudButton>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public HeadcountFilter Filter { get; set; } = null!;
+
+    [Parameter]
+    public IReadOnlyDictionary<HeadcountColumn, Dictionary<string, int>>? Facets { get; set; }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    private readonly Dictionary<HeadcountFilterGroup, bool> _expanded = new();
+    private readonly Dictionary<HeadcountColumn, List<string>> _options = new();
+    private IReadOnlyDictionary<HeadcountColumn, Dictionary<string, int>>? _optionsSource;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_optionsSource, Facets))
+        {
+            return;
+        }
+
+        _optionsSource = Facets;
+        _options.Clear();
+        if (Facets is null)
+        {
+            return;
+        }
+
+        foreach (var (column, counts) in Facets)
+        {
+            _options[column] = HeadcountQuery.OrderedValues(column, counts.Keys);
+        }
+    }
+
+    private bool IsExpanded(HeadcountFilterGroup group) =>
+        _expanded.TryGetValue(group, out var open)
+            ? open
+            : group == HeadcountFilterGroup.Agile
+              || HeadcountColumns.Filterable.Any(c => c.FilterGroup == group && Filter.Columns.TryGetValue(c, out var f) && f.IsActive);
+
+    private void SetExpanded(HeadcountFilterGroup group, bool open) => _expanded[group] = open;
+
+    private List<string> OptionsFor(HeadcountColumn column) =>
+        _options.TryGetValue(column, out var options) ? options : [];
+
+    private IReadOnlyCollection<string> SelectedFor(HeadcountColumn column) =>
+        Filter.Columns.TryGetValue(column, out var filter) ? filter.Values : [];
+
+    private bool IsNot(HeadcountColumn column) =>
+        Filter.Columns.TryGetValue(column, out var filter) && filter.Not;
+
+    private int CountOf(HeadcountColumn column, string value) =>
+        Facets is not null && Facets.TryGetValue(column, out var counts) ? counts.GetValueOrDefault(value) : 0;
+
+    private RenderFragment CountTemplate(HeadcountColumn column, string value) =>
+        @<span class="d-flex flex-grow-1 justify-space-between gap-3">
+            <span>@value</span>
+            <span class="mud-text-secondary">@CountOf(column, value).ToString("N0")</span>
+        </span>;
+
+    private async Task OnSearchChanged(string? value)
+    {
+        Filter.Search = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task OnValuesChanged(HeadcountColumn column, IReadOnlyCollection<string> values)
+    {
+        Filter.For(column).Values = values.ToList();
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task OnNotChanged(HeadcountColumn column, bool value)
+    {
+        Filter.For(column).Not = value;
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task ClearAsync()
+    {
+        Filter.Clear();
+        await OnChanged.InvokeAsync();
+    }
+}

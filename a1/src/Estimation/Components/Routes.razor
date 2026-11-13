@@ -1,0 +1,7 @@
+﻿<Router AppAssembly="typeof(Program).Assembly" AdditionalAssemblies="new[] { typeof(Estimation.ArtPlanning.ArtPlanningRoutes).Assembly, typeof(Estimation.HrReporting.HrReportingRoutes).Assembly }" NotFoundPage="typeof(PageNotFound)">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>
+<UserActivityReporter />

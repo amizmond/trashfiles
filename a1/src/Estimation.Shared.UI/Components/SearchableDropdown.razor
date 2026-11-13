@@ -1,0 +1,597 @@
+@namespace Estimation.Components.Shared
+@typeparam T
+
+@if (MultiSelect)
+{
+    <div class="searchable-dropdown @Class" style="@Style">
+        <MudTextField @ref="_anchorField"
+                      Value="@SelectedValuesText"
+                      T="string"
+                      Label="@Label"
+                      Placeholder="@Placeholder"
+                      HelperText="@HelperText"
+                      Variant="@Variant"
+                      Margin="@Margin"
+                      ReadOnly="true"
+                      Disabled="@Disabled"
+                      Required="@Required"
+                      RequiredError="@RequiredError"
+                      Adornment="Adornment.End"
+                      AdornmentIcon="@DropdownIcon"
+                      OnAdornmentClick="ToggleOpen"
+                      Style="cursor: pointer;"
+                      @onclick="ToggleOpen" />
+
+        <MudPopover Open="@_isOpen"
+                    AnchorOrigin="Origin.BottomLeft"
+                    TransformOrigin="Origin.TopLeft"
+                    Paper="true"
+                    Class="searchable-dropdown-popover d-flex flex-column"
+                    Style="@PopoverStyle">
+            @if (ShowSearch)
+            {
+                <div class="pa-2">
+                    <MudTextField @bind-Value="_searchText"
+                                  Placeholder="@SearchPlaceholder"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Filled.Search"
+                                  IconSize="Size.Small"
+                                  Margin="Margin.Dense"
+                                  Variant="Variant.Outlined"
+                                  Immediate="true"
+                                  Clearable="true"
+                                  OnKeyDown="HandleSearchKeyDown"
+                                  AutoFocus="true" />
+                </div>
+            }
+
+            <div class="flex-grow-1 overflow-auto" style="max-height: 320px;">
+                @{
+                    var rows = OrderedFilteredItems(out var pinnedCount);
+                }
+                @if (Clearable && Values is { Count: > 0 })
+                {
+                    <div class="searchable-dropdown-row d-flex align-center gap-2 px-4 py-2"
+                         style="cursor: pointer;"
+                         @onclick="ClearAllSelection">
+                        <MudIcon Icon="@Icons.Material.Filled.Clear"
+                                 Color="Color.Default"
+                                 Size="Size.Small" />
+                        <span class="mud-text-secondary">@ClearText</span>
+                    </div>
+                    <MudDivider />
+                }
+
+                @if (SelectAll && rows.Count > 0)
+                {
+                    var allSelected = AreAllFilteredSelected();
+                    var someSelected = AreSomeFilteredSelected();
+                    <div class="searchable-dropdown-row d-flex align-center gap-2 px-4 py-2"
+                         style="cursor: pointer;"
+                         @onclick="ToggleSelectAll">
+                        <MudIcon Icon="@SelectAllIcon(allSelected, someSelected)"
+                                 Color="@((allSelected || someSelected) ? Color.Primary : Color.Default)"
+                                 Size="Size.Small" />
+                        <span class="font-weight-medium">@SelectAllText</span>
+                    </div>
+                    <MudDivider />
+                }
+
+                @for (var i = 0; i < rows.Count; i++)
+                {
+                    if (i > 0 && i == pinnedCount)
+                    {
+                        <MudDivider />
+                    }
+
+                    var current = rows[i];
+                    var selected = IsSelected(current);
+                    <div class="searchable-dropdown-row d-flex align-center gap-2 px-4 py-2"
+                         style="@RowStyle(selected)"
+                         @onclick="@(() => ToggleItem(current))">
+                        <MudIcon Icon="@(selected ? Icons.Material.Filled.CheckBox : Icons.Material.Filled.CheckBoxOutlineBlank)"
+                                 Color="@(selected ? Color.Primary : Color.Default)"
+                                 Size="Size.Small" />
+                        @if (ItemTemplate is not null)
+                        {
+                            @ItemTemplate(current)
+                        }
+                        else
+                        {
+                            <span>@ItemToString(current)</span>
+                        }
+                    </div>
+                }
+
+                @if (rows.Count == 0)
+                {
+                    <div class="px-4 py-3 mud-text-secondary">@NoItemsText</div>
+                }
+            </div>
+        </MudPopover>
+
+        <MudOverlay Visible="@_isOpen" OnClick="Close" LockScroll="false" DarkBackground="false" />
+    </div>
+}
+else
+{
+    <div class="searchable-dropdown @Class" style="@Style">
+        <MudTextField @ref="_anchorField"
+                      Value="@SelectedValueText"
+                      T="string"
+                      Label="@Label"
+                      Placeholder="@Placeholder"
+                      HelperText="@HelperText"
+                      Variant="@Variant"
+                      Margin="@Margin"
+                      ReadOnly="true"
+                      Disabled="@Disabled"
+                      Required="@Required"
+                      RequiredError="@RequiredError"
+                      Adornment="Adornment.End"
+                      AdornmentIcon="@DropdownIcon"
+                      OnAdornmentClick="ToggleOpen"
+                      Style="cursor: pointer;"
+                      @onclick="ToggleOpen" />
+
+        <MudPopover Open="@_isOpen"
+                    AnchorOrigin="Origin.BottomLeft"
+                    TransformOrigin="Origin.TopLeft"
+                    Paper="true"
+                    Class="searchable-dropdown-popover d-flex flex-column"
+                    Style="@PopoverStyle">
+            @if (ShowSearch)
+            {
+                <div class="pa-2">
+                    <MudTextField @bind-Value="_searchText"
+                                  Placeholder="@SearchPlaceholder"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Filled.Search"
+                                  IconSize="Size.Small"
+                                  Margin="Margin.Dense"
+                                  Variant="Variant.Outlined"
+                                  Immediate="true"
+                                  Clearable="true"
+                                  AutoFocus="true" />
+                </div>
+            }
+
+            <div class="flex-grow-1 overflow-auto" style="max-height: 320px;">
+                @{
+                    var rows = OrderedFilteredItems(out var pinnedCount);
+                }
+                @if (Clearable && Value is not null)
+                {
+                    <div class="searchable-dropdown-row d-flex align-center gap-2 px-4 py-2"
+                         style="cursor: pointer;"
+                         @onclick="ClearSelection">
+                        <MudIcon Icon="@Icons.Material.Filled.Clear"
+                                 Color="Color.Default"
+                                 Size="Size.Small" />
+                        <span class="mud-text-secondary">@ClearText</span>
+                    </div>
+                    <MudDivider />
+                }
+
+                @for (var i = 0; i < rows.Count; i++)
+                {
+                    if (i > 0 && i == pinnedCount)
+                    {
+                        <MudDivider />
+                    }
+
+                    var current = rows[i];
+                    var selected = IsSingleSelected(current);
+                    <div class="searchable-dropdown-row d-flex align-center gap-2 px-4 py-2"
+                         style="@RowStyle(selected)"
+                         @onclick="@(() => SelectItem(current))">
+                        <MudIcon Icon="@(selected ? Icons.Material.Filled.RadioButtonChecked : Icons.Material.Filled.RadioButtonUnchecked)"
+                                 Color="@(selected ? Color.Primary : Color.Default)"
+                                 Size="Size.Small" />
+                        @if (ItemTemplate is not null)
+                        {
+                            @ItemTemplate(current)
+                        }
+                        else
+                        {
+                            <span>@ItemToString(current)</span>
+                        }
+                    </div>
+                }
+
+                @if (rows.Count == 0)
+                {
+                    <div class="px-4 py-3 mud-text-secondary">@NoItemsText</div>
+                }
+            </div>
+        </MudPopover>
+
+        <MudOverlay Visible="@_isOpen" OnClick="Close" LockScroll="false" DarkBackground="false" />
+    </div>
+}
+
+@code {
+    private MudTextField<string>? _anchorField;
+    private bool _isOpen;
+    private string? _searchText;
+    private readonly HashSet<T> _pinned = new();
+
+    [Parameter, EditorRequired]
+    public IEnumerable<T> Items { get; set; } = Enumerable.Empty<T>();
+
+    [Parameter]
+    public bool MultiSelect { get; set; }
+
+    [Parameter]
+    public T? Value { get; set; }
+
+    [Parameter]
+    public EventCallback<T?> ValueChanged { get; set; }
+
+    [Parameter]
+    public IReadOnlyCollection<T>? Values { get; set; }
+
+    [Parameter]
+    public EventCallback<IReadOnlyCollection<T>> ValuesChanged { get; set; }
+
+    [Parameter]
+    public Func<T?, string>? ToStringFunc { get; set; }
+
+    [Parameter]
+    public Func<T?, string>? SelectedTextFunc { get; set; }
+
+    [Parameter]
+    public RenderFragment<T>? ItemTemplate { get; set; }
+
+    [Parameter]
+    public string? Label { get; set; }
+
+    [Parameter]
+    public string? Placeholder { get; set; }
+
+    [Parameter]
+    public string? HelperText { get; set; }
+
+    [Parameter]
+    public bool ShowSearch { get; set; } = true;
+
+    [Parameter]
+    public bool SelectedOnTop { get; set; } = true;
+
+    [Parameter]
+    public bool HighlightSelected { get; set; }
+
+    [Parameter]
+    public string SearchPlaceholder { get; set; } = "Search...";
+
+    [Parameter]
+    public string NoItemsText { get; set; } = "No items found";
+
+    [Parameter]
+    public string? Class { get; set; }
+
+    [Parameter]
+    public string? Style { get; set; }
+
+    [Parameter]
+    public string PopoverStyle { get; set; } = "min-width: 280px; max-width: 480px;";
+
+    [Parameter]
+    public Variant Variant { get; set; } = Variant.Outlined;
+
+    [Parameter]
+    public Margin Margin { get; set; } = Margin.None;
+
+    [Parameter]
+    public bool Clearable { get; set; } = true;
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    [Parameter]
+    public bool ReadOnly { get; set; }
+
+    [Parameter]
+    public bool Required { get; set; }
+
+    [Parameter]
+    public string RequiredError { get; set; } = "Required";
+
+    [Parameter]
+    public bool SelectAll { get; set; } = false;
+
+    [Parameter]
+    public string SelectAllText { get; set; } = "Select all";
+
+    [Parameter]
+    public string ClearText { get; set; } = "Clear selection";
+
+    [Parameter]
+    public int MinCharacters { get; set; }
+
+    [Parameter]
+    public int DebounceInterval { get; set; } = 200;
+
+    private string RowStyle(bool selected) => HighlightSelected && selected
+        ? "cursor: pointer; background-color: rgba(var(--mud-palette-primary-rgb), 0.12);"
+        : "cursor: pointer;";
+
+    private string DropdownIcon => _isOpen
+        ? Icons.Material.Filled.ArrowDropUp
+        : Icons.Material.Filled.ArrowDropDown;
+
+    private static string SelectAllIcon(bool allSelected, bool someSelected)
+    {
+        if (allSelected)
+        {
+            return Icons.Material.Filled.CheckBox;
+        }
+
+        if (someSelected)
+        {
+            return Icons.Material.Filled.IndeterminateCheckBox;
+        }
+
+        return Icons.Material.Filled.CheckBoxOutlineBlank;
+    }
+
+    private string SelectedValuesText
+    {
+        get
+        {
+            if (Values is null)
+            {
+                return string.Empty;
+            }
+
+            return string.Join(", ", Values.Select(SelectedItemToString));
+        }
+    }
+
+    private string SelectedValueText => SelectedItemToString(Value);
+
+    private string SelectedItemToString(T? item)
+    {
+        if (item is null)
+        {
+            return string.Empty;
+        }
+
+        return SelectedTextFunc is not null ? SelectedTextFunc(item) : ItemToString(item);
+    }
+
+    private string ItemToString(T? item)
+    {
+        if (item is null)
+        {
+            return string.Empty;
+        }
+
+        if (ToStringFunc is not null)
+        {
+            return ToStringFunc(item);
+        }
+
+        return item.ToString() ?? string.Empty;
+    }
+
+    private IEnumerable<T> FilteredItems
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_searchText))
+            {
+                return Items;
+            }
+
+            return Items.Where(i => ItemToString(i)
+                .Contains(_searchText, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private List<T> OrderedFilteredItems(out int pinnedCount)
+    {
+        var filtered = FilteredItems.ToList();
+        pinnedCount = 0;
+
+        if (!SelectedOnTop || _pinned.Count == 0)
+        {
+            return filtered;
+        }
+
+        var ordered = filtered.Where(_pinned.Contains).ToList();
+        pinnedCount = ordered.Count;
+        ordered.AddRange(filtered.Where(i => !_pinned.Contains(i)));
+        return ordered;
+    }
+
+    private void PinSelection()
+    {
+        _pinned.Clear();
+
+        if (MultiSelect)
+        {
+            if (Values is not null)
+            {
+                _pinned.UnionWith(Values);
+            }
+        }
+        else if (Value is not null)
+        {
+            _pinned.Add(Value);
+        }
+    }
+
+    private bool IsSingleSelected(T item)
+    {
+        if (Value is null)
+        {
+            return false;
+        }
+
+        return EqualityComparer<T>.Default.Equals(Value, item);
+    }
+
+    private async Task SelectItem(T item)
+    {
+        Value = item;
+        await ValueChanged.InvokeAsync(item);
+        Close();
+    }
+
+    private async Task ClearSelection()
+    {
+        Value = default;
+        await ValueChanged.InvokeAsync(default);
+        Close();
+    }
+
+    private void ToggleOpen()
+    {
+        if (Disabled || ReadOnly)
+        {
+            return;
+        }
+
+        _isOpen = !_isOpen;
+
+        if (_isOpen)
+        {
+            PinSelection();
+        }
+        else
+        {
+            _searchText = string.Empty;
+        }
+    }
+
+    private void Close()
+    {
+        _isOpen = false;
+        _searchText = string.Empty;
+    }
+
+    private bool IsSelected(T item)
+    {
+        if (Values is null)
+        {
+            return false;
+        }
+
+        return Values.Contains(item);
+    }
+
+    private async Task ToggleItem(T item)
+    {
+        var current = Values?.ToList() ?? new List<T>();
+
+        if (current.Contains(item))
+        {
+            current.Remove(item);
+        }
+        else
+        {
+            current.Add(item);
+        }
+
+        Values = current;
+        await ValuesChanged.InvokeAsync(current);
+    }
+
+    private async Task ClearAllSelection()
+    {
+        Values = new List<T>();
+        await ValuesChanged.InvokeAsync(Values);
+    }
+
+    private bool AreAllFilteredSelected()
+    {
+        var filtered = FilteredItems.ToList();
+
+        if (filtered.Count == 0)
+        {
+            return false;
+        }
+
+        return filtered.All(IsSelected);
+    }
+
+    private bool AreSomeFilteredSelected()
+    {
+        var filtered = FilteredItems.ToList();
+
+        if (filtered.Count == 0)
+        {
+            return false;
+        }
+
+        var selectedCount = filtered.Count(IsSelected);
+
+        return selectedCount > 0 && selectedCount < filtered.Count;
+    }
+
+    private async Task ToggleSelectAll()
+    {
+        var filtered = FilteredItems.ToList();
+        var current = Values?.ToList() ?? new List<T>();
+
+        if (AreAllFilteredSelected())
+        {
+            foreach (var item in filtered)
+            {
+                current.Remove(item);
+            }
+        }
+        else
+        {
+            foreach (var item in filtered)
+            {
+                if (!current.Contains(item))
+                {
+                    current.Add(item);
+                }
+            }
+        }
+
+        Values = current;
+        await ValuesChanged.InvokeAsync(current);
+    }
+
+    private async Task HandleSearchKeyDown(KeyboardEventArgs args)
+    {
+        if (!MultiSelect)
+        {
+            return;
+        }
+
+        if (args.Key is not ("Enter" or "NumpadEnter"))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_searchText))
+        {
+            return;
+        }
+
+        await SelectAllFilteredAndClose();
+    }
+
+    private async Task SelectAllFilteredAndClose()
+    {
+        var filtered = FilteredItems.ToList();
+        var current = Values?.ToList() ?? new List<T>();
+
+        foreach (var item in filtered)
+        {
+            if (!current.Contains(item))
+            {
+                current.Add(item);
+            }
+        }
+
+        Values = current;
+        await ValuesChanged.InvokeAsync(current);
+        Close();
+    }
+}

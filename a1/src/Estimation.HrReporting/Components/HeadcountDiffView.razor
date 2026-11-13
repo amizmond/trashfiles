@@ -1,0 +1,385 @@
+@inject IBrowserDownloadService Downloads
+@inject ISnackbar Snackbar
+
+@using Serilog
+
+@if (_result is not null)
+{
+    @if (!_result.HasDifferences && RowsA.Count > 0)
+    {
+        <MudAlert Severity="Severity.Info" Dense Class="ma-2">
+            No differences in the compared fields: everyone is unchanged.
+        </MudAlert>
+    }
+
+    <div class="d-flex flex-wrap align-center gap-2 pa-2">
+        @foreach (var kind in KindOrder)
+        {
+            var current = kind;
+            <MudChip T="string" Size="Size.Small" Color="@KindColor(current)"
+                     Variant="@(IsKindShown(current) ? Variant.Filled : Variant.Outlined)"
+                     OnClick="@(() => ToggleKind(current))">
+                @KindTitle(current) @_result.Count(current).ToString("N0")
+            </MudChip>
+        }
+        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="ShowAll">Show all</MudButton>
+
+        <MudSpacer />
+
+        <SearchableDropdown T="HeadcountColumn"
+                            Items="HeadcountColumns.Comparable"
+                            Values="_ignored"
+                            ValuesChanged="OnIgnoredChanged"
+                            MultiSelect="true"
+                            Label="Ignored fields"
+                            HelperText="Not counted as a change"
+                            ToStringFunc="@(c => c?.Header ?? string.Empty)"
+                            Style="width:300px" />
+
+        @if (AllowExport)
+        {
+            <span title="Export the people shown: a Changes sheet with one line per changed field, plus Joiners and Leavers sheets">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="@(_exporting || _visible.Count == 0)"
+                           OnClick="ExportAsync">
+                    Export
+                </MudButton>
+            </span>
+        }
+    </div>
+
+    @if (_result.ChangesByColumn.Count > 0)
+    {
+        <div class="d-flex flex-wrap align-center gap-1 px-2 pb-2">
+            <MudText Typo="Typo.caption" Class="mud-text-secondary mr-1">Changed fields:</MudText>
+            @foreach (var (column, count) in _result.ChangesByColumn)
+            {
+                var current = column;
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning"
+                         Variant="@(_fields.Contains(current) ? Variant.Filled : Variant.Outlined)"
+                         title="@($"Show only people whose {current.Header} changed")"
+                         OnClick="@(() => ToggleField(current))">
+                    @current.Header @count.ToString("N0")
+                </MudChip>
+            }
+            @if (_fields.Count > 0)
+            {
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="ClearFields">Clear</MudButton>
+            }
+        </div>
+    }
+
+    <div class="d-flex flex-wrap align-center gap-2 px-2 pb-2">
+        <MudTextField T="string" Value="@_search" ValueChanged="OnSearchChanged"
+                      Placeholder="Search name or BRID"
+                      Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search"
+                      Clearable Immediate DebounceInterval="300"
+                      Variant="Variant.Outlined" Margin="Margin.Dense"
+                      Style="max-width:320px" />
+        <MudSpacer />
+        <MudText Typo="Typo.caption" Class="mud-text-secondary">
+            @_visible.Count.ToString("N0") of @_result.Rows.Count.ToString("N0") people shown
+        </MudText>
+    </div>
+
+    <MudDataGrid T="HeadcountDiffRow"
+                 Items="_visible"
+                 Dense="true"
+                 Hover="true"
+                 Striped="true"
+                 Bordered="true"
+                 Elevation="0"
+                 RowsPerPage="50">
+        <Columns>
+            <HierarchyColumn T="HeadcountDiffRow" />
+            <TemplateColumn T="HeadcountDiffRow" Title="Change" SortBy="@(r => KindOrder.IndexOf(r.Kind))">
+                <CellTemplate>
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="@KindColor(context.Item.Kind)">
+                        @HeadcountDiff.KindLabel(context.Item.Kind)
+                    </MudChip>
+                </CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn T="HeadcountDiffRow" Title="@HeadcountColumns.Brid.Header" SortBy="@(r => r.Brid)">
+                <CellTemplate>@context.Item.Brid</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn T="HeadcountDiffRow" Title="@HeadcountColumns.EmployeeName.Header" SortBy="@(r => r.Current.EmployeeName ?? string.Empty)">
+                <CellTemplate><span class="font-weight-bold">@context.Item.Current.EmployeeName</span></CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn T="HeadcountDiffRow" Title="@HeadcountColumns.Train.Header" SortBy="@(r => r.Current.Train ?? string.Empty)">
+                <CellTemplate>@context.Item.Current.Train</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn T="HeadcountDiffRow" Title="@HeadcountColumns.Team.Header" SortBy="@(r => r.Current.Team ?? string.Empty)">
+                <CellTemplate>@context.Item.Current.Team</CellTemplate>
+            </TemplateColumn>
+            <TemplateColumn T="HeadcountDiffRow" Title="What changed" Sortable="false">
+                <CellTemplate>
+                    @switch (context.Item.Kind)
+                    {
+                        case HeadcountChangeKind.Joiner:
+                        case HeadcountChangeKind.Leaver:
+                            <span class="mud-text-secondary">@Summary(context.Item.Current)</span>
+                            break;
+                        case HeadcountChangeKind.Unchanged:
+                            <span class="mud-text-secondary">—</span>
+                            break;
+                        default:
+                            @foreach (var change in context.Item.Changes.Take(MaxInlineChanges))
+                            {
+                                <div>
+                                    <span class="mud-text-secondary">@change.Column.Header:</span>
+                                    <span style="@OldStyle">@Display(change.OldValue)</span>
+                                    <span class="mud-text-secondary mx-1">→</span>
+                                    <span style="@NewStyle">@Display(change.NewValue)</span>
+                                </div>
+                            }
+                            @if (context.Item.Changes.Count > MaxInlineChanges)
+                            {
+                                <span class="mud-text-secondary">+@(context.Item.Changes.Count - MaxInlineChanges) more</span>
+                            }
+                            break;
+                    }
+                </CellTemplate>
+            </TemplateColumn>
+        </Columns>
+        <ChildRowContent>
+            <MudPaper Elevation="0" Class="pa-3" Style="background:var(--mud-palette-background)">
+                <MudSimpleTable Dense="true" Bordered="true" Style="max-width:1100px">
+                    <thead>
+                        <tr>
+                            <th style="width:260px">Field</th>
+                            <th>@LabelA</th>
+                            <th>@LabelB</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var column in HeadcountColumns.All)
+                        {
+                            var oldValue = column.Format(context.Item.A);
+                            var newValue = column.Format(context.Item.B);
+                            var differs = context.Item.A is not null && context.Item.B is not null
+                                          && !string.Equals(oldValue, newValue, StringComparison.Ordinal);
+                            var ignored = differs && !context.Item.HasChange(column);
+                            <tr style="@(differs && !ignored ? ChangedRowStyle : null)">
+                                <td>
+                                    @column.Header
+                                    @if (ignored)
+                                    {
+                                        <span class="mud-text-secondary"> (ignored)</span>
+                                    }
+                                </td>
+                                <td style="white-space:pre-wrap">@oldValue</td>
+                                <td style="white-space:pre-wrap">@newValue</td>
+                            </tr>
+                        }
+                    </tbody>
+                </MudSimpleTable>
+            </MudPaper>
+        </ChildRowContent>
+        <NoRecordsContent>
+            <MudText Class="pa-6 mud-text-secondary">
+                @(_result.HasDifferences ? "Nobody matches the current selection." : "No differences.")
+            </MudText>
+        </NoRecordsContent>
+        <PagerContent>
+            <MudDataGridPager T="HeadcountDiffRow" PageSizeOptions="PageSizeOptions" />
+        </PagerContent>
+    </MudDataGrid>
+
+    <MudText Typo="Typo.caption" Class="mud-text-secondary pa-2 d-block">
+        Click the arrow on a row to see every field side by side.
+    </MudText>
+}
+
+@code {
+    private const int MaxInlineChanges = 3;
+    private const string OldStyle = "text-decoration:line-through; color:var(--mud-palette-error)";
+    private const string NewStyle = "color:var(--mud-palette-success); font-weight:500";
+    private const string ChangedRowStyle = "background-color:rgba(var(--mud-palette-warning-rgb), 0.16)";
+
+    private static readonly int[] PageSizeOptions = [25, 50, 100, 250];
+
+    private static readonly List<HeadcountChangeKind> KindOrder =
+    [
+        HeadcountChangeKind.Joiner,
+        HeadcountChangeKind.Leaver,
+        HeadcountChangeKind.Changed,
+        HeadcountChangeKind.Unchanged
+    ];
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<HeadcountRow> RowsA { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public IReadOnlyList<HeadcountRow> RowsB { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public string LabelA { get; set; } = "A";
+
+    [Parameter, EditorRequired]
+    public string LabelB { get; set; } = "B";
+
+    [Parameter]
+    public string ExportFileName { get; set; } = "Headcount_compare.xlsx";
+
+    [Parameter]
+    public bool AllowExport { get; set; } = true;
+
+    private readonly HashSet<HeadcountChangeKind> _kinds =
+        [HeadcountChangeKind.Joiner, HeadcountChangeKind.Leaver, HeadcountChangeKind.Changed];
+
+    private readonly HashSet<HeadcountColumn> _fields = [];
+    private HashSet<HeadcountColumn> _ignored = HeadcountColumns.IgnoredByDefault.ToHashSet();
+    private IReadOnlyList<HeadcountRow>? _computedA;
+    private IReadOnlyList<HeadcountRow>? _computedB;
+    private HeadcountDiffResult? _result;
+    private List<HeadcountDiffRow> _visible = [];
+    private string? _search;
+    private bool _exporting;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_computedA, RowsA) && ReferenceEquals(_computedB, RowsB))
+        {
+            return;
+        }
+
+        _computedA = RowsA;
+        _computedB = RowsB;
+        Recompute();
+    }
+
+    private void Recompute()
+    {
+        var compared = HeadcountColumns.Comparable.Where(c => !_ignored.Contains(c)).ToList();
+        _result = HeadcountDiff.Compare(RowsA, RowsB, compared);
+        _fields.IntersectWith(_result.ChangesByColumn.Keys);
+        UpdateVisible();
+    }
+
+    private void UpdateVisible()
+    {
+        if (_result is null)
+        {
+            _visible = [];
+            return;
+        }
+
+        var tokens = string.IsNullOrWhiteSpace(_search)
+            ? []
+            : _search.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        _visible = _result.Rows
+            .Where(r => _fields.Count > 0
+                ? r.Kind == HeadcountChangeKind.Changed && r.Changes.Any(c => _fields.Contains(c.Column))
+                : _kinds.Contains(r.Kind))
+            .Where(r => tokens.All(t =>
+                r.Brid.Contains(t, StringComparison.OrdinalIgnoreCase)
+                || (r.Current.EmployeeName?.Contains(t, StringComparison.OrdinalIgnoreCase) ?? false)))
+            .OrderBy(r => KindOrder.IndexOf(r.Kind))
+            .ThenBy(r => r.Current.EmployeeName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(r => r.Brid, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private bool IsKindShown(HeadcountChangeKind kind) => _fields.Count == 0 && _kinds.Contains(kind);
+
+    private void ToggleKind(HeadcountChangeKind kind)
+    {
+        if (_fields.Count > 0)
+        {
+            _fields.Clear();
+            _kinds.Clear();
+            _kinds.Add(kind);
+        }
+        else if (!_kinds.Remove(kind))
+        {
+            _kinds.Add(kind);
+        }
+
+        UpdateVisible();
+    }
+
+    private void ShowAll()
+    {
+        _fields.Clear();
+        _kinds.UnionWith(KindOrder);
+        UpdateVisible();
+    }
+
+    private void ToggleField(HeadcountColumn column)
+    {
+        if (!_fields.Remove(column))
+        {
+            _fields.Add(column);
+        }
+
+        UpdateVisible();
+    }
+
+    private void ClearFields()
+    {
+        _fields.Clear();
+        UpdateVisible();
+    }
+
+    private void OnIgnoredChanged(IReadOnlyCollection<HeadcountColumn> values)
+    {
+        _ignored = values.ToHashSet();
+        Recompute();
+    }
+
+    private void OnSearchChanged(string? value)
+    {
+        _search = value;
+        UpdateVisible();
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_result is null)
+        {
+            return;
+        }
+
+        _exporting = true;
+        try
+        {
+            var result = _result;
+            var rows = _visible.ToList();
+            var bytes = await Task.Run(() => HeadcountExcelExport.BuildDiff(result, rows, LabelA, LabelB));
+            await Downloads.DownloadAsync(bytes, ExportFileName);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Headcount compare export failed");
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private static string Display(string? value) => string.IsNullOrEmpty(value) ? "(empty)" : value;
+
+    private static string Summary(HeadcountRow row) =>
+        string.Join(" · ", new[] { row.Job, row.CorporateGradeDescription, row.ColleagueNonPermType, row.City }
+            .Where(v => !string.IsNullOrWhiteSpace(v)));
+
+    private static string KindTitle(HeadcountChangeKind kind) => kind switch
+    {
+        HeadcountChangeKind.Joiner => "Joiners",
+        HeadcountChangeKind.Leaver => "Leavers",
+        HeadcountChangeKind.Changed => "Changed",
+        _ => "Unchanged"
+    };
+
+    private static Color KindColor(HeadcountChangeKind kind) => kind switch
+    {
+        HeadcountChangeKind.Joiner => Color.Success,
+        HeadcountChangeKind.Leaver => Color.Error,
+        HeadcountChangeKind.Changed => Color.Warning,
+        _ => Color.Default
+    };
+}

@@ -1,0 +1,31 @@
+::deep .sticky-left,
+::deep .sticky-left-header {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background-color: var(--mud-palette-surface, #fff);
+    box-shadow: 2px 0 4px rgba(0, 0, 0, 0.1);
+}
+
+::deep .sticky-left-header {
+    z-index: 3;
+}
+
+::deep .mud-table-striped .mud-table-row:nth-of-type(odd) .sticky-left {
+    background: linear-gradient(var(--mud-palette-table-striped), var(--mud-palette-table-striped)), var(--mud-palette-surface);
+}
+
+::deep .mud-table-hover .mud-table-row:hover .sticky-left {
+    background: linear-gradient(var(--mud-palette-table-hover), var(--mud-palette-table-hover)), var(--mud-palette-surface);
+}
+
+::deep .headcount-table td,
+::deep .headcount-table th {
+    white-space: nowrap;
+}
+
+::deep .headcount-table td {
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

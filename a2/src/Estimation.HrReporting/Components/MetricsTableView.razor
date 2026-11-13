@@ -1,0 +1,74 @@
+@using System.Globalization
+
+<MudPaper Outlined="true" Class="@($"pa-3 {Class}")">
+    <div class="d-flex flex-wrap align-baseline gap-2 mb-2">
+        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">@Table.Title</MudText>
+        @if (!string.IsNullOrWhiteSpace(Table.Note))
+        {
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">@Table.Note</MudText>
+        }
+    </div>
+    <div style="overflow-x:auto">
+        <MudSimpleTable Dense="true" Hover="true" Bordered="true" Elevation="0">
+            <thead>
+                <tr>
+                    <th style="min-width:220px">@Table.RowHeader</th>
+                    @foreach (var column in Table.Columns)
+                    {
+                        <th style="text-align:right; min-width:90px; max-width:170px; white-space:normal">@column</th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in Table.Rows)
+                {
+                    <tr style="@RowStyle(row)">
+                        <td style="@(row.Level > 0 ? "padding-left:28px" : null)">@row.Label</td>
+                        @for (var i = 0; i < row.Values.Count; i++)
+                        {
+                            <td style="text-align:right">@Format(row, i)</td>
+                        }
+                    </tr>
+                }
+            </tbody>
+        </MudSimpleTable>
+    </div>
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired]
+    public MetricsTable Table { get; set; } = null!;
+
+    [Parameter]
+    public string? Class { get; set; }
+
+    private string Format(MetricsRow row, int column)
+    {
+        var value = row.Values[column];
+        if (value is null)
+        {
+            return Table.IsPercent(row, column) || row.Kind == MetricsRowKind.Derived ? "—" : string.Empty;
+        }
+
+        if (Table.IsPercent(row, column))
+        {
+            return value.Value.ToString("0.0%", CultureInfo.CurrentCulture);
+        }
+
+        if (value == 0 && row.Kind is MetricsRowKind.Value or MetricsRowKind.Group)
+        {
+            return string.Empty;
+        }
+
+        return value.Value.ToString(value == decimal.Truncate(value.Value) ? "N0" : "#,0.##", CultureInfo.CurrentCulture);
+    }
+
+    private static string? RowStyle(MetricsRow row) => row.Kind switch
+    {
+        MetricsRowKind.Total => "font-weight:600; background-color:rgba(var(--mud-palette-primary-rgb), 0.08)",
+        MetricsRowKind.Group => "font-weight:600; background-color:var(--mud-palette-background-gray)",
+        MetricsRowKind.Derived => "font-style:italic",
+        MetricsRowKind.Percent => "color:var(--mud-palette-text-secondary)",
+        _ => null
+    };
+}

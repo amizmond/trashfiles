@@ -1,0 +1,611 @@
+@attribute [Route(HrReportingRoutes.Headcount)]
+@inherits HrReportingPageBase
+
+@inject IHeadcountSnapshotService Snapshots
+@inject HeadcountUploadPreviewState UploadPreview
+@inject IBrowserDownloadService Downloads
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+@using System.Text.Json
+@using Serilog
+
+<PageTitle>Headcount</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.PageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudText Typo="Typo.h6" Class="mr-2">Headcount</MudText>
+
+            @if (_uploads.Count > 0)
+            {
+                <div style="width:280px">
+                    <MudSelect T="int" Value="@(_current?.Id ?? 0)" ValueChanged="OnUploadSelected"
+                               Label="As of"
+                               Dense Variant="Variant.Outlined"
+                               Disabled="_loading"
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var upload in _uploads)
+                        {
+                            <MudSelectItem T="int" Value="@upload.Id">@UploadLabel(upload, _uploads)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+            }
+
+            <MudSpacer />
+
+            <div style="position:relative">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.ViewColumn"
+                           Disabled="@(_current is null)"
+                           OnClick="() => _columnsOpen = !_columnsOpen">
+                    Columns
+                </MudButton>
+                <MudPopover Open="_columnsOpen" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight"
+                            Class="pa-4" Style="min-width:300px">
+                    <div class="d-flex align-center justify-space-between mb-2">
+                        <MudText Typo="Typo.subtitle1" Class="font-weight-bold">Columns</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _columnsOpen = false" />
+                    </div>
+                    <div class="d-flex gap-1 mb-1">
+                        <MudButton Variant="Variant.Text" Color="Color.Primary" Size="Size.Small"
+                                   StartIcon="@(AllColumnsVisible ? Icons.Material.Filled.Deselect : Icons.Material.Filled.SelectAll)"
+                                   OnClick="ToggleAllColumnsAsync">
+                            @(AllColumnsVisible ? "Unselect all" : "Select all")
+                        </MudButton>
+                        <MudButton Variant="Variant.Text" Color="Color.Primary" Size="Size.Small"
+                                   StartIcon="@Icons.Material.Filled.RestartAlt"
+                                   OnClick="ResetColumnsAsync">
+                            Default
+                        </MudButton>
+                    </div>
+                    <div class="d-flex flex-column gap-1" style="max-height:420px; overflow-y:auto">
+                        @foreach (var column in DisplayOrder)
+                        {
+                            var current = column;
+                            <MudSwitch T="bool" Value="@_visible.Contains(current)"
+                                       ValueChanged="@((bool on) => SetColumnVisibleAsync(current, on))"
+                                       Label="@current.Header" Color="Color.Primary" Size="Size.Small" />
+                        }
+                    </div>
+                </MudPopover>
+            </div>
+
+            <MudBadge Content="@_filter.ActiveCount" Color="Color.Secondary" Overlap="true" Bordered="true"
+                      Visible="@(_filter.ActiveCount > 0)">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.FilterList"
+                           Disabled="@(_current is null)"
+                           OnClick="OpenFilters">
+                    Filter
+                </MudButton>
+            </MudBadge>
+
+            <span title="Export the people shown, with every column in the Workday layout">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.Download"
+                           Disabled="@(_current is null || _exporting || _filtered.Count == 0)"
+                           OnClick="ExportAsync">
+                    Export
+                </MudButton>
+            </span>
+
+            <span title="@(_uploads.Count < 2 ? "Compare needs at least two uploads" : "Compare two uploads")">
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.CompareArrows"
+                           Disabled="@(_uploads.Count < 2)"
+                           OnClick="OpenCompare">
+                    Compare
+                </MudButton>
+            </span>
+
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                       StartIcon="@Icons.Material.Filled.History"
+                       Disabled="@(_uploads.Count == 0)"
+                       OnClick="OpenUploadsAsync">
+                Uploads
+            </MudButton>
+
+            @if (CanEdit)
+            {
+                <MudFileUpload T="IBrowserFile"
+                               Accept=".xlsx"
+                               MaximumFileCount="1"
+                               FilesChanged="OnFileSelectedAsync">
+                    <CustomContent>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.UploadFile"
+                                   Disabled="_parsing"
+                                   OnClick="@context.OpenFilePickerAsync">
+                            Upload
+                        </MudButton>
+                    </CustomContent>
+                </MudFileUpload>
+            }
+        </div>
+
+        @if (_loading || _parsing)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+
+        @if (_missingRequested)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mx-2 mb-2">
+                That upload no longer exists, so the latest one is shown.
+            </MudAlert>
+        }
+
+        @if (_current is not null)
+        {
+            <div class="d-flex flex-wrap align-center gap-3 px-2 pb-2">
+                <MudText Typo="Typo.body1">
+                    @if (_filter.ActiveCount > 0)
+                    {
+                        <b>@Count(_totals.People)</b> <span>of @Count(_current.RowCount) people</span>
+                    }
+                    else
+                    {
+                        <b>@Count(_totals.People)</b> <span>people</span>
+                    }
+                    <span class="mud-text-secondary mx-1">·</span> HC <b>@Amount(_totals.Hc)</b>
+                    <span class="mud-text-secondary mx-1">·</span> FTE <b>@Amount(_totals.Fte)</b>
+                </MudText>
+                <MudText Typo="Typo.body2" Class="mud-text-secondary">
+                    Data as of @_current.DataDate.ToString(HeadcountColumn.DateFormat) · uploaded @UserTime.Format(_current.UploadedAt)
+                    @if (!string.IsNullOrWhiteSpace(_current.UploadedBy))
+                    {
+                        <span> by @_current.UploadedBy</span>
+                    }
+                    <span> · @_current.FileName</span>
+                </MudText>
+                @if (!IsLatest)
+                {
+                    <MudChip T="string" Size="Size.Small" Color="Color.Warning" Variant="Variant.Outlined">Older upload</MudChip>
+                    <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Primary" OnClick="ShowLatest">Show latest</MudButton>
+                }
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_current.Comment))
+            {
+                <MudText Typo="Typo.body2" Class="px-2 pb-2" Style="white-space:pre-wrap">
+                    <span class="mud-text-secondary">Comment:</span> @_current.Comment
+                </MudText>
+            }
+        }
+
+        <MudDrawer @bind-Open="_drawerOpen" Anchor="Anchor.End" Elevation="2"
+                   Variant="DrawerVariant.Temporary" Width="420px"
+                   Style="background: var(--mud-palette-surface)">
+            <MudDrawerHeader>
+                <div class="d-flex align-center justify-space-between" style="width:100%">
+                    <div class="d-flex align-baseline gap-2">
+                        <MudText Typo="Typo.h6">Filters</MudText>
+                        @if (_current is not null)
+                        {
+                            <MudText Typo="Typo.body2" Class="mud-text-secondary">@Count(_filtered.Count) of @Count(_rows.Count)</MudText>
+                        }
+                    </div>
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="() => _drawerOpen = false" />
+                </div>
+            </MudDrawerHeader>
+            @if (_drawerOpen)
+            {
+                <HeadcountFilterPanel Filter="_filter" Facets="_facets" OnChanged="OnFilterChangedAsync" />
+            }
+        </MudDrawer>
+
+        <MudDivider />
+
+        @if (!_initialLoadDone)
+        {
+        }
+        else if (_uploads.Count == 0)
+        {
+            <MudAlert Severity="Severity.Info" Class="ma-3">
+                No headcount has been uploaded yet.
+                @(CanEdit
+                    ? "Use Upload to load the Workday export with its 'Headcount' sheet."
+                    : "Someone with edit rights needs to upload the Workday export first.")
+            </MudAlert>
+        }
+        else
+        {
+            <MudTable @ref="_table"
+                      T="HeadcountRow"
+                      ServerData="ServerReload"
+                      @bind-RowsPerPage="_pageSize"
+                      Hover
+                      Striped
+                      Dense
+                      Bordered="true"
+                      LoadingProgressColor="Color.Primary"
+                      Class="rounded-0 headcount-table"
+                      HorizontalScrollbar
+                      Elevation="0">
+                <HeaderContent>
+                    @foreach (var column in VisibleColumns)
+                    {
+                        <MudTh Class="@(IsSticky(column) ? "sticky-left-header" : null)" Style="@($"min-width:{MinWidth(column)}px")">
+                            <MudTableSortLabel T="HeadcountRow" SortLabel="@column.Key">@column.Header</MudTableSortLabel>
+                        </MudTh>
+                    }
+                </HeaderContent>
+                <RowTemplate>
+                    @foreach (var column in VisibleColumns)
+                    {
+                        var value = column.Format(context);
+                        <MudTd DataLabel="@column.Header" Class="@(IsSticky(column) ? "sticky-left" : null)"
+                               Style="@(column.Kind == HeadcountValueKind.Number ? "text-align:right" : null)"
+                               title="@(value is { Length: > 30 } ? value : null)">
+                            @if (column == HeadcountColumns.EmployeeName)
+                            {
+                                <span class="font-weight-bold">@value</span>
+                            }
+                            else
+                            {
+                                @value
+                            }
+                        </MudTd>
+                    }
+                </RowTemplate>
+                <NoRecordsContent>
+                    <MudText Class="pa-6 mud-text-secondary">
+                        @(_filter.ActiveCount > 0 ? "Nobody matches the current filters." : "This upload has no people.")
+                    </MudText>
+                </NoRecordsContent>
+                <PagerContent>
+                    <MudTablePager PageSizeOptions="PageSizeOptions" />
+                </PagerContent>
+            </MudTable>
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private const string ColumnsStorageKey = "hrReporting.headcount.columns";
+    private const long MaxFileSize = 50 * 1024 * 1024;
+    private static readonly int[] PageSizeOptions = [25, 50, 100, 250];
+
+    [SupplyParameterFromQuery(Name = "upload")]
+    public int? RequestedUploadId { get; set; }
+
+    private readonly HeadcountFilter _filter = new();
+    private HashSet<HeadcountColumn> _visible = DefaultColumns();
+    private List<HeadcountUpload> _uploads = [];
+    private HeadcountUpload? _current;
+    private IReadOnlyList<HeadcountRow> _rows = [];
+    private List<HeadcountRow> _filtered = [];
+    private List<HeadcountRow>? _sorted;
+    private string? _sortKey;
+    private bool _sortDescending;
+    private HeadcountTotals _totals = HeadcountTotals.Empty;
+    private Dictionary<HeadcountColumn, Dictionary<string, int>>? _facets;
+    private MudTable<HeadcountRow>? _table;
+    private int _pageSize = 50;
+    private int? _shownUploadId;
+    private bool _uploadsLoaded;
+    private bool _initialLoadDone;
+    private bool _loading = true;
+    private bool _missingRequested;
+    private bool _drawerOpen;
+    private bool _columnsOpen;
+    private bool _parsing;
+    private bool _exporting;
+
+    private static readonly IReadOnlyList<HeadcountColumn> DisplayOrder =
+        HeadcountColumns.All.OrderBy(c => c == HeadcountColumns.EmployeeName ? 0 : 1).ToList();
+
+    private IEnumerable<HeadcountColumn> VisibleColumns => DisplayOrder.Where(_visible.Contains);
+
+    private bool AllColumnsVisible => _visible.Count == HeadcountColumns.All.Count;
+
+    private bool IsLatest => _current is not null && _uploads.Count > 0 && _uploads[0].Id == _current.Id;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            if (!_uploadsLoaded)
+            {
+                _uploads = await Snapshots.GetUploadsAsync();
+                _uploadsLoaded = true;
+            }
+
+            await ShowUploadAsync(RequestedUploadId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the headcount");
+            Snackbar.Add("The headcount could not be loaded.", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            _initialLoadDone = true;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await base.OnAfterRenderAsync(firstRender);
+        if (firstRender)
+        {
+            await RestoreColumnsAsync();
+        }
+    }
+
+    private async Task ShowUploadAsync(int? requestedId)
+    {
+        var target = requestedId is int id ? _uploads.FirstOrDefault(u => u.Id == id) : null;
+        _missingRequested = requestedId is not null && target is null;
+        target ??= _uploads.FirstOrDefault();
+
+        if (target is not null && target.Id == _shownUploadId)
+        {
+            return;
+        }
+
+        _loading = true;
+        _current = target;
+        _rows = target is null ? [] : await Snapshots.GetRowsAsync(target.Id);
+        _shownUploadId = target?.Id;
+        _loading = false;
+        ApplyFilter();
+        await ReloadFirstPageAsync();
+    }
+
+    private void ApplyFilter()
+    {
+        _filtered = HeadcountQuery.Apply(_rows, _filter);
+        _sorted = null;
+        _totals = HeadcountQuery.Totals(_filtered);
+        _facets = _drawerOpen ? HeadcountQuery.Facets(_rows, _filter) : null;
+    }
+
+    private Task<TableData<HeadcountRow>> ServerReload(TableState state, CancellationToken ct)
+    {
+        var sortKey = state.SortDirection == SortDirection.None ? null : state.SortLabel;
+        var descending = state.SortDirection == SortDirection.Descending;
+
+        if (_sorted is null || _sortKey != sortKey || _sortDescending != descending)
+        {
+            _sorted = HeadcountQuery.Sort(_filtered, HeadcountColumns.ByKey(sortKey), descending).ToList();
+            _sortKey = sortKey;
+            _sortDescending = descending;
+        }
+
+        var pageSize = state.PageSize > 0 ? state.PageSize : _pageSize;
+        var items = _sorted.Skip(Math.Max(0, state.Page) * pageSize).Take(pageSize).ToList();
+
+        return Task.FromResult(new TableData<HeadcountRow> { Items = items, TotalItems = _sorted.Count });
+    }
+
+    private async Task ReloadFirstPageAsync()
+    {
+        if (_table is null)
+        {
+            return;
+        }
+
+        if (_table.CurrentPage != 0)
+        {
+            _table.NavigateTo(0);
+            return;
+        }
+
+        await _table.ReloadServerData();
+    }
+
+    private void OnUploadSelected(int uploadId) =>
+        Navigation.NavigateTo(HrReportingRoutes.HeadcountUrl(_uploads.Count > 0 && _uploads[0].Id == uploadId ? null : uploadId));
+
+    private void ShowLatest() => Navigation.NavigateTo(HrReportingRoutes.Headcount);
+
+    private void OpenFilters()
+    {
+        _facets ??= HeadcountQuery.Facets(_rows, _filter);
+        _drawerOpen = true;
+    }
+
+    private async Task OnFilterChangedAsync()
+    {
+        ApplyFilter();
+        _facets ??= HeadcountQuery.Facets(_rows, _filter);
+        await ReloadFirstPageAsync();
+    }
+
+    private void OpenCompare()
+    {
+        if (_current is null)
+        {
+            return;
+        }
+
+        var index = _uploads.FindIndex(u => u.Id == _current.Id);
+        var older = index >= 0 && index + 1 < _uploads.Count ? _uploads[index + 1] : null;
+        var (a, b) = older is not null ? (older.Id, _current.Id) : (_current.Id, _uploads[0].Id);
+        Navigation.NavigateTo(HrReportingRoutes.CompareUrl(a, b));
+    }
+
+    private async Task OpenUploadsAsync()
+    {
+        var parameters = new DialogParameters<HeadcountUploadsDialog>
+        {
+            { x => x.Uploads, _uploads },
+            { x => x.CurrentId, _current?.Id },
+            { x => x.CanDelete, IsAdmin }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Large, FullWidth = true, CloseButton = true };
+        var dialog = await DialogService.ShowAsync<HeadcountUploadsDialog>("Uploads", parameters, options);
+        var result = await dialog.Result;
+
+        if (result?.Data is not HeadcountUploadsDialog.Outcome outcome)
+        {
+            return;
+        }
+
+        if (outcome.NavigateTo is not null)
+        {
+            Navigation.NavigateTo(outcome.NavigateTo);
+            return;
+        }
+
+        if (outcome.Deleted)
+        {
+            _uploads = await Snapshots.GetUploadsAsync();
+            if (_current is not null && _uploads.All(u => u.Id != _current.Id))
+            {
+                _shownUploadId = null;
+                await ShowUploadAsync(null);
+                Navigation.NavigateTo(HrReportingRoutes.Headcount, replace: true);
+            }
+        }
+
+        if (outcome.ViewId is int viewId)
+        {
+            OnUploadSelected(viewId);
+        }
+    }
+
+    private async Task OnFileSelectedAsync(IBrowserFile? file)
+    {
+        if (file is null)
+        {
+            return;
+        }
+
+        if (file.Size > MaxFileSize)
+        {
+            Snackbar.Add("The file is larger than 50 MB.", Severity.Error);
+            return;
+        }
+
+        _parsing = true;
+        StateHasChanged();
+
+        try
+        {
+            using var memory = new MemoryStream();
+            await using (var input = file.OpenReadStream(MaxFileSize))
+            {
+                await input.CopyToAsync(memory);
+            }
+
+            var parsed = await Task.Run(() => HeadcountFileParser.Parse(memory, file.Name));
+            UploadPreview.Pending = parsed;
+            Navigation.NavigateTo(HrReportingRoutes.UploadPreview);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to read the headcount upload {FileName}", file.Name);
+            Snackbar.Add($"The file could not be read: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _parsing = false;
+        }
+    }
+
+    private async Task ExportAsync()
+    {
+        if (_current is null)
+        {
+            return;
+        }
+
+        _exporting = true;
+        try
+        {
+            var rows = _sorted ?? HeadcountQuery.Sort(_filtered, HeadcountColumns.ByKey(_sortKey), _sortDescending).ToList();
+            var bytes = await Task.Run(() => HeadcountExcelExport.BuildHeadcount(rows));
+            var suffix = _filter.ActiveCount > 0 ? "_filtered" : string.Empty;
+            await Downloads.DownloadAsync(bytes, $"Headcount_{_current.DataDate.ToString(HeadcountColumn.DateFormat)}{suffix}.xlsx");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Headcount export failed");
+            Snackbar.Add("The export failed.", Severity.Error);
+        }
+        finally
+        {
+            _exporting = false;
+        }
+    }
+
+    private static HashSet<HeadcountColumn> DefaultColumns() =>
+        HeadcountColumns.All.Where(c => c.VisibleByDefault).ToHashSet();
+
+    private bool IsSticky(HeadcountColumn column) => column == HeadcountColumns.EmployeeName;
+
+    private static int MinWidth(HeadcountColumn column) => (int)Math.Clamp(column.Width * 7, 70, 320);
+
+    private async Task SetColumnVisibleAsync(HeadcountColumn column, bool visible)
+    {
+        if (visible)
+        {
+            _visible.Add(column);
+        }
+        else
+        {
+            _visible.Remove(column);
+        }
+
+        await SaveColumnsAsync();
+    }
+
+    private async Task ToggleAllColumnsAsync()
+    {
+        _visible = AllColumnsVisible
+            ? [HeadcountColumns.EmployeeName]
+            : HeadcountColumns.All.ToHashSet();
+        await SaveColumnsAsync();
+    }
+
+    private async Task ResetColumnsAsync()
+    {
+        _visible = DefaultColumns();
+        await SaveColumnsAsync();
+    }
+
+    private async Task RestoreColumnsAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", ColumnsStorageKey);
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return;
+            }
+
+            var keys = JsonSerializer.Deserialize<List<string>>(raw) ?? [];
+            var restored = keys.Select(HeadcountColumns.ByKey).OfType<HeadcountColumn>().ToHashSet();
+            if (restored.Count > 0)
+            {
+                _visible = restored;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Saved headcount columns could not be read");
+        }
+    }
+
+    private async Task SaveColumnsAsync()
+    {
+        try
+        {
+            var keys = HeadcountColumns.All.Where(_visible.Contains).Select(c => c.Key).ToList();
+            await JS.InvokeVoidAsync("localStorage.setItem", ColumnsStorageKey, JsonSerializer.Serialize(keys));
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Headcount columns could not be saved");
+        }
+    }
+}

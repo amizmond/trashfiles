@@ -1,0 +1,256 @@
+@attribute [Route(HrReportingRoutes.UploadPreview)]
+@inherits HrReportingPageBase
+
+@inject HeadcountUploadPreviewState UploadPreview
+@inject IHeadcountSnapshotService Snapshots
+@inject IWindowsAuthService WindowsAuth
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+@using Serilog
+
+<PageTitle>Headcount upload</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.PageKey" RequireEdit="true">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex align-center gap-2 mb-2">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" title="Back to Headcount" OnClick="Cancel" />
+            <MudText Typo="Typo.h6">Headcount upload</MudText>
+        </div>
+
+        @if (_parsed is null)
+        {
+            <MudAlert Severity="Severity.Warning">
+                There is no upload to preview. Go back to Headcount and choose a file.
+            </MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="px-2 mb-2">
+                File <b>@_parsed.FileName</b>
+                @if (_parsed.HeaderRowNumber is int headerRow)
+                {
+                    <span> · sheet '@HeadcountFileParser.SheetName', header on row @headerRow</span>
+                }
+                @if (_parsed.Rows.Count > 0)
+                {
+                    <span> · <b>@Count(_parsed.Rows.Count)</b> people · HC <b>@Amount(_totals.Hc)</b> · FTE <b>@Amount(_totals.Fte)</b></span>
+                }
+            </MudText>
+
+            @if (_parsed.IgnoredHeaders.Count > 0)
+            {
+                <MudAlert Severity="Severity.Info" Dense Class="mb-2">
+                    Not stored (not one of the @HeadcountColumns.All.Count Headcount columns): @string.Join(", ", _parsed.IgnoredHeaders)
+                </MudAlert>
+            }
+
+            @if (_parsed.ErrorCount > 0)
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-2">
+                    <MudText Typo="Typo.body1" Class="font-weight-bold">
+                        This file can't be saved: @Count(_parsed.ErrorCount) @(_parsed.ErrorCount == 1 ? "problem" : "problems").
+                    </MudText>
+                    <MudText Typo="Typo.body2" Class="mb-1">Fix the file and upload it again.</MudText>
+                    <ul class="mb-0" style="max-height:360px; overflow-y:auto">
+                        @foreach (var error in _parsed.Errors)
+                        {
+                            <li>@error</li>
+                        }
+                    </ul>
+                    @if (_parsed.ErrorCount > _parsed.Errors.Count)
+                    {
+                        <MudText Typo="Typo.body2">…and @Count(_parsed.ErrorCount - _parsed.Errors.Count) more.</MudText>
+                    }
+                </MudAlert>
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Cancel">
+                    Back to Headcount
+                </MudButton>
+            }
+            else
+            {
+                <div class="d-flex flex-wrap align-start gap-3 px-2 my-3">
+                    <MudDatePicker Label="Data as of"
+                                   Date="_dataDate"
+                                   DateChanged="OnDataDateChangedAsync"
+                                   DateFormat="@HeadcountColumn.DateFormat"
+                                   HelperText="The date the Workday report was run"
+                                   Editable="true"
+                                   Variant="Variant.Outlined"
+                                   Disabled="_saving"
+                                   Style="max-width:220px" />
+                    <MudTextField T="string" @bind-Value="_comment"
+                                  Label="Comment (optional)"
+                                  MaxLength="@HeadcountUpload.CommentMaxLength"
+                                  Variant="Variant.Outlined"
+                                  Disabled="_saving"
+                                  Style="min-width:320px; flex:1" />
+                    <div class="d-flex gap-2 align-center" style="padding-top:6px">
+                        <MudButton Variant="Variant.Text" Disabled="_saving" OnClick="Cancel">Cancel</MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.Save"
+                                   Disabled="@(_saving || _loadingPrevious || _dataDate is null)"
+                                   OnClick="SaveAsync">
+                            Save snapshot
+                        </MudButton>
+                    </div>
+                </div>
+
+                @if (_saving || _loadingPrevious)
+                {
+                    <MudProgressLinear Indeterminate Color="Color.Primary" Class="mb-2" />
+                }
+
+                @if (_newer is not null)
+                {
+                    <MudAlert Severity="Severity.Info" Dense Class="mb-2">
+                        A newer upload exists (data as of @_newer.DataDate.ToString(HeadcountColumn.DateFormat)).
+                        This one is stored as history, and Headcount keeps showing the newest.
+                    </MudAlert>
+                }
+
+                @if (!_loadingPrevious)
+                {
+                    @if (_previous is null)
+                    {
+                        <MudAlert Severity="Severity.Info" Dense Class="mb-2">
+                            There is no earlier upload to compare with, so everyone shows as a joiner.
+                        </MudAlert>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.body2" Class="px-2">
+                            Compared with the upload with data as of <b>@_previous.DataDate.ToString(HeadcountColumn.DateFormat)</b>
+                            (@Count(_previous.RowCount) people, uploaded @UserTime.Format(_previous.UploadedAt)).
+                        </MudText>
+                    }
+
+                    <HeadcountDiffView RowsA="_previousRows"
+                                       RowsB="_parsed.Rows"
+                                       LabelA="@PreviousLabel"
+                                       LabelB="This file"
+                                       ExportFileName="@($"Headcount_upload_changes_{DataDateText}.xlsx")" />
+                }
+            }
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    private HeadcountParseResult? _parsed;
+    private HeadcountTotals _totals = HeadcountTotals.Empty;
+    private List<HeadcountUpload> _uploads = [];
+    private HeadcountUpload? _previous;
+    private HeadcountUpload? _newer;
+    private IReadOnlyList<HeadcountRow> _previousRows = [];
+    private DateTime? _dataDate;
+    private string? _comment;
+    private bool _loadingPrevious = true;
+    private bool _saving;
+
+    private string DataDateText => (_dataDate ?? DateTime.Today).ToString(HeadcountColumn.DateFormat);
+
+    private string PreviousLabel => _previous is null
+        ? "Previous upload"
+        : $"Upload {_previous.DataDate.ToString(HeadcountColumn.DateFormat)}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _parsed = UploadPreview.Pending;
+        if (_parsed is null)
+        {
+            _loadingPrevious = false;
+            return;
+        }
+
+        _totals = HeadcountQuery.Totals(_parsed.Rows);
+        _dataDate = UserTime.ToLocal(DateTime.UtcNow).Date;
+
+        if (_parsed.ErrorCount > 0)
+        {
+            _loadingPrevious = false;
+            return;
+        }
+
+        try
+        {
+            _uploads = await Snapshots.GetUploadsAsync();
+            await LoadPreviousAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load the previous headcount upload");
+            Snackbar.Add("The previous upload could not be loaded.", Severity.Error);
+            _loadingPrevious = false;
+        }
+    }
+
+    private async Task OnDataDateChangedAsync(DateTime? date)
+    {
+        _dataDate = date?.Date;
+        if (_dataDate is null)
+        {
+            return;
+        }
+
+        await LoadPreviousAsync();
+    }
+
+    private async Task LoadPreviousAsync()
+    {
+        if (_dataDate is not DateTime date)
+        {
+            return;
+        }
+
+        _loadingPrevious = true;
+        StateHasChanged();
+
+        try
+        {
+            _previous = await Snapshots.FindPreviousAsync(date);
+            _previousRows = _previous is null ? [] : await Snapshots.GetRowsAsync(_previous.Id);
+            _newer = _uploads.Where(u => u.DataDate > date).MinBy(u => u.DataDate);
+        }
+        finally
+        {
+            _loadingPrevious = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_parsed is not { CanSave: true } parsed || _dataDate is not DateTime date || _saving)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var userName = await WindowsAuth.GetUserName();
+            var saved = await Snapshots.SaveAsync(parsed.Rows, parsed.FileName, date, _comment, userName);
+            UploadPreview.Clear();
+
+            var newest = (await Snapshots.GetUploadsAsync()).FirstOrDefault();
+            Snackbar.Add(
+                $"Saved {saved.RowCount:N0} people with data as of {saved.DataDate.ToString(HeadcountColumn.DateFormat)}.",
+                Severity.Success);
+            Navigation.NavigateTo(HrReportingRoutes.HeadcountUrl(newest?.Id == saved.Id ? null : saved.Id));
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Saving the headcount upload {FileName} failed", parsed.FileName);
+            Snackbar.Add("The snapshot could not be saved.", Severity.Error);
+            _saving = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        UploadPreview.Clear();
+        Navigation.NavigateTo(HrReportingRoutes.Headcount);
+    }
+}

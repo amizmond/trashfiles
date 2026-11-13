@@ -1,0 +1,4 @@
+::deep .teams-analysis-table td,
+::deep .teams-analysis-table th {
+    white-space: nowrap;
+}

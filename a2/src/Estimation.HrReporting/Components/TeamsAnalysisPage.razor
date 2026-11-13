@@ -1,0 +1,314 @@
+@attribute [Route(HrReportingRoutes.TeamsAnalysis)]
+@inherits HeadcountReportPageBase
+
+@inject ITeamsAnalysisExclusionService Exclusions
+@inject IWindowsAuthService WindowsAuth
+
+@using Serilog
+
+<PageTitle>Teams Analysis</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.TeamsAnalysisPageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <HeadcountReportToolbar Title="Teams Analysis"
+                                Uploads="Uploads"
+                                SelectedId="Current?.Id"
+                                Disabled="Loading"
+                                OnUploadSelected="SelectUpload"
+                                FilterCount="Filter.ActiveCount"
+                                HasData="@(Current is not null)"
+                                Exporting="Exporting"
+                                OnOpenFilters="OpenFilters"
+                                OnExport="ExportAsync" />
+
+        @if (Loading || _busy)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+
+        @if (MissingRequested)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mx-2 mb-2">
+                That upload no longer exists, so the latest one is shown.
+            </MudAlert>
+        }
+
+        @if (!InitialLoadDone)
+        {
+        }
+        else if (Current is null)
+        {
+            <MudAlert Severity="Severity.Info" Class="ma-3">
+                No headcount has been uploaded yet. Upload the Workday export on the Headcount page first.
+            </MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="px-2 mud-text-secondary">
+                <b>@Count(Filtered.Count)</b> of @Count(Rows.Count) people · data as of @Current.DataDate.ToString(HeadcountColumn.DateFormat) · @FilterSummary.
+            </MudText>
+            <MudText Typo="Typo.caption" Class="px-2 pb-3 mud-text-secondary d-block">
+                One table per @HeadcountColumns.ImhL07.Header. People whose Train is empty, N/A or #N/A are left out (@Count(_result.PeopleWithoutTrain) here).
+                Locations = countries with at least one person. Friction: one country = none; four or more countries, or India and USA together = high;
+                neither India nor USA = low; otherwise med. Team size: @string.Join(", ", TeamsAnalysis.SizeBands).
+            </MudText>
+
+            @if (_result.Domains.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Class="ma-2">Nobody in the current filter belongs to a train.</MudAlert>
+            }
+            else
+            {
+                <MetricsTableView Table="_summary[0]" Class="mb-4" />
+
+                <MudGrid Spacing="3" Class="mb-4">
+                    @foreach (var table in _summary.Skip(1))
+                    {
+                        <MudItem xs="12" xl="4">
+                            <MetricsTableView @key="table.Title" Table="table" />
+                        </MudItem>
+                    }
+                </MudGrid>
+
+                <MudTabs @bind-ActivePanelIndex="_activeTab" Outlined="true" Rounded="true" Border="true" TabPanelsClass="pa-3">
+                    @foreach (var domain in _result.Domains)
+                    {
+                        var current = domain;
+                        <MudTabPanel @key="current.Domain" Text="@($"{current.Display} ({current.Teams.Count})")">
+                            <div class="d-flex flex-wrap align-center gap-2 mb-2">
+                                <MudText Typo="Typo.body2">
+                                    <b>@current.Trains</b> trains · <b>@current.Teams.Count</b> teams · <b>@Count(current.People)</b> people
+                                </MudText>
+                                @if (current.Hidden.Count > 0)
+                                {
+                                    <MudText Typo="Typo.caption" Class="mud-text-secondary ml-3">Hidden here:</MudText>
+                                    @foreach (var hidden in current.Hidden)
+                                    {
+                                        <HiddenChip Hidden="hidden" CanEdit="CanEdit" OnRemove="RemoveAsync" />
+                                    }
+                                }
+                            </div>
+
+                            <MudTable T="TeamsAnalysisTeam" Items="current.Teams" Dense Hover Striped Bordered="true"
+                                      Elevation="0" HorizontalScrollbar Class="teams-analysis-table">
+                                <HeaderContent>
+                                    <MudTh><MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => t.Train)">Train</MudTableSortLabel></MudTh>
+                                    <MudTh><MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => t.Team)">Team</MudTableSortLabel></MudTh>
+                                    @for (var i = 0; i < _result.Countries.Count; i++)
+                                    {
+                                        var index = i;
+                                        <MudTh Style="text-align:right">
+                                            <MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => t.CountryCounts[index])">@_result.Countries[index]</MudTableSortLabel>
+                                        </MudTh>
+                                    }
+                                    <MudTh Style="text-align:right"><MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => t.Total)">Total</MudTableSortLabel></MudTh>
+                                    <MudTh Style="text-align:right"><MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => t.Locations)">Locations</MudTableSortLabel></MudTh>
+                                    <MudTh><MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => FrictionRank(t.Friction))">Friction</MudTableSortLabel></MudTh>
+                                    @foreach (var country in _result.Countries)
+                                    {
+                                        <MudTh Style="text-align:right">@country %</MudTh>
+                                    }
+                                    <MudTh><MudTableSortLabel T="TeamsAnalysisTeam" SortBy="@(t => t.Total)">Team size</MudTableSortLabel></MudTh>
+                                    @if (CanEdit)
+                                    {
+                                        <MudTh />
+                                    }
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd DataLabel="Train">@context.Train</MudTd>
+                                    <MudTd DataLabel="Team">@(context.Team.Length == 0 ? HeadcountMetrics.Blank : context.Team)</MudTd>
+                                    @for (var i = 0; i < _result.Countries.Count; i++)
+                                    {
+                                        var count = context.CountryCounts[i];
+                                        <MudTd Style="text-align:right">@(count == 0 ? string.Empty : count.ToString("N0"))</MudTd>
+                                    }
+                                    <MudTd Style="text-align:right; font-weight:600">@context.Total.ToString("N0")</MudTd>
+                                    <MudTd Style="text-align:right">@context.Locations</MudTd>
+                                    <MudTd>
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="@FrictionColor(context.Friction)">@context.Friction</MudChip>
+                                    </MudTd>
+                                    @for (var i = 0; i < _result.Countries.Count; i++)
+                                    {
+                                        var share = context.Share(i);
+                                        <MudTd Style="text-align:right" Class="mud-text-secondary">@share.ToString("0%")</MudTd>
+                                    }
+                                    <MudTd>
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="@SizeColor(context.Size)">@context.Size</MudChip>
+                                    </MudTd>
+                                    @if (CanEdit)
+                                    {
+                                        <MudTd>
+                                            <MudMenu Icon="@Icons.Material.Filled.VisibilityOff" Size="Size.Small" Dense="true"
+                                                     title="Hide from this analysis" AnchorOrigin="Origin.BottomRight" TransformOrigin="Origin.TopRight">
+                                                <MudMenuItem OnClick="@(() => HideAsync(current.Domain, TeamsAnalysisExclusionKind.Team, context.Team))">
+                                                    Hide team “@(context.Team.Length == 0 ? HeadcountMetrics.Blank : context.Team)” in @current.Display
+                                                </MudMenuItem>
+                                                <MudMenuItem OnClick="@(() => HideAsync(current.Domain, TeamsAnalysisExclusionKind.Train, context.Train))">
+                                                    Hide train “@context.Train” in @current.Display
+                                                </MudMenuItem>
+                                            </MudMenu>
+                                        </MudTd>
+                                    }
+                                </RowTemplate>
+                                <NoRecordsContent>
+                                    <MudText Class="pa-4 mud-text-secondary">Every team of this domain is hidden.</MudText>
+                                </NoRecordsContent>
+                            </MudTable>
+                        </MudTabPanel>
+                    }
+                </MudTabs>
+            }
+
+            @if (_otherHidden.Count > 0)
+            {
+                <div class="d-flex flex-wrap align-center gap-2 mt-3 px-2">
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Hidden in domains not shown now:</MudText>
+                    @foreach (var hidden in _otherHidden)
+                    {
+                        <HiddenChip Hidden="hidden" CanEdit="CanEdit" OnRemove="RemoveAsync" ShowDomain="true" />
+                    }
+                </div>
+            }
+        }
+    </MudPaper>
+</div>
+
+<HeadcountFilterDrawer @bind-Open="DrawerOpen"
+                       Filter="Filter"
+                       Facets="Facets"
+                       MatchCount="Filtered.Count"
+                       TotalCount="Rows.Count"
+                       OnChanged="OnFilterChangedAsync" />
+</AccessGuard>
+
+@code {
+    private List<TeamsAnalysisExclusion> _exclusions = [];
+    private TeamsAnalysisResult _result = new([], [], 0);
+    private IReadOnlyList<MetricsTable> _summary = [];
+    private List<TeamsAnalysisHidden> _otherHidden = [];
+    private int _activeTab;
+    private bool _busy;
+
+    protected override string PageKey => HrReportingRoutes.TeamsAnalysisPageKey;
+
+    protected override string Route => HrReportingRoutes.TeamsAnalysis;
+
+    protected override async Task OnUploadsLoadedAsync() => _exclusions = await Exclusions.GetAllAsync();
+
+    protected override void ApplyDefaultFilter()
+    {
+        SetDefault(HeadcountColumns.OperationalStatus, HeadcountRules.Operational);
+        SetDefault(HeadcountColumns.ArtNonArt, HeadcountRules.Art);
+    }
+
+    protected override void Recompute()
+    {
+        _result = TeamsAnalysis.Build(Filtered, _exclusions);
+        _summary = TeamsAnalysis.Summary(_result);
+        _otherHidden = _exclusions
+            .Where(e => !_result.Domains.Any(d => string.Equals(d.Domain, e.Domain.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .Select(e => new TeamsAnalysisHidden(e, 0))
+            .ToList();
+        _activeTab = Math.Clamp(_activeTab, 0, Math.Max(0, _result.Domains.Count - 1));
+    }
+
+    private async Task HideAsync(string domain, TeamsAnalysisExclusionKind kind, string value)
+    {
+        if (!CanEdit)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var user = await WindowsAuth.GetUserName();
+            await Exclusions.AddAsync(domain, kind, value, user);
+            await ReloadExclusionsAsync();
+            Snackbar.Add(
+                $"{kind} “{(value.Length == 0 ? HeadcountMetrics.Blank : value)}” is hidden in {HeadcountMetrics.Display(domain)} for everyone.",
+                Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Hiding {Kind} {Value} in {Domain} failed", kind, value, domain);
+            Snackbar.Add("The change could not be saved.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RemoveAsync(TeamsAnalysisExclusion exclusion)
+    {
+        if (!CanEdit)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await Exclusions.RemoveAsync(exclusion.Id);
+            await ReloadExclusionsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Removing hide entry {Id} failed", exclusion.Id);
+            Snackbar.Add("The change could not be saved.", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ReloadExclusionsAsync()
+    {
+        _exclusions = await Exclusions.GetAllAsync();
+        Recompute();
+    }
+
+    private Task ExportAsync()
+    {
+        if (Current is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var result = _result;
+        var summary = _summary;
+        var caption = $"Teams Analysis · data as of {Current.DataDate.ToString(HeadcountColumn.DateFormat)} · {Filtered.Count:N0} people · {FilterSummary}";
+        return DownloadAsync(
+            () => HrReportExcelExport.BuildTeamsAnalysis(result, summary, caption),
+            $"HR_Teams_Analysis_{Current.DataDate.ToString(HeadcountColumn.DateFormat)}.xlsx");
+    }
+
+    private static int FrictionRank(string friction)
+    {
+        for (var i = 0; i < TeamsAnalysis.FrictionLevels.Count; i++)
+        {
+            if (TeamsAnalysis.FrictionLevels[i] == friction)
+            {
+                return i;
+            }
+        }
+
+        return int.MaxValue;
+    }
+
+    private static Color FrictionColor(string friction) => friction switch
+    {
+        "none" => Color.Success,
+        "low" => Color.Info,
+        "med" => Color.Warning,
+        _ => Color.Error
+    };
+
+    private static Color SizeColor(string size) =>
+        size == TeamsAnalysis.SizeBands[1] ? Color.Success
+        : size == TeamsAnalysis.SizeBands[0] ? Color.Info
+        : Color.Warning;
+}

@@ -1,0 +1,89 @@
+@attribute [Route(HrReportingRoutes.Metrics)]
+@inherits HeadcountReportPageBase
+
+<PageTitle>HR Metrics</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.MetricsPageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <HeadcountReportToolbar Title="Metrics"
+                                Uploads="Uploads"
+                                SelectedId="Current?.Id"
+                                Disabled="Loading"
+                                OnUploadSelected="SelectUpload"
+                                FilterCount="Filter.ActiveCount"
+                                HasData="@(Current is not null)"
+                                Exporting="Exporting"
+                                OnOpenFilters="OpenFilters"
+                                OnExport="ExportAsync" />
+
+        @if (Loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+
+        @if (MissingRequested)
+        {
+            <MudAlert Severity="Severity.Warning" Dense Class="mx-2 mb-2">
+                That upload no longer exists, so the latest one is shown.
+            </MudAlert>
+        }
+
+        @if (!InitialLoadDone)
+        {
+        }
+        else if (Current is null)
+        {
+            <MudAlert Severity="Severity.Info" Class="ma-3">
+                No headcount has been uploaded yet. Upload the Workday export on the Headcount page first.
+            </MudAlert>
+        }
+        else
+        {
+            <MudText Typo="Typo.body2" Class="px-2 pb-3 mud-text-secondary">
+                <b>@Count(Filtered.Count)</b> of @Count(Rows.Count) people · data as of @Current.DataDate.ToString(HeadcountColumn.DateFormat) · @FilterSummary.
+                Each table counts people (BRIDs) per @HeadcountColumns.ImhL07.Header.
+            </MudText>
+
+            @foreach (var table in _tables)
+            {
+                <MetricsTableView @key="table.Title" Table="table" Class="mb-4" />
+            }
+        }
+    </MudPaper>
+</div>
+
+<HeadcountFilterDrawer @bind-Open="DrawerOpen"
+                       Filter="Filter"
+                       Facets="Facets"
+                       MatchCount="Filtered.Count"
+                       TotalCount="Rows.Count"
+                       OnChanged="OnFilterChangedAsync" />
+</AccessGuard>
+
+@code {
+    private IReadOnlyList<MetricsTable> _tables = [];
+
+    protected override string PageKey => HrReportingRoutes.MetricsPageKey;
+
+    protected override string Route => HrReportingRoutes.Metrics;
+
+    protected override void ApplyDefaultFilter() =>
+        SetDefault(HeadcountColumns.OperationalStatus, HeadcountRules.Operational);
+
+    protected override void Recompute() => _tables = HeadcountMetrics.Build(Filtered);
+
+    private Task ExportAsync()
+    {
+        if (Current is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var tables = _tables;
+        var caption = $"HR Metrics · data as of {Current.DataDate.ToString(HeadcountColumn.DateFormat)} · {Filtered.Count:N0} people · {FilterSummary}";
+        return DownloadAsync(
+            () => HrReportExcelExport.BuildMetrics(tables, caption),
+            $"HR_Metrics_{Current.DataDate.ToString(HeadcountColumn.DateFormat)}.xlsx");
+    }
+}

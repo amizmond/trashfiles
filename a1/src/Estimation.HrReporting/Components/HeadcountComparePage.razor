@@ -1,0 +1,173 @@
+@attribute [Route(HrReportingRoutes.Compare)]
+@inherits HrReportingPageBase
+
+@inject IHeadcountSnapshotService Snapshots
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+@using Serilog
+
+<PageTitle>Compare headcount uploads</PageTitle>
+
+<AccessGuard PageKey="@HrReportingRoutes.PageKey">
+<div class="container-fluid mt-3 mb-5">
+    <MudPaper Class="p-3 rounded-lg" Elevation="2">
+        <div class="d-flex flex-wrap align-center gap-2 pa-2">
+            <MudIconButton Icon="@Icons.Material.Filled.ArrowBack" title="Back to Headcount"
+                           OnClick="@(() => Navigation.NavigateTo(HrReportingRoutes.HeadcountUrl(BackUploadId)))" />
+            <MudText Typo="Typo.h6" Class="mr-2">Compare uploads</MudText>
+
+            @if (_uploads.Count >= 2 && _a is not null && _b is not null)
+            {
+                <div style="width:280px">
+                    <MudSelect T="int" Value="@_a.Id" ValueChanged="OnFromChanged"
+                               Label="From (older)" Dense Variant="Variant.Outlined" Disabled="_loading"
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var upload in _uploads)
+                        {
+                            <MudSelectItem T="int" Value="@upload.Id">@UploadLabel(upload, _uploads)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+                <MudIcon Icon="@Icons.Material.Filled.ArrowForward" Color="Color.Default" />
+                <div style="width:280px">
+                    <MudSelect T="int" Value="@_b.Id" ValueChanged="OnToChanged"
+                               Label="To (newer)" Dense Variant="Variant.Outlined" Disabled="_loading"
+                               AnchorOrigin="Origin.BottomCenter">
+                        @foreach (var upload in _uploads)
+                        {
+                            <MudSelectItem T="int" Value="@upload.Id">@UploadLabel(upload, _uploads)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </div>
+            }
+        </div>
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate Color="Color.Primary" Class="my-2" />
+        }
+        else if (_uploads.Count < 2)
+        {
+            <MudAlert Severity="Severity.Info" Class="ma-2">Compare needs at least two uploads.</MudAlert>
+        }
+        else if (_a is not null && _b is not null && _a.Id == _b.Id)
+        {
+            <MudAlert Severity="Severity.Info" Class="ma-2">Pick two different uploads.</MudAlert>
+        }
+        else if (_a is not null && _b is not null)
+        {
+            @if (_reordered)
+            {
+                <MudAlert Severity="Severity.Info" Dense Class="ma-2">
+                    From and To were swapped so that From is the older upload.
+                </MudAlert>
+            }
+
+            <MudText Typo="Typo.body2" Class="px-2">
+                From <b>@ShortLabel(_a)</b> (@Count(_a.RowCount) people) to <b>@ShortLabel(_b)</b> (@Count(_b.RowCount) people).
+                Joiners are in To but not in From; leavers are in From but not in To.
+            </MudText>
+
+            <HeadcountDiffView RowsA="_rowsA"
+                               RowsB="_rowsB"
+                               LabelA="@ShortLabel(_a)"
+                               LabelB="@ShortLabel(_b)"
+                               ExportFileName="@($"Headcount_changes_{_a.DataDate.ToString(HeadcountColumn.DateFormat)}_to_{_b.DataDate.ToString(HeadcountColumn.DateFormat)}.xlsx")" />
+        }
+    </MudPaper>
+</div>
+</AccessGuard>
+
+@code {
+    [SupplyParameterFromQuery(Name = "a")]
+    public int? FromId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "b")]
+    public int? ToId { get; set; }
+
+    private List<HeadcountUpload> _uploads = [];
+    private HeadcountUpload? _a;
+    private HeadcountUpload? _b;
+    private IReadOnlyList<HeadcountRow> _rowsA = [];
+    private IReadOnlyList<HeadcountRow> _rowsB = [];
+    private bool _uploadsLoaded;
+    private bool _loading = true;
+    private bool _reordered;
+
+    private int? BackUploadId => _b is null || (_uploads.Count > 0 && _uploads[0].Id == _b.Id) ? null : _b.Id;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        try
+        {
+            if (!_uploadsLoaded)
+            {
+                _uploads = await Snapshots.GetUploadsAsync();
+                _uploadsLoaded = true;
+            }
+
+            if (_uploads.Count < 2)
+            {
+                _a = _b = null;
+                return;
+            }
+
+            var b = Find(ToId) ?? _uploads[0];
+            var a = Find(FromId) ?? Older(b) ?? _uploads[1];
+
+            _reordered = Index(a) < Index(b);
+            if (_reordered)
+            {
+                (a, b) = (b, a);
+            }
+
+            if (_a?.Id != a.Id)
+            {
+                _rowsA = await Snapshots.GetRowsAsync(a.Id);
+            }
+
+            if (_b?.Id != b.Id)
+            {
+                _rowsB = await Snapshots.GetRowsAsync(b.Id);
+            }
+
+            _a = a;
+            _b = b;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load headcount uploads for compare");
+            Snackbar.Add("The uploads could not be loaded.", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private HeadcountUpload? Find(int? id) => id is int value ? _uploads.FirstOrDefault(u => u.Id == value) : null;
+
+    private int Index(HeadcountUpload upload) => _uploads.FindIndex(u => u.Id == upload.Id);
+
+    private HeadcountUpload? Older(HeadcountUpload upload)
+    {
+        var index = Index(upload);
+        return index >= 0 && index + 1 < _uploads.Count ? _uploads[index + 1] : null;
+    }
+
+    private void OnFromChanged(int id) => Go(id, _b?.Id);
+
+    private void OnToChanged(int id) => Go(_a?.Id, id);
+
+    private void Go(int? from, int? to) => Navigation.NavigateTo(HrReportingRoutes.CompareUrl(from, to));
+
+    private string ShortLabel(HeadcountUpload upload)
+    {
+        var date = upload.DataDate.ToString(HeadcountColumn.DateFormat);
+        return _uploads.Count(u => u.DataDate == upload.DataDate) > 1
+            ? $"{date} ({UserTime.Format(upload.UploadedAt, "HH:mm")})"
+            : date;
+    }
+}

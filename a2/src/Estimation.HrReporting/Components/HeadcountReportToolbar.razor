@@ -1,0 +1,61 @@
+<div class="d-flex flex-wrap align-center gap-2 pa-2">
+    <MudText Typo="Typo.h6" Class="mr-2">@Title</MudText>
+
+    <HeadcountUploadPicker Uploads="Uploads" SelectedId="SelectedId" Disabled="Disabled" OnSelected="OnUploadSelected" />
+
+    <MudSpacer />
+
+    <MudBadge Content="@FilterCount" Color="Color.Secondary" Overlap="true" Bordered="true"
+              Visible="@(FilterCount > 0)">
+        <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.FilterList"
+                   Disabled="@(!HasData)"
+                   OnClick="OnOpenFilters">
+            Filter
+        </MudButton>
+    </MudBadge>
+
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary"
+               StartIcon="@Icons.Material.Filled.Download"
+               Disabled="@(!HasData || Exporting)"
+               OnClick="OnExport">
+        Export
+    </MudButton>
+
+    @ChildContent
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public List<HeadcountUpload> Uploads { get; set; } = [];
+
+    [Parameter]
+    public int? SelectedId { get; set; }
+
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    [Parameter]
+    public EventCallback<int> OnUploadSelected { get; set; }
+
+    [Parameter]
+    public int FilterCount { get; set; }
+
+    [Parameter]
+    public bool HasData { get; set; }
+
+    [Parameter]
+    public bool Exporting { get; set; }
+
+    [Parameter]
+    public EventCallback OnOpenFilters { get; set; }
+
+    [Parameter]
+    public EventCallback OnExport { get; set; }
+
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+}
