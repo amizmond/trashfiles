@@ -1,0 +1,87 @@
+@page "/"
+@rendermode InteractiveServer
+@inject QrTransferService Encoder
+
+<PageTitle>QR Encoder</PageTitle>
+
+<h1>QR Encoder</h1>
+
+<div class="bar">
+    <label for="folder">Folder to encode</label>
+    <input id="folder" type="text" spellcheck="false" placeholder="D:\path\to\folder"
+           value="@_folder" @oninput="e => _folder = e.Value?.ToString() ?? string.Empty"
+           @onkeydown="OnKeyDown" disabled="@_busy" />
+    <button class="primary" @onclick="EncodeAsync" disabled="@_busy">@(_busy ? "Encoding…" : "Encode")</button>
+</div>
+
+@if (_error is not null)
+{
+    <p class="error">@_error</p>
+}
+
+@if (_transfer is not null)
+{
+    <p class="summary">
+        Transfer <strong>@_transfer.TransferId</strong> · @_transfer.FileCount file(s) ·
+        @_transfer.RawSize.ToString("N0") B raw → @_transfer.CompressedSize.ToString("N0") B gzip ·
+        @_transfer.Images.Count QR code(s)
+    </p>
+
+    <nav class="numbers" aria-label="QR code index">
+        @for (var i = 0; i < _transfer.Images.Count; i++)
+        {
+            var index = i;
+            <button class="num @(index == _selected ? "active" : null)"
+                    aria-current="@(index == _selected ? "true" : null)"
+                    @onclick="() => _selected = index">@(index + 1)</button>
+        }
+    </nav>
+
+    <figure class="viewer">
+        <img src="@DataUri(_selected)" alt="QR code @(_selected + 1) of @_transfer.Images.Count" />
+        <figcaption>
+            <span class="caption-index">@(_selected + 1) of @_transfer.Images.Count</span>
+            <code>@Preview(_transfer.Payloads[_selected])</code>
+        </figcaption>
+    </figure>
+}
+
+@code {
+    private string _folder = string.Empty;
+    private QrTransfer? _transfer;
+    private string? _error;
+    private int _selected;
+    private bool _busy;
+
+    private async Task EncodeAsync()
+    {
+        _busy = true;
+        _error = null;
+        _transfer = null;
+        _selected = 0;
+
+        var folder = _folder;
+        try
+        {
+            // Packing and QR generation are CPU-bound; keep the circuit responsive while they run.
+            _transfer = await Task.Run(() => Encoder.Encode(folder));
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private Task OnKeyDown(KeyboardEventArgs e)
+        => e.Key == "Enter" && !_busy ? EncodeAsync() : Task.CompletedTask;
+
+    private string DataUri(int index)
+        => $"data:image/png;base64,{Convert.ToBase64String(_transfer!.Images[index])}";
+
+    private static string Preview(string payload)
+        => payload.Length <= 64 ? payload : payload[..64] + "…";
+}
